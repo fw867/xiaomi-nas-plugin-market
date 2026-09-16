@@ -33,7 +33,19 @@ from storelib import (
 
 PROJECT = Path(__file__).resolve().parent
 WEB = PROJECT / "web"
-STORE_VERSION = "0.2.0"
+
+
+def _read_store_version() -> str:
+    """从 build_release.py 读取版本号（单一来源）。"""
+    script = PROJECT / "scripts" / "build_release.py"
+    if script.is_file():
+        for line in script.read_text(encoding="utf-8").splitlines():
+            if line.startswith("VERSION"):
+                return line.split("=", 1)[1].strip().strip("\"'")
+    return "0.0.0"
+
+
+STORE_VERSION = _read_store_version()
 COOKIE_NAME = "xiaomi_community_store_session"
 SESSION_TTL = 30 * 24 * 60 * 60
 BASE_PATH = os.environ.get("BASE_PATH", "/")

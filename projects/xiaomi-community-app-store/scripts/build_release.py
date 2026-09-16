@@ -28,6 +28,7 @@ INCLUDE = [
     "deploy",
     "schemas",
     "docs",
+    "scripts",
 ]
 # Repo-root files included when present
 REPO_ROOT = PROJECT.parents[1]
