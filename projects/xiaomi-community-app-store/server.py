@@ -25,6 +25,7 @@ from storelib import (
     fetch_store_latest_version,
     is_newer_version,
     load_apps_catalog,
+    self_update_store,
     RAW_BASE,
     GITHUB_API_LATEST,
 )
@@ -246,13 +247,22 @@ class StoreHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
-        if path not in ("/api/install", "/api/uninstall"):
+        if path not in ("/api/install", "/api/uninstall", "/api/self-update"):
             self._json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
             return
         if not self._require_session(write=True):
             return
-        if self.app.dev or not self.app.manager:
+        if self.app.dev:
             self._json(HTTPStatus.CONFLICT, {"ok": False, "error": "本地预览模式不会修改 NAS"})
+            return
+
+        # 自更新不需要 InstallManager
+        if path == "/api/self-update":
+            self._handle_self_update()
+            return
+
+        if not self.app.manager:
+            self._json(HTTPStatus.CONFLICT, {"ok": False, "error": "安装服务未就绪"})
             return
         try:
             body = self._request_json()
@@ -268,6 +278,20 @@ class StoreHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(error)})
         except Exception as error:
             self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": f"操作失败：{error}"})
+
+    def _handle_self_update(self) -> None:
+        if not ACTION_LOCK.acquire(blocking=False):
+            self._json(HTTPStatus.CONFLICT, {"ok": False, "error": "另一个任务正在执行，请稍后再试"})
+            return
+        try:
+            result = self_update_store(STORE_VERSION)
+            self._json(HTTPStatus.OK, result)
+        except StoreError as error:
+            self._json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(error)})
+        except Exception as error:
+            self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": f"更新失败：{error}"})
+        finally:
+            ACTION_LOCK.release()
 
 
 class StoreServer(ThreadingHTTPServer):

@@ -93,6 +93,7 @@ async function loadStoreStatus() {
   const statusEl = document.getElementById('updateStatus');
   const noteEl = document.getElementById('updateNote');
   const checkBtn = document.getElementById('checkUpdateButton');
+  const updateBtn = document.getElementById('selfUpdateButton');
   const releaseLink = document.getElementById('releaseLink');
 
   try {
@@ -111,6 +112,9 @@ async function loadStoreStatus() {
   remoteEl.textContent = '检测中…';
   statusEl.textContent = '—';
   noteEl.textContent = '';
+  updateBtn.hidden = true;
+  updateBtn.disabled = false;
+  updateBtn.textContent = '立即更新';
   releaseLink.hidden = true;
 
   try {
@@ -133,7 +137,8 @@ async function loadStoreStatus() {
     remoteEl.textContent = `v${data.latest}`;
     if (data.hasUpdate) {
       statusEl.innerHTML = '<span class="update-badge">有新版本</span>';
-      noteEl.textContent = `商店 v${data.current} → v${data.latest}。请在 NAS 上重新运行一键安装脚本更新。`;
+      noteEl.textContent = `商店 v${data.current} → v${data.latest}`;
+      updateBtn.hidden = false;
       if (data.url) {
         releaseLink.href = data.url;
         releaseLink.hidden = false;
@@ -151,7 +156,44 @@ async function loadStoreStatus() {
   }
 }
 
+async function selfUpdate() {
+  const btn = document.getElementById('selfUpdateButton');
+  const noteEl = document.getElementById('updateNote');
+  btn.disabled = true;
+  btn.textContent = '更新中…';
+  noteEl.textContent = '正在下载并安装新版本，请勿关闭页面…';
+  try {
+    const res = await fetch('api/self-update', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': csrfToken,
+        'X-Community-Session': sessionToken,
+      },
+      body: '{}',
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || '更新失败');
+    if (data.updated) {
+      noteEl.textContent = `已更新到 v${data.version}，页面即将刷新…`;
+      showToast(`商店已更新到 v${data.version}`);
+      setTimeout(() => location.reload(), 2000);
+    } else {
+      noteEl.textContent = data.message || '已是最新版本';
+      btn.textContent = '已是最新';
+      btn.disabled = true;
+    }
+  } catch (error) {
+    btn.disabled = false;
+    btn.textContent = '立即更新';
+    noteEl.textContent = error.message;
+    showToast(error.message);
+  }
+}
+
 document.getElementById('checkUpdateButton').addEventListener('click', loadStoreStatus);
+document.getElementById('selfUpdateButton').addEventListener('click', selfUpdate);
 
 async function mutate(action, item, button) {
   if (preview) {

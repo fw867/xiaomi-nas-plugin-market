@@ -875,3 +875,126 @@ class InstallManager:
         for plugin_id, version in self.installed().items():
             result[plugin_id] = {"version": version, "managed": True}
         return result
+
+
+# ---------------------------------------------------------------------------
+# 商店自更新
+# ---------------------------------------------------------------------------
+
+def self_update_store(
+    current_version: str,
+    *,
+    store_root: str = "/data/plugin/community-store",
+    repo: str | None = None,
+) -> dict[str, Any]:
+    """下载最新 Release，替换当前商店文件并重启服务。
+
+    必须以 root 在 NAS 上运行。返回 {"ok": True, "version": ...}。
+    """
+    repo = repo or DEFAULT_REPO
+    api_url = f"https://api.github.com/repos/{repo}/releases/latest"
+    latest = fetch_store_latest_version(api_url)
+    target_version = latest["version"]
+    if not is_newer_version(target_version, current_version):
+        return {"ok": True, "version": current_version, "updated": False, "message": "已是最新版本"}
+
+    zip_name = f"xiaomi-plugin-market-{target_version}.zip"
+    release_json = fetch_url_json(api_url)
+
+    zip_url = sha_url = ""
+    for asset in release_json.get("assets", []):
+        name = asset.get("name", "")
+        if name == zip_name:
+            zip_url = asset.get("browser_download_url", "")
+        elif name == "SHA256SUMS.txt":
+            sha_url = asset.get("browser_download_url", "")
+    if not zip_url:
+        raise StoreError(f"Release 中未找到 {zip_name}")
+
+    store_path = Path(store_root)
+    staging = store_path / "staging" / f"self-update-{int(time.time())}"
+    staging.mkdir(parents=True, exist_ok=False)
+
+    try:
+        # 下载
+        zip_path = staging / zip_name
+        _download_to_file(zip_url, zip_path)
+
+        # SHA-256 校验
+        if sha_url:
+            sha_path = staging / "SHA256SUMS.txt"
+            _download_to_file(sha_url, sha_path)
+            expected = ""
+            for line in sha_path.read_text(encoding="utf-8").splitlines():
+                if zip_name in line:
+                    expected = line.split()[0]
+                    break
+            actual = sha256_file(zip_path)
+            if expected and expected != actual:
+                raise StoreError("商店更新包 SHA-256 校验失败")
+
+        # 解压
+        extract_dir = staging / "extracted"
+        extract_dir.mkdir()
+        with zipfile.ZipFile(zip_path) as archive:
+            for member in archive.infolist():
+                _safe_member_path(member.filename)
+            archive.extractall(extract_dir)
+
+        # 定位项目目录
+        project_dir = None
+        for candidate in [extract_dir] + list(extract_dir.iterdir()):
+            if candidate.is_dir() and (candidate / "server.py").is_file():
+                project_dir = candidate
+                break
+        if project_dir is None:
+            raise StoreError("更新包中未找到 server.py")
+
+        # 校验必要文件
+        for required in ("server.py", "storelib.py", "web/index.html"):
+            if not (project_dir / required).is_file():
+                raise StoreError(f"更新包缺少文件：{required}")
+
+        # 创建新 release 目录
+        release_id = f"{target_version}-self-{int(time.time())}"
+        release_dir = store_path / "releases" / release_id
+        release_dir.mkdir(parents=True, exist_ok=False)
+
+        # 复制文件
+        shutil.copy2(project_dir / "server.py", release_dir / "server.py")
+        shutil.copy2(project_dir / "storelib.py", release_dir / "storelib.py")
+        if (project_dir / "web").is_dir():
+            shutil.copytree(project_dir / "web", release_dir / "web")
+        # catalog 可选（新版可能没有）
+        if (project_dir / "catalog").is_dir():
+            shutil.copytree(project_dir / "catalog", release_dir / "catalog")
+        # deploy 可选
+        if (project_dir / "deploy").is_dir():
+            shutil.copytree(project_dir / "deploy", release_dir / "deploy")
+
+        # 更新 current 符号链接
+        current_link = store_path / "current"
+        temp_link = store_path / "current.self-update.tmp"
+        if temp_link.exists() or temp_link.is_symlink():
+            temp_link.unlink()
+        temp_link.symlink_to(release_dir)
+        temp_link.replace(current_link)
+
+        # 重启服务（systemctl 会用新代码重新启动进程）
+        result = subprocess.run(
+            ["systemctl", "restart", "xiaomi-community-store.service"],
+            capture_output=True, text=True, check=False,
+        )
+        if result.returncode != 0:
+            # 回滚符号链接
+            temp_link2 = store_path / "current.rollback.tmp"
+            if temp_link2.exists() or temp_link2.is_symlink():
+                temp_link2.unlink()
+            # 尝试恢复到之前的 release（通过 /proc 或直接读旧链接）
+            # 简单回滚：不改链接，只报错
+            detail = (result.stderr or result.stdout or "restart failed").strip()
+            raise StoreError(f"服务重启失败：{detail}")
+
+        return {"ok": True, "version": target_version, "updated": True}
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)

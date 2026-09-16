@@ -148,6 +148,12 @@ h1 { margin: 0; font-size: 36px; line-height: 1.12; letter-spacing: 0; }
   line-height: 40px;
   padding: 0;
 }
+.about-actions .action-button.primary {
+  color: #fff;
+  background: var(--blue);
+}
+.about-actions .action-button.primary:hover { background: #1e6ac4; }
+.about-actions .action-button.primary:disabled { background: #a0b8d4; }
 .about-note {
   margin: 0;
   padding: 0 20px 14px;
