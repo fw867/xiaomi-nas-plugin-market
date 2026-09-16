@@ -378,12 +378,44 @@ def read_store_version() -> str:
     return "0.2.0"
 
 
+def load_existing_versions() -> dict[str, str]:
+    """从现有 apps.json 读取各插件的当前版本号。"""
+    if not APPS_JSON.is_file():
+        return {}
+    try:
+        data = json.loads(APPS_JSON.read_text(encoding="utf-8"))
+        return {a["id"]: a["version"] for a in data.get("apps", []) if "id" in a and "version" in a}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def bump_patch(version: str) -> str:
+    """递增 patch 版本号：0.4.1 → 0.4.2；0.2.0-rc5 → 0.2.1-rc5。"""
+    import re as _re
+    m = _re.match(r"^(\d+)\.(\d+)\.(\d+)(.*)$", version)
+    if not m:
+        return version
+    major, minor, patch, suffix = m.groups()
+    return f"{major}.{minor}.{int(patch) + 1}{suffix}"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Build apps/ bundles and apps.json")
     parser.add_argument("--only", help="Build a single app id")
     parser.add_argument("--include-candidates", action="store_true", help="Include rc/beta packages")
     parser.add_argument("--skip-missing", action="store_true", help="Skip apps with missing sources instead of failing")
+    parser.add_argument("--no-bump", action="store_true", help="Do not auto-increment patch version")
     args = parser.parse_args()
+
+    # 自动递增版本号（基于现有 apps.json）
+    existing_versions = load_existing_versions()
+    if existing_versions and not args.no_bump:
+        for spec in PACKAGE_SPECS:
+            old = existing_versions.get(spec["id"])
+            if old:
+                spec["version"] = bump_patch(old)
+                if spec["version"] != old:
+                    print(f"版本递增: {spec['id']}  {old} → {spec['version']}")
 
     specs = PACKAGE_SPECS
     if args.only:
@@ -398,6 +430,15 @@ def main() -> int:
 
     APPS.mkdir(parents=True, exist_ok=True)
     (APPS / "icons").mkdir(parents=True, exist_ok=True)
+
+    # 清理旧版本 zip（只保留本次构建的）
+    keep_names: set[str] = set()
+    for spec in specs:
+        keep_names.add(f"{spec['id']}-{spec['version']}.zip")
+    for old_zip in APPS.glob("*.zip"):
+        if old_zip.name not in keep_names:
+            old_zip.unlink()
+            print(f"清理旧包: {old_zip.name}")
 
     apps: list[dict[str, Any]] = []
     skipped_ids: list[str] = []
