@@ -988,20 +988,14 @@ def self_update_store(
         temp_link.symlink_to(release_dir)
         temp_link.replace(current_link)
 
-        # 重启服务（systemctl 会用新代码重新启动进程）
-        result = subprocess.run(
-            ["systemctl", "restart", "xiaomi-community-store.service"],
-            capture_output=True, text=True, check=False,
+        # 延迟重启：先让 HTTP 响应发出去，再由子进程执行 restart
+        # 直接 restart 会杀掉当前进程，客户端收到 HTML 错误页
+        subprocess.Popen(
+            ["sh", "-c", "sleep 2 && systemctl restart xiaomi-community-store.service"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
         )
-        if result.returncode != 0:
-            # 回滚符号链接
-            temp_link2 = store_path / "current.rollback.tmp"
-            if temp_link2.exists() or temp_link2.is_symlink():
-                temp_link2.unlink()
-            # 尝试恢复到之前的 release（通过 /proc 或直接读旧链接）
-            # 简单回滚：不改链接，只报错
-            detail = (result.stderr or result.stdout or "restart failed").strip()
-            raise StoreError(f"服务重启失败：{detail}")
 
         return {"ok": True, "version": target_version, "updated": True}
     finally:
