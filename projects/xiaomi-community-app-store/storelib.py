@@ -34,6 +34,7 @@ DOWNLOAD_CHUNK = 1024 * 1024
 ALLOWED_DOWNLOAD_HOSTS = frozenset(
     {
         "github.com",
+        "api.github.com",
         "objects.githubusercontent.com",
         "release-assets.githubusercontent.com",
         "raw.githubusercontent.com",
