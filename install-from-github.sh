@@ -37,12 +37,40 @@ if [[ "$(id -u)" -ne 0 ]]; then
   error "请以 root 运行此脚本（ssh root@<NAS_IP> 后执行）。"
   exit 1
 fi
-for cmd in curl python3 openssl nginx systemctl; do
-  if ! command -v "${cmd}" >/dev/null 2>&1; then
+
+# 查找命令（NAS 上部分工具不在默认 PATH）
+find_cmd() {
+  local name="$1"
+  if command -v "${name}" >/dev/null 2>&1; then
+    command -v "${name}"
+    return 0
+  fi
+  local candidate
+  for candidate in \
+    "/usr/sbin/${name}" "/usr/bin/${name}" "/sbin/${name}" "/bin/${name}" \
+    "/usr/local/sbin/${name}" "/usr/local/bin/${name}"
+  do
+    if [[ -x "${candidate}" ]]; then
+      printf '%s' "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+for cmd in curl python3 openssl systemctl; do
+  if ! find_cmd "${cmd}" >/dev/null; then
     error "缺少命令：${cmd}"
     exit 1
   fi
 done
+NGINX_BIN="$(find_cmd nginx || true)"
+if [[ -z "${NGINX_BIN}" ]]; then
+  error "找不到 nginx。请确认 NAS 上已安装 nginx，或将其加入 PATH。"
+  error "常见路径：/usr/sbin/nginx  /usr/bin/nginx"
+  exit 1
+fi
+info "nginx 路径：${NGINX_BIN}"
 
 # ---------- GitHub API ----------
 github_get() {
@@ -246,7 +274,7 @@ else
   python3 "${PROJECT_DIR}/deploy/register_plugin.py" --user-id "${NAS_USER_ID}" --plugin-id "${PLUGIN_ID}"
 
   # 启动
-  nginx -t
+  "${NGINX_BIN}" -t
   systemctl daemon-reload
   systemctl enable xiaomi-community-store.service
   systemctl restart xiaomi-community-store.service

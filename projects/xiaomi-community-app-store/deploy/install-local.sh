@@ -69,12 +69,39 @@ for f in xiaomi-community-store.service xiaomi-community-store.nginx.conf regist
 done
 
 # ---------- 前置检查 ----------
-for cmd in python3 openssl nginx systemctl; do
-  if ! command -v "${cmd}" >/dev/null 2>&1; then
+find_cmd() {
+  local name="$1"
+  if command -v "${name}" >/dev/null 2>&1; then
+    command -v "${name}"
+    return 0
+  fi
+  local candidate
+  for candidate in \
+    "/usr/sbin/${name}" "/usr/bin/${name}" "/sbin/${name}" "/bin/${name}" \
+    "/usr/local/sbin/${name}" "/usr/local/bin/${name}"
+  do
+    if [[ -x "${candidate}" ]]; then
+      printf '%s' "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+for cmd in python3 openssl systemctl; do
+  if ! find_cmd "${cmd}" >/dev/null; then
     printf '缺少命令：%s\n' "${cmd}" >&2
     exit 1
   fi
 done
+NGINX_BIN="$(find_cmd nginx || true)"
+if [[ -z "${NGINX_BIN}" ]]; then
+  printf '找不到 nginx。请确认 NAS 上已安装 nginx，或将其加入 PATH。\n' >&2
+  printf '常见路径：/usr/sbin/nginx  /usr/bin/nginx\n' >&2
+  exit 1
+fi
+printf 'nginx 路径：%s\n' "${NGINX_BIN}"
+
 if [[ "$(id -u)" -ne 0 ]]; then
   printf '请以 root 运行此脚本。\n' >&2
   exit 1
@@ -177,7 +204,7 @@ python3 "${DEPLOY_DIR}/register_plugin.py" \
 
 # ---------- 8. 启动并验证 ----------
 printf '[8/8] 启动服务 …\n'
-nginx -t
+"${NGINX_BIN}" -t
 systemctl daemon-reload
 systemctl enable xiaomi-community-store.service
 systemctl restart xiaomi-community-store.service
