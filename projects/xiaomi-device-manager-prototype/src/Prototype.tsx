@@ -534,6 +534,7 @@ export default function Prototype() {
         };
       });
       setStatusError(null);
+      setStatusError(null);
     } catch (error) {
       setStatus((current) => ({ ...current, live: false }));
       setStatusError(error instanceof Error ? error.message : "实时监控暂不可用");
