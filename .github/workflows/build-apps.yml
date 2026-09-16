@@ -1,0 +1,114 @@
+# 当 projects/ 下除 xiaomi-community-app-store 外有改动时，
+# 自动打包插件到 apps/ 并更新 apps.json，然后提交回仓库。
+name: Build Apps
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "projects/**"
+      - "!projects/xiaomi-community-app-store/**"
+      - "scripts/build_apps.py"
+  workflow_dispatch:
+    inputs:
+      include_candidates:
+        description: "包含 rc/beta 测试包"
+        required: false
+        default: false
+        type: boolean
+      only:
+        description: "只构建指定 app id（留空 = 全部）"
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-apps-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Download rclone (webdav dependency)
+        run: |
+          RCLONE_VER="v1.75.0"
+          RCLONE_SHA="d0ad88ba4c8e285b7c9efa591e0ab643280a91741e13c27f3a9c0957ccfa5203"
+          curl -fsSL -o /tmp/rclone.zip \
+            "https://downloads.rclone.org/${RCLONE_VER}/rclone-${RCLONE_VER}-linux-arm64.zip"
+          echo "${RCLONE_SHA}  /tmp/rclone.zip" | sha256sum -c -
+          unzip -j /tmp/rclone.zip -d /tmp/rclone-bin
+          install -m 755 /tmp/rclone-bin/rclone \
+            projects/xiaomi-webdav-plugin/bin/rclone
+
+      - name: Build plugin UIs
+        run: |
+          # device manager frontend
+          if [ -f projects/xiaomi-device-manager-prototype/package.json ]; then
+            (cd projects/xiaomi-device-manager-prototype && npm ci && npm run build)
+          fi
+          # webdav vendor + UI
+          if [ -f projects/xiaomi-webdav-plugin/scripts/prepare_vendor.py ]; then
+            (cd projects/xiaomi-webdav-plugin && python3 scripts/prepare_vendor.py)
+          fi
+          if [ -f projects/xiaomi-webdav-plugin/scripts/build_ui.cjs ]; then
+            (cd projects/xiaomi-webdav-plugin && node scripts/build_ui.cjs)
+          fi
+          # qbittorrent UI
+          if [ -f projects/xiaomi-qbittorrent-plugin/scripts/build_ui.py ]; then
+            (cd projects/xiaomi-qbittorrent-plugin && python3 scripts/build_ui.py)
+          fi
+
+      - name: Build apps and apps.json
+        env:
+          XIAOMI_STORE_REPO: ${{ github.repository }}
+          XIAOMI_STORE_BRANCH: ${{ github.ref_name }}
+        run: |
+          ARGS=""
+          if [ "${{ inputs.include_candidates }}" = "true" ]; then
+            ARGS="$ARGS --include-candidates"
+          fi
+          if [ -n "${{ inputs.only }}" ]; then
+            ARGS="$ARGS --only ${{ inputs.only }}"
+          fi
+          python3 scripts/build_apps.py --skip-missing $ARGS
+
+      - name: Commit apps/ and apps.json
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add apps/ apps.json
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore: auto-build apps and update apps.json [skip ci]"
+            git push
+          fi
+
+      - name: Upload apps artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apps-bundles
+          path: |
+            apps/
+            apps.json
+          retention-days: 7

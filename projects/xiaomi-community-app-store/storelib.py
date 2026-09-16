@@ -4,14 +4,18 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import os
 import re
 import shutil
+import socket
 import stat
 import subprocess
 import tempfile
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -25,6 +29,32 @@ NGINX_PATTERN = re.compile(r"^[a-z0-9-]+\.conf$")
 MAX_BUNDLE_BYTES = 64 * 1024 * 1024
 MAX_EXPANDED_BYTES = 192 * 1024 * 1024
 MAX_FILES = 5000
+DOWNLOAD_TIMEOUT = 30
+DOWNLOAD_CHUNK = 1024 * 1024
+ALLOWED_DOWNLOAD_HOSTS = frozenset(
+    {
+        "github.com",
+        "objects.githubusercontent.com",
+        "release-assets.githubusercontent.com",
+        "raw.githubusercontent.com",
+    }
+)
+_URL_SCHEME = re.compile(r"^https?://", re.I)
+
+# Default GitHub source for apps.json and app bundles.
+# Override via environment: XIAOMI_STORE_REPO=owner/name  XIAOMI_STORE_BRANCH=main
+DEFAULT_REPO = os.environ.get("XIAOMI_STORE_REPO", "fw867/xiaomi-nas-plugin-market")
+DEFAULT_BRANCH = os.environ.get("XIAOMI_STORE_BRANCH", "main")
+RAW_BASE = f"https://raw.githubusercontent.com/{DEFAULT_REPO}/{DEFAULT_BRANCH}"
+GITHUB_API_LATEST = f"https://api.github.com/repos/{DEFAULT_REPO}/releases/latest"
+
+
+def _is_remote_reference(value: str) -> bool:
+    return bool(_URL_SCHEME.match(value or ""))
+
+
+def _raw_url(relative: str) -> str:
+    return f"{RAW_BASE}/{relative.lstrip('/')}"
 
 
 class StoreError(RuntimeError):
@@ -65,6 +95,102 @@ def _safe_member_path(member_name: str) -> PurePosixPath:
     if path.is_absolute() or not path.parts or any(part in ("", ".", "..") for part in path.parts):
         raise StoreError(f"Unsafe bundle path: {member_name!r}")
     return path
+
+
+def _validate_download_url(url: str, *, field: str, package_id: str) -> urllib.parse.SplitResult:
+    try:
+        parsed = urllib.parse.urlsplit(url)
+    except ValueError as error:
+        raise StoreError(f"Invalid {field} URL for {package_id}: {error}") from error
+    if parsed.scheme not in {"http", "https"}:
+        raise StoreError(f"Only http/https {field} URLs are allowed for {package_id}")
+    hostname = (parsed.hostname or "").lower()
+    if hostname not in ALLOWED_DOWNLOAD_HOSTS:
+        raise StoreError(f"Disallowed {field} host for {package_id}: {hostname or '(empty)'}")
+    if parsed.username or parsed.password:
+        raise StoreError(f"Credentials in {field} URL are not allowed for {package_id}")
+    if not parsed.path or parsed.path.endswith("/"):
+        raise StoreError(f"Invalid {field} path for {package_id}")
+    return parsed
+
+
+def _assert_public_ip(hostname: str) -> None:
+    """Reject loopback / link-local / private targets (SSRF / DNS rebinding)."""
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except socket.gaierror as error:
+        raise StoreError(f"Cannot resolve download host {hostname}: {error}") from error
+    for info in infos:
+        address = info[4][0]
+        try:
+            ip = ipaddress.ip_address(address)
+        except ValueError as error:
+            raise StoreError(f"Unexpected address for {hostname}: {address}") from error
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
+            raise StoreError(f"Download host {hostname} resolves to a non-public address: {address}")
+
+
+def _download_to_file(url: str, destination: Path, *, expected_sha256: str | None = None) -> None:
+    parsed = _validate_download_url(url, field="download", package_id=destination.name)
+    _assert_public_ip(parsed.hostname or "")
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(destination.name + ".part")
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "xiaomi-community-store/0.1"},
+        method="GET",
+    )
+    opener = urllib.request.build_opener(_NoRedirectToPrivateHandler())
+    digest = hashlib.sha256()
+    total = 0
+    try:
+        with opener.open(request, timeout=DOWNLOAD_TIMEOUT) as response:
+            status = getattr(response, "status", 200)
+            if status != 200:
+                raise StoreError(f"Download failed with HTTP {status}: {url}")
+            with temporary.open("wb") as handle:
+                while True:
+                    chunk = response.read(DOWNLOAD_CHUNK)
+                    if not chunk:
+                        break
+                    total += len(chunk)
+                    if total > MAX_BUNDLE_BYTES:
+                        raise StoreError("Downloaded artifact exceeds the 64 MiB limit")
+                    digest.update(chunk)
+                    handle.write(chunk)
+        if total == 0:
+            raise StoreError("Downloaded artifact is empty")
+        actual = digest.hexdigest()
+        if expected_sha256 and actual != expected_sha256:
+            raise StoreError("Downloaded artifact checksum mismatch")
+        temporary.replace(destination)
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as error:
+        temporary.unlink(missing_ok=True)
+        if isinstance(error, StoreError):
+            raise
+        raise StoreError(f"Download failed: {error}") from error
+    except StoreError:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+class _NoRedirectToPrivateHandler(urllib.request.HTTPRedirectHandler):
+    """Allow redirects only to whitelisted public hosts."""
+
+    max_redirections = 5
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        parsed = _validate_download_url(newurl, field="redirect", package_id=req.full_url)
+        _assert_public_ip(parsed.hostname or "")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def safe_extract_bundle(bundle: Path, destination: Path) -> None:
@@ -161,9 +287,157 @@ def load_verified_catalog(catalog_dir: Path, public_key: Path) -> dict[str, Any]
         seen.add(package["id"])
         if not re.fullmatch(r"[0-9a-f]{64}", str(package.get("sha256", ""))):
             raise StoreError(f"Invalid SHA-256 for {package['id']}")
-        for field in ("bundle", "signature", "icon"):
-            _safe_member_path(str(package.get(field, "")))
+        for field in ("bundle", "signature"):
+            value = str(package.get(field, ""))
+            if _is_remote_reference(value):
+                _validate_download_url(value, field=field, package_id=package["id"])
+            else:
+                _safe_member_path(value)
+        _safe_member_path(str(package.get("icon", "")))
     return catalog
+
+
+# ---------------------------------------------------------------------------
+# apps.json (schemaVersion 2) — GitHub-sourced catalog
+# ---------------------------------------------------------------------------
+
+def validate_apps_catalog(document: Any) -> dict[str, Any]:
+    if not isinstance(document, dict):
+        raise StoreError("apps.json must be an object")
+    if document.get("schemaVersion") != 2:
+        raise StoreError("Unsupported apps.json schema")
+    apps = document.get("apps")
+    if not isinstance(apps, list) or not apps:
+        raise StoreError("apps.json apps must be a non-empty array")
+    seen: set[str] = set()
+    for app in apps:
+        if not isinstance(app, dict):
+            raise StoreError("Each app entry must be an object")
+        app_id = str(app.get("id", ""))
+        if not ID_PATTERN.fullmatch(app_id):
+            raise StoreError(f"Invalid app id: {app_id!r}")
+        if app_id in seen:
+            raise StoreError(f"Duplicate app id: {app_id}")
+        seen.add(app_id)
+        if not isinstance(app.get("name"), str) or not 1 <= len(app["name"]) <= 40:
+            raise StoreError(f"Invalid app name for {app_id}")
+        version = str(app.get("version", ""))
+        if not VERSION_PATTERN.fullmatch(version):
+            raise StoreError(f"Invalid version for {app_id}")
+        if not re.fullmatch(r"[0-9a-f]{64}", str(app.get("sha256", ""))):
+            raise StoreError(f"Invalid SHA-256 for {app_id}")
+        bundle = str(app.get("bundle", ""))
+        if not bundle:
+            raise StoreError(f"Missing bundle path for {app_id}")
+        if _is_remote_reference(bundle):
+            _validate_download_url(bundle, field="bundle", package_id=app_id)
+        else:
+            _safe_member_path(bundle)
+        icon = str(app.get("icon", ""))
+        if icon and not _is_remote_reference(icon):
+            _safe_member_path(icon)
+    return document
+
+
+def fetch_url_json(url: str, *, timeout: float = 20) -> dict[str, Any]:
+    _validate_download_url(url, field="apps-catalog", package_id="apps.json")
+    parsed = urllib.parse.urlsplit(url)
+    _assert_public_ip(parsed.hostname or "")
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "xiaomi-community-store/0.2", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            status = getattr(response, "status", 200)
+            if status != 200:
+                raise StoreError(f"Fetching apps.json failed with HTTP {status}")
+            raw = response.read(4 * 1024 * 1024)
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError) as error:
+        raise StoreError(f"Cannot fetch apps.json: {error}") from error
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise StoreError(f"apps.json is not valid JSON: {error}") from error
+
+
+def load_apps_catalog(
+    *,
+    local_apps_json: Path | None = None,
+    remote_url: str | None = None,
+    cache_path: Path | None = None,
+    force_refresh: bool = False,
+) -> dict[str, Any]:
+    """Load apps.json: local file first, then GitHub, then last successful cache."""
+    candidates: list[Path] = []
+    if local_apps_json and local_apps_json.is_file():
+        candidates.append(local_apps_json)
+    if cache_path and cache_path.is_file():
+        candidates.append(cache_path)
+
+    if not force_refresh:
+        for path in candidates:
+            try:
+                document = validate_apps_catalog(json.loads(path.read_text(encoding="utf-8")))
+                document["_source"] = str(path)
+                return document
+            except (OSError, json.JSONDecodeError, StoreError):
+                continue
+
+    url = remote_url or _raw_url("apps.json")
+    document = validate_apps_catalog(fetch_url_json(url))
+    document["_source"] = url
+    if cache_path:
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(
+                json.dumps({k: v for k, v in document.items() if not k.startswith("_")}, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+    return document
+
+
+def fetch_store_latest_version(api_url: str | None = None) -> dict[str, Any]:
+    """Query GitHub Releases for the latest store version."""
+    url = api_url or GITHUB_API_LATEST
+    _validate_download_url(url, field="store-update", package_id="store")
+    # api.github.com needs to be allowed
+    parsed = urllib.parse.urlsplit(url)
+    hostname = (parsed.hostname or "").lower()
+    if hostname != "api.github.com":
+        raise StoreError(f"Disallowed store-update host: {hostname}")
+    _assert_public_ip(hostname)
+    request = urllib.request.Request(
+        url,
+        headers={"User-Agent": "xiaomi-community-store/0.2", "Accept": "application/vnd.github+json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            payload = json.loads(response.read(512 * 1024).decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, json.JSONDecodeError) as error:
+        raise StoreError(f"Cannot check store updates: {error}") from error
+    tag = str(payload.get("tag_name") or "").lstrip("vV")
+    html_url = str(payload.get("html_url") or "")
+    return {"version": tag, "url": html_url, "name": payload.get("name") or tag}
+
+
+def version_tuple(version: str) -> tuple[int, ...]:
+    core = re.split(r"[-+]", version, maxsplit=1)[0]
+    parts: list[int] = []
+    for piece in core.split("."):
+        try:
+            parts.append(int(piece))
+        except ValueError:
+            parts.append(0)
+    while len(parts) < 3:
+        parts.append(0)
+    return tuple(parts[:3])
+
+
+def is_newer_version(candidate: str, current: str) -> bool:
+    return version_tuple(candidate) > version_tuple(current)
 
 
 def _copy_path(source: Path, target: Path) -> None:
@@ -193,18 +467,24 @@ class InstallManager:
     def __init__(
         self,
         catalog_dir: Path,
-        public_key: Path,
+        public_key: Path | None,
         user_id: str,
         root: Path = Path("/"),
         execute_system: bool = True,
+        apps_json: Path | None = None,
+        apps_root: Path | None = None,
+        remote_apps: bool = True,
     ) -> None:
         if not re.fullmatch(r"[A-Za-z0-9_-]+", user_id):
             raise StoreError("Invalid Xiaomi user id")
-        self.catalog_dir = catalog_dir.resolve()
-        self.public_key = public_key.resolve()
+        self.catalog_dir = catalog_dir.resolve() if catalog_dir else None
+        self.public_key = public_key.resolve() if public_key else None
         self.user_id = user_id
         self.root = root.resolve()
         self.execute_system = execute_system
+        self.apps_json = apps_json.resolve() if apps_json else None
+        self.apps_root = apps_root.resolve() if apps_root else None
+        self.remote_apps = remote_apps
         self.state_dir = self._host("/data/plugin/community-store/state")
         self.state_dir.mkdir(parents=True, exist_ok=True)
 
@@ -213,22 +493,107 @@ class InstallManager:
             raise StoreError(f"Expected absolute target path: {absolute}")
         return self.root / absolute.lstrip("/")
 
+    def _apps_cache_path(self) -> Path:
+        return self.state_dir / "apps.json"
+
+    def _load_catalog(self) -> dict[str, Any]:
+        """Prefer apps.json (v2); fall back to signed catalog.json (v1)."""
+        apps_file = self.apps_json
+        if apps_file is None and self.catalog_dir:
+            sibling = self.catalog_dir.parent / "apps.json"
+            if sibling.is_file():
+                apps_file = sibling
+        if apps_file is not None or self.remote_apps:
+            try:
+                return load_apps_catalog(
+                    local_apps_json=apps_file,
+                    cache_path=self._apps_cache_path(),
+                )
+            except StoreError:
+                if self.catalog_dir and self.public_key:
+                    return load_verified_catalog(self.catalog_dir, self.public_key)
+                raise
+        if self.catalog_dir and self.public_key:
+            return load_verified_catalog(self.catalog_dir, self.public_key)
+        raise StoreError("No catalog source configured")
+
     def _package_entry(self, package_id: str) -> dict[str, Any]:
-        catalog = load_verified_catalog(self.catalog_dir, self.public_key)
-        for package in catalog["packages"]:
-            if package["id"] == package_id:
+        catalog = self._load_catalog()
+        packages = catalog.get("apps") or catalog.get("packages") or []
+        for package in packages:
+            if package.get("id") == package_id:
                 return package
         raise StoreError(f"Package not found: {package_id}")
 
+    def _apps_local_file(self, relative: str) -> Path | None:
+        """Try apps/ directory next to apps.json, then repo-root apps/."""
+        candidates: list[Path] = []
+        if self.apps_root:
+            candidates.append(self.apps_root / relative)
+        if self.apps_json:
+            candidates.append(self.apps_json.parent / relative)
+        if self.catalog_dir:
+            candidates.append(self.catalog_dir.parent / relative)
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+                if resolved.is_file():
+                    return resolved
+            except OSError:
+                continue
+        return None
+
     def _catalog_file(self, relative: str) -> Path:
-        candidate = (self.catalog_dir / relative).resolve()
-        try:
-            candidate.relative_to(self.catalog_dir)
-        except ValueError as error:
-            raise StoreError("Catalog path escaped its repository") from error
-        if not candidate.is_file():
-            raise StoreError(f"Catalog artifact is missing: {relative}")
-        return candidate
+        # Prefer apps/ layout
+        local = self._apps_local_file(relative)
+        if local is not None:
+            return local
+        if self.catalog_dir:
+            candidate = (self.catalog_dir / relative).resolve()
+            try:
+                candidate.relative_to(self.catalog_dir)
+            except ValueError as error:
+                raise StoreError("Catalog path escaped its repository") from error
+            if candidate.is_file():
+                return candidate
+        raise StoreError(f"Catalog artifact is missing: {relative}")
+
+    def _download_dir(self) -> Path:
+        directory = self.state_dir / "downloads"
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory
+
+    def _resolve_artifact(self, reference: str, *, expected_sha256: str | None = None) -> Path:
+        """Local file first; fall back to cached GitHub download."""
+        if not _is_remote_reference(reference):
+            try:
+                return self._catalog_file(reference)
+            except StoreError:
+                if not self.remote_apps:
+                    raise
+                # Fall through to remote download via raw.githubusercontent.com
+                reference = _raw_url(reference)
+
+        _validate_download_url(reference, field="artifact", package_id=reference)
+        cache_key = hashlib.sha256(reference.encode("utf-8")).hexdigest()[:24]
+        cached = self._download_dir() / cache_key
+        marker = cached.with_suffix(cached.suffix + ".ok")
+
+        if cached.is_file() and marker.is_file():
+            try:
+                recorded = marker.read_text(encoding="utf-8").strip()
+                if (expected_sha256 is None or recorded == expected_sha256) and (
+                    expected_sha256 is None or sha256_file(cached) == expected_sha256
+                ):
+                    return cached
+            except OSError:
+                pass
+            cached.unlink(missing_ok=True)
+            marker.unlink(missing_ok=True)
+
+        _download_to_file(reference, cached, expected_sha256=expected_sha256)
+        marker.write_text(expected_sha256 or sha256_file(cached), encoding="utf-8")
+        return cached
 
     def _registry_path(self) -> Path:
         return self._host(f"/data/plugin/{self.user_id}.list")
@@ -349,11 +714,14 @@ class InstallManager:
 
     def install(self, package_id: str) -> dict[str, Any]:
         package = self._package_entry(package_id)
-        bundle = self._catalog_file(package["bundle"])
-        signature = self._catalog_file(package["signature"])
+        bundle = self._resolve_artifact(package["bundle"], expected_sha256=package["sha256"])
         if sha256_file(bundle) != package["sha256"]:
             raise StoreError("Bundle checksum mismatch")
-        verify_detached_signature(bundle, signature, self.public_key)
+        # Optional ECDSA signature (legacy catalog.json mode)
+        signature_ref = package.get("signature")
+        if signature_ref and self.public_key:
+            signature = self._resolve_artifact(signature_ref)
+            verify_detached_signature(bundle, signature, self.public_key)
 
         operation = f"{int(time.time())}-{os.getpid()}"
         staging_root = self._host(f"/data/plugin/community-store/staging/{operation}")

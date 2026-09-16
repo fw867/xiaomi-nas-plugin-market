@@ -1,0 +1,157 @@
+# 打包应用商店本体并发布到 GitHub Releases。
+# 触发方式：
+#   1. 手动 workflow_dispatch
+#   2. 提交信息包含 "Releases" 或 "[release]" 时自动触发
+# 版本号自动在 build_release.py 的 VERSION 上累加 patch。
+name: Release Store
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "版本递增类型"
+        required: false
+        default: patch
+        type: choice
+        options: [patch, minor, major]
+  push:
+    branches: [main]
+    paths:
+      - "projects/xiaomi-community-app-store/**"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-store-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.decide.outputs.should_release }}
+      reason: ${{ steps.decide.outputs.reason }}
+    steps:
+      - name: Decide whether to release
+        id: decide
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "reason=manual dispatch" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # push 触发：检查最近一条提交信息
+          MSG="${{ github.event.head_commit.message }}"
+          echo "Commit message: $MSG"
+          if echo "$MSG" | grep -qiE '(^|\W)(releases?|\[release\])($|\W)'; then
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+            echo "reason=commit message contains Releases" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+            echo "reason=no release keyword in commit message" >> "$GITHUB_OUTPUT"
+          fi
+
+  release:
+    needs: check
+    if: needs.check.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Read current version
+        id: version
+        run: |
+          SCRIPT="projects/xiaomi-community-app-store/scripts/build_release.py"
+          CURRENT=$(grep -oP 'VERSION\s*=\s*"\K[^"]+' "$SCRIPT")
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "Current VERSION: $CURRENT"
+
+      - name: Bump version
+        id: bump
+        env:
+          BUMP: ${{ inputs.bump || 'patch' }}
+        run: |
+          SCRIPT="projects/xiaomi-community-app-store/scripts/build_release.py"
+          CURRENT="${{ steps.version.outputs.current }}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          PATCH="${PATCH%%-*}"  # strip any -rc suffix
+          case "$BUMP" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            *)     PATCH=$((PATCH + 1)) ;;
+          esac
+          NEW="${MAJOR}.${MINOR}.${PATCH}"
+          sed -i "s/VERSION = \"${CURRENT}\"/VERSION = \"${NEW}\"/" "$SCRIPT"
+          echo "new=$NEW" >> "$GITHUB_OUTPUT"
+          echo "Bumped version: $CURRENT → $NEW"
+
+      - name: Build store package
+        working-directory: projects/xiaomi-community-app-store
+        run: python3 scripts/build_release.py
+
+      - name: Verify package exists
+        run: |
+          VERSION="${{ steps.bump.outputs.new }}"
+          FILE="projects/xiaomi-community-app-store/dist/xiaomi-plugin-market-${VERSION}.zip"
+          if [ ! -f "$FILE" ]; then
+            echo "ERROR: expected $FILE"
+            ls -la projects/xiaomi-community-app-store/dist/ || true
+            exit 1
+          fi
+          echo "file=$FILE" >> "$GITHUB_OUTPUT"
+          cat "projects/xiaomi-community-app-store/dist/SHA256SUMS.txt"
+        id: verify
+
+      - name: Commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add projects/xiaomi-community-app-store/scripts/build_release.py
+          if git diff --cached --quiet; then
+            echo "Version unchanged"
+          else
+            git commit -m "chore: bump store version to ${{ steps.bump.outputs.new }} [skip ci]"
+            git push
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.bump.outputs.new }}
+          name: 商店 v${{ steps.bump.outputs.new }}
+          body: |
+            小米智能存储应用商店 v${{ steps.bump.outputs.new }}
+
+            ## 安装
+            1. 下载 `xiaomi-plugin-market-${{ steps.bump.outputs.new }}.zip` 和 `SHA256SUMS.txt`
+            2. 核对 SHA-256 后完整解压
+            3. Windows 双击 `install-windows.cmd`；Mac/Linux 运行 `bash install.sh`
+            4. 重新打开小米智能存储客户端，在「全部应用」中打开「应用商店」
+
+            SHA-256 见附件 `SHA256SUMS.txt`。
+          files: |
+            projects/xiaomi-community-app-store/dist/xiaomi-plugin-market-${{ steps.bump.outputs.new }}.zip
+            projects/xiaomi-community-app-store/dist/SHA256SUMS.txt
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: store-${{ steps.bump.outputs.new }}
+          path: |
+            projects/xiaomi-community-app-store/dist/xiaomi-plugin-market-${{ steps.bump.outputs.new }}.zip
+            projects/xiaomi-community-app-store/dist/SHA256SUMS.txt
+          retention-days: 30

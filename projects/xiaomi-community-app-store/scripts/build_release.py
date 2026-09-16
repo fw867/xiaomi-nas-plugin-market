@@ -11,7 +11,7 @@ from pathlib import Path
 
 
 PROJECT = Path(__file__).resolve().parents[1]
-VERSION = "0.1.2"
+VERSION = "0.2.0"
 DIST = PROJECT / "dist"
 PACKAGE_NAME = f"xiaomi-plugin-market-{VERSION}"
 INCLUDE = [
@@ -29,6 +29,9 @@ INCLUDE = [
     "schemas",
     "docs",
 ]
+# Repo-root files included when present
+REPO_ROOT = PROJECT.parents[1]
+OPTIONAL_ROOT_FILES = ["apps.json", "install-from-github.sh", "install-from-github.ps1"]
 
 
 def main() -> int:
@@ -44,6 +47,10 @@ def main() -> int:
                 shutil.copytree(source, destination, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
             else:
                 shutil.copy2(source, destination)
+        for relative in OPTIONAL_ROOT_FILES:
+            source = REPO_ROOT / relative
+            if source.is_file():
+                shutil.copy2(source, root / relative)
         with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
             for path in sorted(item for item in root.rglob("*") if item.is_file()):
                 relative = path.relative_to(root.parent).as_posix()
