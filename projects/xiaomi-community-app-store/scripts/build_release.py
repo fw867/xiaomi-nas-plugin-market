@@ -52,6 +52,8 @@ def main() -> int:
             source = REPO_ROOT / relative
             if source.is_file():
                 shutil.copy2(source, root / relative)
+        # 写入 VERSION 文件，server.py 启动时读取
+        (root / "VERSION").write_text(VERSION + "\n", encoding="ascii")
         with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
             for path in sorted(item for item in root.rglob("*") if item.is_file()):
                 relative = path.relative_to(root.parent).as_posix()

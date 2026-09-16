@@ -36,7 +36,13 @@ WEB = PROJECT / "web"
 
 
 def _read_store_version() -> str:
-    """从 build_release.py 读取版本号（单一来源）。"""
+    """从 VERSION 文件读取版本号（构建时写入）。"""
+    version_file = PROJECT / "VERSION"
+    if version_file.is_file():
+        text = version_file.read_text(encoding="ascii").strip()
+        if text:
+            return text
+    # 开发环境回退：从 build_release.py 读取
     script = PROJECT / "scripts" / "build_release.py"
     if script.is_file():
         for line in script.read_text(encoding="utf-8").splitlines():
