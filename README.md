@@ -24,53 +24,37 @@ NAS 上的商店运行时
 
 ## 安装商店
 
-### 方式一：一键脚本（推荐）
+### 方式一：NAS 本机一键安装（推荐）
 
-**Mac / Linux：**
+SSH 登录 NAS 后直接执行：
 
 ```bash
-# 自动下载最新 Release、校验、安装
+ssh root@<NAS_IP>
+
+# 一行安装（自动下载最新 Release、校验、安装）
 bash -c "$(curl -fsSL https://raw.githubusercontent.com/fw867/xiaomi-nas-plugin-market/main/install-from-github.sh)"
 
-# 或指定参数
-NAS_IP=192.168.31.100 bash install-from-github.sh
+# 多账号时指定用户
+NAS_USER_ID=u123456 bash -c "$(curl -fsSL https://raw.githubusercontent.com/fw867/xiaomi-nas-plugin-market/main/install-from-github.sh)"
 ```
-
-**Windows PowerShell：**
-
-```powershell
-# 从仓库获取脚本后运行
-.\install-from-github.ps1
-
-# 或指定参数
-.\install-from-github.ps1 -NasIp 192.168.31.100
-```
-
-脚本会自动：查询最新 Release → 下载 ZIP → SHA-256 校验 → 检测小米账号 → 安装到 NAS。
 
 ### 方式二：手动下载安装
 
 1. 在 [Releases](https://github.com/fw867/xiaomi-nas-plugin-market/releases) 下载最新 `xiaomi-plugin-market-x.y.z.zip` 和 `SHA256SUMS.txt`。
-2. 核对 SHA-256 后完整解压。
-3. Windows 双击 `install-windows.cmd`；Mac 运行 `install-macos.command`；Mac/Linux 也可执行 `bash install.sh`。
-4. 按提示填写 NAS IP、SSH 私钥和小米账号。
+2. 传到 NAS 并解压：
+   ```bash
+   scp xiaomi-plugin-market-x.y.z.zip root@<NAS_IP>:/tmp/
+   ssh root@<NAS_IP>
+   cd /tmp && unzip xiaomi-plugin-market-x.y.z.zip && cd xiaomi-plugin-market-x.y.z
+   ```
+3. 执行安装：
+   ```bash
+   bash deploy/install-local.sh
+   ```
 
-### 方式三：NAS 本机安装
+### 方式三：从电脑安装（需 SSH 密钥）
 
-已 SSH 登录 NAS 时，无需 `NAS_IP` / `NAS_SSH_KEY`：
-
-```bash
-# 1. 把安装包传到 NAS 并解压
-scp xiaomi-plugin-market-x.y.z.zip root@<NAS_IP>:/tmp/
-ssh root@<NAS_IP>
-cd /tmp && unzip xiaomi-plugin-market-x.y.z.zip && cd xiaomi-plugin-market-x.y.z
-
-# 2. 直接安装
-bash deploy/install-local.sh
-
-# 多账号时指定用户
-NAS_USER_ID=u123456 bash deploy/install-local.sh
-```
+下载 Release ZIP 解压后，Windows 双击 `install-windows.cmd`；Mac 运行 `install-macos.command`；Mac/Linux 执行 `bash install.sh`。按提示填写 NAS IP、SSH 私钥和小米账号。
 
 安装完成后，**完全退出并重新打开**小米智能存储客户端，在「全部应用」中打开 **应用商店**。
 
