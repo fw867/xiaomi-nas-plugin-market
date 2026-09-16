@@ -1,0 +1,108 @@
+{
+  "schemaVersion": 2,
+  "name": "小米智能存储应用商店",
+  "generatedAt": 1789578766,
+  "repository": "fw867/xiaomi-nas-plugin-market",
+  "branch": "main",
+  "store": {
+    "version": "0.2.1",
+    "releasesUrl": "https://github.com/fw867/xiaomi-nas-plugin-market/releases",
+    "latestReleaseApi": "https://api.github.com/repos/fw867/xiaomi-nas-plugin-market/releases/latest"
+  },
+  "apps": [
+    {
+      "id": "devicemanager",
+      "name": "设备管家",
+      "version": "0.4.1",
+      "summary": "2 秒实时监控系统、网络、磁盘健康与 Docker 容器资源",
+      "description": "只读查看 CPU、内存、温度、网络、磁盘 SMART 与 Docker 容器资源占用，页面可见时每 2 秒刷新。",
+      "bundle": "apps/devicemanager-0.4.1.zip",
+      "sha256": "6bf2687ffcb0e807c5d5e6d51a6d6033f314b1927a95b6c4e2066b66a7d585da",
+      "size": 2819635,
+      "icon": "apps/icons/devicemanager.png",
+      "channel": "stable",
+      "tags": [
+        "tool",
+        "monitoring"
+      ],
+      "author": "Kingwell",
+      "pluginId": 11001,
+      "port": 18080
+    },
+    {
+      "id": "115sync",
+      "name": "115 云备份",
+      "version": "0.1.0",
+      "summary": "使用 115 官方 OpenAPI 同步与备份 NAS 文件",
+      "description": "需要自己获批的 115 App ID，扫码授权后同步与备份 NAS 文件。",
+      "bundle": "apps/115sync-0.1.0.zip",
+      "sha256": "e8571a51479e51ed735cfadd1074a1cf432591829df45a799c856b2d7ce1ce43",
+      "size": 61511,
+      "icon": "apps/icons/115sync.png",
+      "channel": "stable",
+      "tags": [
+        "cloud",
+        "backup"
+      ],
+      "author": "community",
+      "pluginId": 1000,
+      "port": 18115
+    },
+    {
+      "id": "aliyundrivesync",
+      "name": "阿里云盘备份",
+      "version": "0.1.0",
+      "summary": "扫码连接阿里云盘并同步 NAS 文件",
+      "description": "需要自己获批的阿里云盘应用，扫码授权后同步 NAS 文件。",
+      "bundle": "apps/aliyundrivesync-0.1.0.zip",
+      "sha256": "d7065518a84ef0bc9333a0ec67a769348efa91bc2dce8b58df128ab79be01e9b",
+      "size": 253969,
+      "icon": "apps/icons/aliyundrivesync.png",
+      "channel": "stable",
+      "tags": [
+        "cloud",
+        "backup"
+      ],
+      "author": "community",
+      "pluginId": 1002,
+      "port": 18117
+    },
+    {
+      "id": "webdav",
+      "name": "WebDAV 文件桥",
+      "version": "0.2.0-rc5",
+      "summary": "NAS HTTPS 文件共享，以及远程 WebDAV 上传、下载与定时备份",
+      "description": "多账号、多目录授权、远程单向备份、目录新建与原位改名。测试版。",
+      "bundle": "apps/webdav-0.2.0-rc5.zip",
+      "sha256": "b5b8c46aeda57bac2327b391c1c855edf648a8e31ea0b5e66fc08112b6cd5d29",
+      "size": 28779356,
+      "icon": "apps/icons/webdav.png",
+      "channel": "candidate",
+      "tags": [
+        "files",
+        "backup"
+      ],
+      "author": "community",
+      "pluginId": 11003,
+      "port": 18120
+    },
+    {
+      "id": "qbittorrent",
+      "name": "qB 下载",
+      "version": "0.1.0-rc1",
+      "summary": "磁力与种子下载、暂停继续和限速；首次启动需拉取独立 Docker 镜像",
+      "description": "磁力/种子下载、进度、暂停继续、限速。开发候选版，需要 Docker。",
+      "bundle": "apps/qbittorrent-0.1.0-rc1.zip",
+      "sha256": "884b103d4430de3e0ffea8d8aef1c2e781affbd9c440d5dd33b97cc586d0ca07",
+      "size": 320150,
+      "icon": "apps/icons/qbittorrent.png",
+      "channel": "candidate",
+      "tags": [
+        "download"
+      ],
+      "author": "community",
+      "pluginId": 11004,
+      "port": 18122
+    }
+  ]
+}
