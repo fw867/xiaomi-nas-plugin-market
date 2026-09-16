@@ -19,8 +19,10 @@ function packageCard(item, installedView = false) {
 
   const icon = document.createElement('img');
   icon.className = 'package-icon';
-  icon.src = `catalog/${item.icon}`;
+  icon.src = item.iconUrl || '';
   icon.alt = '';
+  icon.loading = 'lazy';
+  icon.onerror = () => { icon.style.visibility = 'hidden'; };
 
   const copy = document.createElement('div');
   copy.className = 'package-copy';

@@ -25,7 +25,6 @@ from storelib import (
     fetch_store_latest_version,
     is_newer_version,
     load_apps_catalog,
-    load_verified_catalog,
     RAW_BASE,
     GITHUB_API_LATEST,
 )
@@ -33,17 +32,13 @@ from storelib import (
 
 PROJECT = Path(__file__).resolve().parent
 WEB = PROJECT / "web"
-CATALOG = PROJECT / "catalog"
-PUBLIC_KEY = CATALOG / "repository-public.pem"
-# Repo-root apps.json / apps/ (when store runs from a full git checkout)
-REPO_ROOT = PROJECT.parents[1]
-APPS_JSON = REPO_ROOT / "apps.json"
-APPS_ROOT = REPO_ROOT
 STORE_VERSION = "0.2.0"
 COOKIE_NAME = "xiaomi_community_store_session"
 SESSION_TTL = 30 * 24 * 60 * 60
 BASE_PATH = os.environ.get("BASE_PATH", "/")
 ACTION_LOCK = threading.Lock()
+# apps.json 本地缓存（减少 GitHub API 请求）
+CATALOG_CACHE = Path(os.environ.get("CATALOG_CACHE", "/data/plugin/community-store/state/apps-cache.json"))
 
 
 def json_bytes(value: object) -> bytes:
@@ -185,19 +180,8 @@ class StoreHandler(BaseHTTPRequestHandler):
                 return
             self._handle_catalog()
             return
-        if path.startswith("/apps/icons/"):
-            # Serve app icons from local apps/ directory
-            file_path = self._safe_file(APPS_ROOT / "apps", path.removeprefix("/apps/"))
-            if file_path is None and self.app.manager:
-                file_path = self._safe_file(CATALOG / "icons", Path(path).name)
-        elif path.startswith("/catalog/icons/"):
-            file_path = self._safe_file(CATALOG, path.removeprefix("/catalog/"))
-        elif path.startswith("/catalog/"):
-            if not self._require_session():
-                return
-            file_path = self._safe_file(CATALOG, path.removeprefix("/catalog/"))
-        else:
-            file_path = self._safe_file(WEB, path)
+        # 静态资源（web/ 目录下的 JS/CSS/HTML）
+        file_path = self._safe_file(WEB, path)
         if file_path:
             self._serve_file(file_path)
         else:
@@ -221,33 +205,27 @@ class StoreHandler(BaseHTTPRequestHandler):
                 "error": str(error),
             })
 
-    def _load_store_catalog(self) -> dict:
-        """Load apps.json (v2) with fallback to signed catalog.json (v1)."""
+    def _handle_catalog(self) -> None:
+        """从 GitHub 拉取 apps.json（带本地缓存），图标转为 raw URL。"""
         try:
-            catalog = load_apps_catalog(local_apps_json=APPS_JSON if APPS_JSON.is_file() else None)
+            catalog = load_apps_catalog(cache_path=CATALOG_CACHE)
             packages = catalog.get("apps", [])
             for package in packages:
-                icon = package.get("icon", "")
-                if icon and not str(icon).startswith("http"):
-                    package["iconUrl"] = f"/apps/{Path(icon).name}" if str(icon).startswith("apps/") else f"/catalog/{icon}"
+                icon = str(package.get("icon", ""))
+                if icon and not icon.startswith("http"):
+                    package["iconUrl"] = f"{RAW_BASE}/{icon.lstrip('/')}"
                 elif icon:
                     package["iconUrl"] = icon
-            return {"schemaVersion": 2, "packages": packages, "store": catalog.get("store", {})}
-        except StoreError:
-            if not (CATALOG / "catalog.json").is_file():
-                raise
-            catalog = load_verified_catalog(CATALOG, PUBLIC_KEY)
-            return catalog
-
-    def _handle_catalog(self) -> None:
-        try:
-            catalog = self._load_store_catalog()
-            installed = self.app.manager.inventory() if self.app.manager else {}
-            for package in catalog.get("packages", []):
-                inventory = installed.get(package["id"], {})
+                else:
+                    package["iconUrl"] = ""
+                inventory = (self.app.manager.inventory() if self.app.manager else {}).get(package["id"], {})
                 package["installedVersion"] = inventory.get("version")
                 package["managed"] = bool(inventory.get("managed"))
-            self._json(HTTPStatus.OK, {"ok": True, "catalog": catalog, "preview": self.app.dev})
+            self._json(HTTPStatus.OK, {
+                "ok": True,
+                "catalog": {"schemaVersion": 2, "packages": packages, "store": catalog.get("store", {})},
+                "preview": self.app.dev,
+            })
         except StoreError as error:
             self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(error)})
 
@@ -313,11 +291,9 @@ def main() -> int:
         if not args.user_id:
             raise SystemExit("NAS_USER_ID is required outside preview mode")
         manager = InstallManager(
-            CATALOG,
-            PUBLIC_KEY if PUBLIC_KEY.is_file() else None,
-            args.user_id,
-            apps_json=APPS_JSON if APPS_JSON.is_file() else None,
-            apps_root=APPS_ROOT if (APPS_ROOT / "apps").is_dir() else None,
+            catalog_dir=None,
+            public_key=None,
+            user_id=args.user_id,
             remote_apps=True,
         )
         try:

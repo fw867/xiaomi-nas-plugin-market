@@ -493,29 +493,10 @@ class InstallManager:
             raise StoreError(f"Expected absolute target path: {absolute}")
         return self.root / absolute.lstrip("/")
 
-    def _apps_cache_path(self) -> Path:
-        return self.state_dir / "apps.json"
-
     def _load_catalog(self) -> dict[str, Any]:
-        """Prefer apps.json (v2); fall back to signed catalog.json (v1)."""
-        apps_file = self.apps_json
-        if apps_file is None and self.catalog_dir:
-            sibling = self.catalog_dir.parent / "apps.json"
-            if sibling.is_file():
-                apps_file = sibling
-        if apps_file is not None or self.remote_apps:
-            try:
-                return load_apps_catalog(
-                    local_apps_json=apps_file,
-                    cache_path=self._apps_cache_path(),
-                )
-            except StoreError:
-                if self.catalog_dir and self.public_key:
-                    return load_verified_catalog(self.catalog_dir, self.public_key)
-                raise
-        if self.catalog_dir and self.public_key:
-            return load_verified_catalog(self.catalog_dir, self.public_key)
-        raise StoreError("No catalog source configured")
+        """从 GitHub 拉取 apps.json（带本地缓存）。"""
+        cache = self.state_dir / "apps-cache.json"
+        return load_apps_catalog(cache_path=cache)
 
     def _package_entry(self, package_id: str) -> dict[str, Any]:
         catalog = self._load_catalog()
