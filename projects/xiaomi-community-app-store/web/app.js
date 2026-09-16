@@ -86,6 +86,73 @@ async function loadCatalog() {
   }
 }
 
+// ---------- 版本与更新 ----------
+async function loadStoreStatus() {
+  const localEl = document.getElementById('localVersion');
+  const remoteEl = document.getElementById('remoteVersion');
+  const statusEl = document.getElementById('updateStatus');
+  const noteEl = document.getElementById('updateNote');
+  const checkBtn = document.getElementById('checkUpdateButton');
+  const releaseLink = document.getElementById('releaseLink');
+
+  try {
+    const res = await fetch('api/status', {
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { 'X-Community-Session': sessionToken },
+    });
+    const data = await res.json();
+    if (data.ok) localEl.textContent = `v${data.version}`;
+    else localEl.textContent = '未知';
+  } catch { localEl.textContent = '未知'; }
+
+  checkBtn.disabled = true;
+  checkBtn.textContent = '检测中…';
+  remoteEl.textContent = '检测中…';
+  statusEl.textContent = '—';
+  noteEl.textContent = '';
+  releaseLink.hidden = true;
+
+  try {
+    const res = await fetch('api/update-check', {
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { 'X-Community-Session': sessionToken },
+    });
+    const data = await res.json();
+    checkBtn.disabled = false;
+    checkBtn.textContent = '检查更新';
+
+    if (!data.ok) {
+      remoteEl.textContent = '检测失败';
+      statusEl.textContent = '—';
+      noteEl.textContent = data.error || '无法连接 GitHub';
+      return;
+    }
+
+    remoteEl.textContent = `v${data.latest}`;
+    if (data.hasUpdate) {
+      statusEl.innerHTML = '<span class="update-badge">有新版本</span>';
+      noteEl.textContent = `商店 v${data.current} → v${data.latest}。请在 NAS 上重新运行一键安装脚本更新。`;
+      if (data.url) {
+        releaseLink.href = data.url;
+        releaseLink.hidden = false;
+      }
+    } else {
+      statusEl.textContent = '已是最新';
+      noteEl.textContent = '';
+    }
+  } catch {
+    checkBtn.disabled = false;
+    checkBtn.textContent = '检查更新';
+    remoteEl.textContent = '检测失败';
+    statusEl.textContent = '—';
+    noteEl.textContent = '网络错误，无法检测更新';
+  }
+}
+
+document.getElementById('checkUpdateButton').addEventListener('click', loadStoreStatus);
+
 async function mutate(action, item, button) {
   if (preview) {
     showToast('本地预览不会修改 NAS');
@@ -121,6 +188,7 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.querySelectorAll('.tab').forEach(item => item.classList.toggle('active', item === tab));
     document.querySelectorAll('.view').forEach(view => view.classList.remove('active'));
     document.getElementById(`${tab.dataset.view}View`).classList.add('active');
+    if (tab.dataset.view === 'about') loadStoreStatus();
   });
 });
 document.getElementById('refreshButton').addEventListener('click', loadCatalog);

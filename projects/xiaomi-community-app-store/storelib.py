@@ -402,9 +402,9 @@ def load_apps_catalog(
 def fetch_store_latest_version(api_url: str | None = None) -> dict[str, Any]:
     """Query GitHub Releases for the latest store version."""
     url = api_url or GITHUB_API_LATEST
-    _validate_download_url(url, field="store-update", package_id="store")
-    # api.github.com needs to be allowed
     parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise StoreError("store-update URL must be http/https")
     hostname = (parsed.hostname or "").lower()
     if hostname != "api.github.com":
         raise StoreError(f"Disallowed store-update host: {hostname}")

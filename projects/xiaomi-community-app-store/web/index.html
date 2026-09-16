@@ -6,7 +6,7 @@
     <meta name="csrf-token" content="__CSRF_TOKEN__" />
     <meta name="session-token" content="__SESSION_TOKEN__" />
     <title>插件市场</title>
-    <link rel="stylesheet" href="styles.css?v=0.1.2" />
+    <link rel="stylesheet" href="styles.css?v=0.2.0" />
   </head>
   <body>
     <header class="topbar">
@@ -35,6 +35,7 @@
         <button class="tab active" data-view="featured">精选</button>
         <button class="tab" data-view="installed">已安装</button>
         <button class="tab" data-view="sources">来源</button>
+        <button class="tab" data-view="about">关于</button>
       </nav>
 
       <section id="featuredView" class="view active">
@@ -56,9 +57,41 @@
         <button class="add-source" disabled><span aria-hidden="true">＋</span>添加签名源</button>
         <p class="source-note">自定义源会在公钥指纹确认流程完成后开放。</p>
       </section>
+
+      <section id="aboutView" class="view">
+        <div class="about-card">
+          <div class="about-row">
+            <span class="about-label">当前版本</span>
+            <span class="about-value" id="localVersion">读取中…</span>
+          </div>
+          <div class="about-row">
+            <span class="about-label">最新版本</span>
+            <span class="about-value" id="remoteVersion">检测中…</span>
+          </div>
+          <div class="about-row">
+            <span class="about-label">更新状态</span>
+            <span class="about-value" id="updateStatus">—</span>
+          </div>
+          <div class="about-actions">
+            <button class="action-button" id="checkUpdateButton">检查更新</button>
+            <a class="action-button" id="releaseLink" href="#" target="_blank" rel="noopener" hidden>前往下载</a>
+          </div>
+          <p class="about-note" id="updateNote"></p>
+        </div>
+        <div class="about-card">
+          <div class="about-row">
+            <span class="about-label">仓库</span>
+            <span class="about-value"><a id="repoLink" href="https://github.com/fw867/xiaomi-nas-plugin-market" target="_blank" rel="noopener">fw867/xiaomi-nas-plugin-market</a></span>
+          </div>
+          <div class="about-row">
+            <span class="about-label">声明</span>
+            <span class="about-value">非小米官方产品</span>
+          </div>
+        </div>
+      </section>
     </main>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="app.js?v=0.1.2" defer></script>
+    <script src="app.js?v=0.2.0" defer></script>
   </body>
 </html>
