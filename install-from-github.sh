@@ -209,7 +209,11 @@ mkdir -p "${RELEASE_DIR}" "${STORE_ROOT}/state" "${STORE_ROOT}/staging" "${STORE
 
 info "复制应用文件 …"
 cp "${PROJECT_DIR}/server.py" "${PROJECT_DIR}/storelib.py" "${RELEASE_DIR}/"
-cp -a "${PROJECT_DIR}/web" "${PROJECT_DIR}/catalog" "${RELEASE_DIR}/"
+cp -a "${PROJECT_DIR}/web" "${RELEASE_DIR}/web"
+[[ -d "${PROJECT_DIR}/catalog" ]] && cp -a "${PROJECT_DIR}/catalog" "${RELEASE_DIR}/catalog"
+[[ -d "${PROJECT_DIR}/deploy" ]] && cp -a "${PROJECT_DIR}/deploy" "${RELEASE_DIR}/deploy"
+[[ -d "${PROJECT_DIR}/scripts" ]] && cp -a "${PROJECT_DIR}/scripts" "${RELEASE_DIR}/scripts"
+[[ -f "${PROJECT_DIR}/VERSION" ]] && cp "${PROJECT_DIR}/VERSION" "${RELEASE_DIR}/VERSION"
 cp "${PROJECT_DIR}/web/assets/community-store-v4.png" /data/plugin/www/icon/community-store-v4.icon
 
 info "校验 catalog 签名 …"

@@ -966,12 +966,19 @@ def self_update_store(
         shutil.copy2(project_dir / "storelib.py", release_dir / "storelib.py")
         if (project_dir / "web").is_dir():
             shutil.copytree(project_dir / "web", release_dir / "web")
-        # catalog 可选（新版可能没有）
         if (project_dir / "catalog").is_dir():
             shutil.copytree(project_dir / "catalog", release_dir / "catalog")
-        # deploy 可选
         if (project_dir / "deploy").is_dir():
             shutil.copytree(project_dir / "deploy", release_dir / "deploy")
+        if (project_dir / "scripts").is_dir():
+            shutil.copytree(project_dir / "scripts", release_dir / "scripts",
+                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        # VERSION 文件（server.py 启动时读取）
+        version_src = project_dir / "VERSION"
+        if version_src.is_file():
+            shutil.copy2(version_src, release_dir / "VERSION")
+        else:
+            (release_dir / "VERSION").write_text(target_version + "\n", encoding="ascii")
 
         # 更新 current 符号链接
         current_link = store_path / "current"
