@@ -1,20 +1,29 @@
 #!/bin/sh
-# 开机后自动拉起运行时新增的社区插件服务。
+# 开机后自动拉起运行时新增的社区插件服务，并可保持指定服务常驻。
 #
-# 背景：小米智能存储的根文件系统是只读 erofs，/etc 是 overlay，upperdir 位于
-# /data/etc/upper。systemd 在 overlay 挂载之前就已读取单元目录，因此安装时新增到
-# /etc/systemd/system/ 的 unit 虽然 enabled、符号链接也正确，开机时却不在
-# multi-user.target 的依赖集合里，不会被自动拉起。
-# 本脚本由 root crontab 每分钟触发：自动发现 overlay 中运行时新增且已启用的
-# 服务，在开机窗口内重新加载并启动；全部在跑时立即退出，几乎无开销。
+# 背景一（插件）：小米智能存储的根文件系统是只读 erofs，/etc 是 overlay，
+# upperdir 位于 /data/etc/upper。systemd 在 overlay 挂载之前就已读取单元目录，
+# 因此安装时新增到 /etc/systemd/system/ 的 unit 虽然 enabled、符号链接也正确，
+# 开机时却不在 multi-user.target 的依赖集合里，不会被自动拉起。
+#
+# 背景二（SSH）：/lib/minas/boot_check.sh 的 ssh_check() 每次开机都会检查
+#   sysmode=factory / channel=develop / RPMB 标志 ssh_en=true
+# 三者皆不满足时执行 `systemctl stop dropbear.socket` 关闭 SSH。
+# 若设备 RPMB 写入失效（mitee_tool rpmb set ssh_en true 报 "rpmb set verify failed"），
+# 该标志无法持久化，SSH 每次开机都会被关掉；本脚本可在其后重新拉起。
+#
+# 本脚本由 root crontab 每分钟触发；目标服务全部在跑时立即退出，几乎无开销。
 #
 # 可选配置：/data/plugin/community-plugins-boot.conf
 #   BOOT_WINDOW=600   仅在上电后该秒数内尝试启动（默认 600 秒）
-#   UNIT_DIR=...      覆盖 unit 扫描目录
+#   UNIT_DIR=...      覆盖扫描目录（默认 /data/etc/upper/systemd/system）
+#   EXTRA_UNITS="..." 额外需保持运行的服务，空格分隔，例如：
+#                      EXTRA_UNITS="dropbear.socket"
 
 LOG=/data/plugin/community-plugins-boot.log
 UNIT_DIR=/data/etc/upper/systemd/system
 BOOT_WINDOW=600
+EXTRA_UNITS=""
 
 [ -f /data/plugin/community-plugins-boot.conf ] && . /data/plugin/community-plugins-boot.conf
 
@@ -29,9 +38,11 @@ for unit in "$UNIT_DIR"/*.service; do
     [ -f "$unit" ] || continue
     services="$services ${unit##*/}"
 done
+services="$services $EXTRA_UNITS"
+services="$(printf '%s' "$services" | xargs 2>/dev/null)"
 [ -z "$services" ] && exit 0
 
-# 全部在跑 → 立即退出（常态路径）
+# 目标全部在跑 → 立即退出（常态路径）
 all_up=1
 for svc in $services; do
     systemctl is-active --quiet "$svc" || { all_up=0; break; }
