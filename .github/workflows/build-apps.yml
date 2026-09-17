@@ -9,6 +9,7 @@ on:
       - "projects/**"
       - "!projects/xiaomi-community-app-store/**"
       - "scripts/build_apps.py"
+      - ".github/workflows/build-apps.yml"
   workflow_dispatch:
     inputs:
       include_candidates:
@@ -91,7 +92,8 @@ jobs:
           XIAOMI_STORE_BRANCH: ${{ github.ref_name }}
         run: |
           ARGS=""
-          if [ "${{ inputs.include_candidates }}" = "true" ]; then
+          # push 触发时保留候选版：webdav / qB 是 rc 版本，但一直随仓库发布
+          if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.include_candidates }}" = "true" ]; then
             ARGS="$ARGS --include-candidates"
           fi
           if [ -n "${{ inputs.only }}" ]; then

@@ -362,31 +362,60 @@ def fetch_url_json(url: str, *, timeout: float = 20) -> dict[str, Any]:
         raise StoreError(f"apps.json is not valid JSON: {error}") from error
 
 
+CATALOG_CACHE_TTL = float(os.environ.get("CATALOG_CACHE_TTL", "60"))
+
+
+def _read_local_catalog(paths: list[Path]) -> dict[str, Any] | None:
+    for path in paths:
+        try:
+            document = validate_apps_catalog(json.loads(path.read_text(encoding="utf-8")))
+            document["_source"] = str(path)
+            return document
+        except (OSError, json.JSONDecodeError, StoreError):
+            continue
+    return None
+
+
 def load_apps_catalog(
     *,
     local_apps_json: Path | None = None,
     remote_url: str | None = None,
     cache_path: Path | None = None,
     force_refresh: bool = False,
+    ttl: float | None = None,
 ) -> dict[str, Any]:
-    """Load apps.json: local file first, then GitHub, then last successful cache."""
-    candidates: list[Path] = []
+    """加载 apps.json：优先远程（带短 TTL 缓存），失败时回退本地副本。
+
+    apps.json 是插件列表的唯一来源，必须能反映仓库的最新状态，
+    因此远程优先；缓存只用于降低请求频率和断网兜底。
+    """
+    fallback: list[Path] = []
     if local_apps_json and local_apps_json.is_file():
-        candidates.append(local_apps_json)
-    if cache_path and cache_path.is_file():
-        candidates.append(cache_path)
+        fallback.append(local_apps_json)
 
-    if not force_refresh:
-        for path in candidates:
-            try:
-                document = validate_apps_catalog(json.loads(path.read_text(encoding="utf-8")))
-                document["_source"] = str(path)
-                return document
-            except (OSError, json.JSONDecodeError, StoreError):
-                continue
-
+    ttl = CATALOG_CACHE_TTL if ttl is None else ttl
     url = remote_url or _raw_url("apps.json")
-    document = validate_apps_catalog(fetch_url_json(url))
+
+    if cache_path and cache_path.is_file():
+        try:
+            fresh = (time.time() - cache_path.stat().st_mtime) < ttl
+        except OSError:
+            fresh = False
+        if fresh and not force_refresh:
+            cached = _read_local_catalog([cache_path])
+            if cached is not None:
+                return cached
+        fallback.append(cache_path)
+
+    try:
+        document = validate_apps_catalog(fetch_url_json(url))
+    except StoreError:
+        offline = _read_local_catalog(fallback)
+        if offline is not None:
+            offline["_stale"] = True
+            return offline
+        raise
+
     document["_source"] = url
     if cache_path:
         try:

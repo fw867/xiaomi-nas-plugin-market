@@ -259,13 +259,43 @@ class StoreLibraryTests(unittest.TestCase):
         with self.assertRaises(StoreError):
             validate_apps_catalog(doc)
 
-    def test_load_apps_catalog_from_local_file(self) -> None:
+    def test_load_apps_catalog_prefers_remote(self) -> None:
+        """远程可达时必须用远程内容，不能被本地副本挡住。"""
+        remote = self._sample_apps_doc()
+        remote["apps"][0]["id"] = "remoteapp"
         with tempfile.TemporaryDirectory() as temporary:
-            apps_json = Path(temporary) / "apps.json"
-            apps_json.write_text(json.dumps(self._sample_apps_doc()), encoding="utf-8")
-            document = load_apps_catalog(local_apps_json=apps_json, remote_url=None)
+            local = Path(temporary) / "apps.json"
+            local.write_text(json.dumps(self._sample_apps_doc()), encoding="utf-8")
+            with mock.patch("storelib.fetch_url_json", return_value=remote):
+                document = load_apps_catalog(
+                    local_apps_json=local,
+                    remote_url="https://raw.githubusercontent.com/fw867/xiaomi-nas-plugin-market/main/apps.json",
+                )
+            self.assertEqual("remoteapp", document["apps"][0]["id"])
+            self.assertNotIn("_stale", document)
+
+    def test_load_apps_catalog_falls_back_when_offline(self) -> None:
+        """远程不可达时回退到本地副本，并标记为陈旧。"""
+        with tempfile.TemporaryDirectory() as temporary:
+            local = Path(temporary) / "apps.json"
+            local.write_text(json.dumps(self._sample_apps_doc()), encoding="utf-8")
+            with mock.patch("storelib.fetch_url_json", side_effect=StoreError("offline")):
+                document = load_apps_catalog(
+                    local_apps_json=local,
+                    remote_url="https://raw.githubusercontent.com/fw867/xiaomi-nas-plugin-market/main/apps.json",
+                )
             self.assertEqual("demo", document["apps"][0]["id"])
-            self.assertIn("apps.json", document["_source"])
+            self.assertTrue(document.get("_stale"))
+
+    def test_load_apps_catalog_uses_fresh_cache_within_ttl(self) -> None:
+        """TTL 内的缓存可以直接用，避免频繁请求。"""
+        with tempfile.TemporaryDirectory() as temporary:
+            cache = Path(temporary) / "apps-cache.json"
+            cache.write_text(json.dumps(self._sample_apps_doc()), encoding="utf-8")
+            with mock.patch("storelib.fetch_url_json") as fetcher:
+                document = load_apps_catalog(cache_path=cache, ttl=300)
+                fetcher.assert_not_called()
+            self.assertEqual("demo", document["apps"][0]["id"])
 
     def test_install_manager_uses_apps_json(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
