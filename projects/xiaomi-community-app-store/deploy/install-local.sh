@@ -202,6 +202,24 @@ python3 "${DEPLOY_DIR}/register_plugin.py" \
   --user-id "${NAS_USER_ID}" \
   --plugin-id "${PLUGIN_ID}"
 
+# 部署客户端入口并补齐小米插件规范结构。
+# plugin.sh 的 verify 要求插件目录下有 src/ 与 INFO，否则开机时会被
+# plugincenter 判定为「force uninstall」并从注册表移除。
+STORE_HOME="/home/${NAS_USER_ID}/plugin/communitystore"
+rm -rf "${STORE_HOME}/src/ui"
+mkdir -p "${STORE_HOME}/src"
+cp -a "${RELEASE_DIR}/web" "${STORE_HOME}/src/ui"
+python3 "${DEPLOY_DIR}/native_layout.py" \
+  --user "${NAS_USER_ID}" \
+  --name communitystore \
+  --service xiaomi-community-store.service \
+  --title "插件市场" \
+  --plugin-id "${PLUGIN_ID}" \
+  --version "${VERSION}" \
+  --desc "安装、更新和管理社区插件" \
+  --tags "store,community" \
+  --quiet 2>/dev/null || printf '  （补齐结构失败，重启后可能需重新安装）\n'
+
 # 开机自启钩子：/etc 是 overlay，systemd 开机看不到安装时新增的 unit
 if [[ -f "${DEPLOY_DIR}/install-boot-hook.sh" ]]; then
   sh "${DEPLOY_DIR}/install-boot-hook.sh" add

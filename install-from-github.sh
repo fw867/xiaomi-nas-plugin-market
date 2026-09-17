@@ -249,6 +249,26 @@ ln -sfn "${RELEASE_DIR}" "${STORE_ROOT}/current"
 info "注册插件 …"
 python3 "${DEPLOY_DIR}/register_plugin.py" --user-id "${NAS_USER_ID}" --plugin-id "${PLUGIN_ID}"
 
+info "部署客户端入口 …"
+# plugin.sh 的 verify 要求插件目录下有 src/ 与 INFO，否则开机时会被
+# plugincenter 判定为「force uninstall」并从注册表移除
+STORE_HOME="/home/${NAS_USER_ID}/plugin/communitystore"
+rm -rf "${STORE_HOME}/src/ui"
+mkdir -p "${STORE_HOME}/src"
+cp -a "${RELEASE_DIR}/web" "${STORE_HOME}/src/ui"
+
+info "补齐小米插件规范结构 …"
+python3 "${DEPLOY_DIR}/native_layout.py" \
+  --user "${NAS_USER_ID}" \
+  --name communitystore \
+  --service xiaomi-community-store.service \
+  --title "插件市场" \
+  --plugin-id "${PLUGIN_ID}" \
+  --version "${VERSION}" \
+  --desc "安装、更新和管理社区插件" \
+  --tags "store,community" \
+  --quiet
+
 info "安装开机自启钩子 …"
 # 小米 NAS 的 /etc 是 overlay，systemd 开机时看不到安装时新增的 unit，
 # 需要 cron 在开机窗口内补启动。

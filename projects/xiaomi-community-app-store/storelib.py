@@ -729,6 +729,36 @@ class InstallManager:
             detail = (result.stderr or result.stdout or "command failed").strip()
             raise StoreError(f"{command[0]} failed: {detail}")
 
+    def _apply_native_layout(self, plugin_home: Path, manifest: dict[str, Any]) -> None:
+        """补齐小米插件规范的目录结构，使 plugincenter 的 verify 通过。
+
+        plugin.sh 的 plugin_verify() 是摘要自校验：要求插件目录下有
+        etc/var/tmp/scripts/src 和含 abstract 的 INFO，否则返回 1，
+        plugincenter 会判定「force uninstall」并删除该插件。
+        必须在 UI 文件就位后执行：abstract 覆盖 src/ 下全部文件。
+        """
+        if not self.execute_system:
+            return
+        script = Path(__file__).resolve().parent / "deploy" / "native_layout.py"
+        if not script.is_file() or not plugin_home.is_dir():
+            return
+        registry_info = manifest.get("registry", {}).get("info", {})
+        subprocess.run(
+            [
+                "python3", str(script),
+                "--user", self.user_id,
+                "--name", str(manifest["paths"]["uiKey"]),
+                "--service", str(manifest["service"]),
+                "--title", str(manifest.get("name", "")),
+                "--plugin-id", str(manifest.get("pluginId", 0)),
+                "--version", str(manifest.get("version", "")),
+                "--desc", str(registry_info.get("desc", "")),
+                "--quiet",
+            ],
+            capture_output=True,
+            check=False,
+        )
+
     def _install_requirements(self, extracted: Path, manifest: dict[str, Any], release: Path) -> None:
         requirements = manifest.get("requirements")
         if not requirements:
@@ -855,6 +885,8 @@ class InstallManager:
                 # plugincenter 的强制卸载清掉，恢复时需要从这里重新拷贝
                 _copy_path(staging_root / "ui", release / "ui")
                 _copy_path(staging_root / "icon", icon_target)
+                # UI 就位后补齐小米插件规范结构（abstract 覆盖 src/ 下全部文件）
+                self._apply_native_layout(ui_target.parents[1], manifest)
                 service_text = (staging_root / "config" / manifest["service"]).read_text(encoding="utf-8")
                 service_text = service_text.replace("__NAS_USER_ID__", self.user_id)
                 nginx_text = (staging_root / "config" / manifest["nginx"]).read_text(encoding="utf-8")

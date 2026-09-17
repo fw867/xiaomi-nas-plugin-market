@@ -30,6 +30,24 @@ STATE_DIR = STORE_ROOT / "state"
 STORE_REGISTRATION = STATE_DIR / "store.json"
 SKIP_STATE_FILES = {"apps-cache.json", "apps.json", "store.json"}
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+try:
+    import native_layout
+except ImportError:  # pragma: no cover - 部署缺失时降级
+    native_layout = None
+
+
+def fix_layout(home_dir: Path, meta: dict, *, user: str, service: str) -> bool:
+    """补齐小米插件规范的目录与 INFO（含重算 abstract）。"""
+    if native_layout is None or not home_dir.is_dir():
+        return False
+    try:
+        native_layout.ensure_layout(home_dir, meta, user=user, service=service)
+        return True
+    except (SystemExit, OSError) as error:
+        log(f"  ! 补齐 {home_dir.name} 结构失败: {error}")
+        return False
+
 
 def log(message: str) -> None:
     if "--quiet" not in sys.argv:
@@ -164,6 +182,29 @@ def main() -> int:
                     "/icon/community-store-v4.icon",
                 )
                 changes.append(f"{key}:registry")
+                # 注册表被抹说明 plugincenter 强卸过：补齐原生结构，
+                # 让下次开机的 verify 能通过（abstract 会按当前文件重算）
+                if fix_layout(
+                    home_plugin / key,
+                    {
+                        "plugin": key,
+                        "name": str(record.get("info", {}).get("name", "插件市场")),
+                        "id": int(registration.get("pluginId", 11002)),
+                        "version": str(record.get("info", {}).get("version", "")),
+                        "desc": str(record.get("info", {}).get("desc", "")),
+                        "tags": list(record.get("info", {}).get("tags", ["store"])),
+                        "developer": "community",
+                        "publisher": "community",
+                        "system": False,
+                        "type": "standard",
+                        "size": 0,
+                        "ext": {},
+                        "forceupgrade": False,
+                    },
+                    user=user,
+                    service="xiaomi-community-store.service",
+                ):
+                    changes.append(f"{key}:layout")
 
     # ---- 各托管插件 ----
     for state_file in sorted(STATE_DIR.glob("*.json")):
@@ -201,6 +242,28 @@ def main() -> int:
                 str(paths.get("iconName", "")),
             )
             changes.append(f"{key}:registry")
+            # 同上：补齐原生结构，使下次开机的 plugin.sh verify 通过
+            if fix_layout(
+                home_plugin / ui_key,
+                {
+                    "plugin": key,
+                    "name": str(manifest.get("name", key)),
+                    "id": int(manifest.get("pluginId", 0)) or 11000,
+                    "version": str(manifest.get("version", "")),
+                    "desc": str(manifest.get("summary", "")),
+                    "tags": ["tool"],
+                    "developer": "community",
+                    "publisher": "community",
+                    "system": False,
+                    "type": "standard",
+                    "size": 0,
+                    "ext": {},
+                    "forceupgrade": False,
+                },
+                user=user,
+                service=str(manifest.get("service", "")),
+            ):
+                changes.append(f"{key}:layout")
 
     if not changes:
         return 0
