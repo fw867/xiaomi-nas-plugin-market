@@ -119,10 +119,20 @@ jobs:
           git add projects/xiaomi-community-app-store/scripts/build_release.py
           if git diff --cached --quiet; then
             echo "Version unchanged"
-          else
-            git commit -m "chore: bump store version to ${{ steps.bump.outputs.new }} [skip ci]"
-            git push
+            exit 0
           fi
+          git commit -m "chore: bump store version to ${{ steps.bump.outputs.new }} [skip ci]"
+          # Build Apps 可能同时在回写 apps.json，推送前先 rebase 并重试
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase --autostash origin "${GITHUB_REF_NAME}" && git push; then
+              echo "pushed on attempt ${attempt}"
+              exit 0
+            fi
+            echo "推送失败，${attempt}/5，5 秒后重试"
+            sleep 5
+          done
+          echo "多次重试后仍无法推送" >&2
+          exit 1
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
