@@ -249,6 +249,15 @@ ln -sfn "${RELEASE_DIR}" "${STORE_ROOT}/current"
 info "注册插件 …"
 python3 "${DEPLOY_DIR}/register_plugin.py" --user-id "${NAS_USER_ID}" --plugin-id "${PLUGIN_ID}"
 
+info "安装开机自启钩子 …"
+# 小米 NAS 的 /etc 是 overlay，systemd 开机时看不到安装时新增的 unit，
+# 需要 cron 在开机窗口内补启动。
+if [[ -f "${DEPLOY_DIR}/install-boot-hook.sh" ]]; then
+  sh "${DEPLOY_DIR}/install-boot-hook.sh" add
+else
+  warn "未找到 install-boot-hook.sh，重启后插件可能不会自动启动。"
+fi
+
 info "启动服务 …"
 "${NGINX_BIN}" -t
 systemctl daemon-reload

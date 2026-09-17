@@ -202,6 +202,11 @@ python3 "${DEPLOY_DIR}/register_plugin.py" \
   --user-id "${NAS_USER_ID}" \
   --plugin-id "${PLUGIN_ID}"
 
+# 开机自启钩子：/etc 是 overlay，systemd 开机看不到安装时新增的 unit
+if [[ -f "${DEPLOY_DIR}/install-boot-hook.sh" ]]; then
+  sh "${DEPLOY_DIR}/install-boot-hook.sh" add
+fi
+
 # ---------- 8. 启动并验证 ----------
 printf '[8/8] 启动服务 …\n'
 "${NGINX_BIN}" -t
