@@ -82,6 +82,27 @@ def main() -> int:
     temporary.write_text(json.dumps(registry, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.chmod(temporary, 0o644)
     temporary.replace(path)
+
+    # 保存商店自身的注册信息，供 restore-plugins.py 在 plugincenter
+    # 强制卸载后重建条目
+    try:
+        state_dir = path.parent / "community-store" / "state"
+        state_dir.mkdir(parents=True, exist_ok=True)
+        (state_dir / "store.json").write_text(
+            json.dumps(
+                {
+                    "user": args.user_id,
+                    "pluginId": args.plugin_id,
+                    "uiKey": PLUGIN_KEY,
+                    "record": registry[PLUGIN_KEY],
+                },
+                ensure_ascii=False,
+                indent=2,
+            ) + "\n",
+            encoding="utf-8",
+        )
+    except OSError as error:
+        print(f"提示：未能保存商店注册信息（{error}），重启后需重新安装", file=sys.stderr)
     return 0
 
 

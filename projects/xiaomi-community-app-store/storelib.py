@@ -851,6 +851,9 @@ class InstallManager:
                 _copy_path(staging_root / "runtime", release)
                 self._install_requirements(staging_root, manifest, release)
                 _copy_path(staging_root / "ui", ui_target)
+                # 另存一份 UI 到 release 目录：/home 下的副本会被
+                # plugincenter 的强制卸载清掉，恢复时需要从这里重新拷贝
+                _copy_path(staging_root / "ui", release / "ui")
                 _copy_path(staging_root / "icon", icon_target)
                 service_text = (staging_root / "config" / manifest["service"]).read_text(encoding="utf-8")
                 service_text = service_text.replace("__NAS_USER_ID__", self.user_id)

@@ -32,6 +32,17 @@ log() {
     logger -t community-plugins-boot "$1" 2>/dev/null || true
 }
 
+# 恢复被 plugincenter 强制卸载的注册表条目与 UI。
+# plugincenter boot 会对已装插件跑小米签名校验，第三方插件必然失败并被
+# 「force uninstall」：删除 /home/<用户>/plugin/<key>/ 并从注册表移除条目。
+# 该脚本幂等，条目与 UI 都在位时立即退出。
+RESTORE=/data/plugin/community-store/current/deploy/restore-plugins.py
+if [ -f "$RESTORE" ]; then
+    if python3 "$RESTORE" --quiet 2>/dev/null; then
+        :
+    fi
+fi
+
 # 收集运行时新增的服务（只查文件系统，不依赖 systemd 状态）
 services=""
 for unit in "$UNIT_DIR"/*.service; do
