@@ -287,6 +287,27 @@ class StoreLibraryTests(unittest.TestCase):
             self.assertEqual("demo", document["apps"][0]["id"])
             self.assertTrue(document.get("_stale"))
 
+    def test_load_apps_catalog_uses_sha_pinned_raw(self) -> None:
+        """默认路径必须先解析 HEAD SHA，再按 SHA 拉 apps.json。
+
+        raw 的分支路径（<repo>/main/...）会被 CDN 缓存住，内容更新后仍可能
+        返回旧版本，因此必须用 commit SHA 精确定位。
+        """
+        sha = "b" * 40
+        seen: list[str] = []
+
+        def fake_fetch(url, timeout=20):
+            seen.append(url)
+            return self._sample_apps_doc()
+
+        with mock.patch("storelib.fetch_branch_sha", return_value=sha) as resolver, \
+                mock.patch("storelib.fetch_url_json", side_effect=fake_fetch):
+            document = load_apps_catalog()
+
+        resolver.assert_called_once()
+        self.assertEqual("demo", document["apps"][0]["id"])
+        self.assertTrue(any(sha in url for url in seen), seen)
+
     def test_load_apps_catalog_uses_fresh_cache_within_ttl(self) -> None:
         """TTL 内的缓存可以直接用，避免频繁请求。"""
         with tempfile.TemporaryDirectory() as temporary:

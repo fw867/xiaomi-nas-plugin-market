@@ -362,7 +362,57 @@ def fetch_url_json(url: str, *, timeout: float = 20) -> dict[str, Any]:
         raise StoreError(f"apps.json is not valid JSON: {error}") from error
 
 
-CATALOG_CACHE_TTL = float(os.environ.get("CATALOG_CACHE_TTL", "60"))
+CATALOG_CACHE_TTL = float(os.environ.get("CATALOG_CACHE_TTL", "180"))
+
+
+def _github_headers() -> dict[str, str]:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "xiaomi-community-store/0.2",
+    }
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def fetch_branch_sha(repo: str | None = None, branch: str | None = None, *, timeout: float = 15) -> str:
+    """解析分支当前指向的 commit SHA。
+
+    raw.githubusercontent.com 会缓存分支路径（<repo>/main/...），
+    内容更新后仍可能长时间返回旧版本；按 commit SHA 取则不受影响。
+    """
+    repo = repo or DEFAULT_REPO
+    branch = branch or DEFAULT_BRANCH
+    url = f"https://api.github.com/repos/{repo}/git/refs/heads/{branch}"
+    host = urllib.parse.urlsplit(url).hostname or ""
+    if host != "api.github.com":
+        raise StoreError(f"Disallowed host: {host}")
+    _assert_public_ip(host)
+    request = urllib.request.Request(url, headers=_github_headers())
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read(256 * 1024).decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, json.JSONDecodeError) as error:
+        raise StoreError(f"Cannot resolve branch {branch}: {error}") from error
+    sha = str(payload.get("object", {}).get("sha", ""))
+    if not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise StoreError("GitHub returned an invalid branch SHA")
+    return sha
+
+
+def fetch_apps_json(
+    *,
+    repo: str | None = None,
+    branch: str | None = None,
+    timeout: float = 20,
+) -> dict[str, Any]:
+    """按 commit SHA 精确拉取 apps.json，避开分支路径的 CDN 缓存。"""
+    repo = repo or DEFAULT_REPO
+    branch = branch or DEFAULT_BRANCH
+    sha = fetch_branch_sha(repo, branch, timeout=timeout)
+    url = f"https://raw.githubusercontent.com/{repo}/{sha}/apps.json"
+    return fetch_url_json(url, timeout=timeout)
 
 
 def _read_local_catalog(paths: list[Path]) -> dict[str, Any] | None:
@@ -386,15 +436,15 @@ def load_apps_catalog(
 ) -> dict[str, Any]:
     """加载 apps.json：优先远程（带短 TTL 缓存），失败时回退本地副本。
 
-    apps.json 是插件列表的唯一来源，必须能反映仓库的最新状态，
-    因此远程优先；缓存只用于降低请求频率和断网兜底。
+    apps.json 是插件列表的唯一来源，必须反映仓库最新状态，因此远程优先：
+    先解析 HEAD SHA 再按 SHA 拉取，避免分支路径被 CDN 缓存住。
+    缓存只用于降低请求频率和断网兜底。
     """
     fallback: list[Path] = []
     if local_apps_json and local_apps_json.is_file():
         fallback.append(local_apps_json)
 
     ttl = CATALOG_CACHE_TTL if ttl is None else ttl
-    url = remote_url or _raw_url("apps.json")
 
     if cache_path and cache_path.is_file():
         try:
@@ -407,16 +457,36 @@ def load_apps_catalog(
                 return cached
         fallback.append(cache_path)
 
-    try:
-        document = validate_apps_catalog(fetch_url_json(url))
-    except StoreError:
+    document: dict[str, Any] | None = None
+    errors: list[str] = []
+    if remote_url:
+        try:
+            document = validate_apps_catalog(fetch_url_json(remote_url))
+            document["_source"] = remote_url
+        except StoreError as error:
+            errors.append(str(error))
+    else:
+        try:
+            document = validate_apps_catalog(fetch_apps_json())
+            document["_source"] = "github-sha"
+        except StoreError as error:
+            errors.append(str(error))
+        if document is None:
+            # 退一步用分支路径（可能被 CDN 缓存，但聊胜于无）
+            try:
+                branch_url = _raw_url("apps.json")
+                document = validate_apps_catalog(fetch_url_json(branch_url))
+                document["_source"] = branch_url
+            except StoreError as error:
+                errors.append(str(error))
+
+    if document is None:
         offline = _read_local_catalog(fallback)
         if offline is not None:
             offline["_stale"] = True
             return offline
-        raise
+        raise StoreError("; ".join(errors) or "Cannot load apps.json")
 
-    document["_source"] = url
     if cache_path:
         try:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
