@@ -1,0 +1,16 @@
+{
+  "plugin": "115sync",
+  "name": "115 云备份",
+  "id": 1000,
+  "desc": "使用 115 官方 OpenAPI 同步与备份 NAS 文件",
+  "tags": [
+    "cloud",
+    "backup"
+  ],
+  "developer": "community",
+  "publisher": "community",
+  "system": false,
+  "type": "standard",
+  "service": "xiaomi-115-sync.service",
+  "uiKey": "115sync"
+}

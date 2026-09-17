@@ -60,11 +60,18 @@ def compute_abstract(src_dir: Path) -> str:
     return combined.hexdigest()
 
 
-def write_control(scripts_dir: Path, service: str) -> bool:
-    """写 scripts/control。plugincenter boot 会执行 `<control> enable`。"""
+def write_control(scripts_dir: Path, service: str, source: Path | None = None) -> bool:
+    """写 scripts/control。plugincenter boot 会执行 `<control> enable`。
+
+    插件自带的 control（deploy/control）优先；没有则按服务名生成。
+    """
     scripts_dir.mkdir(parents=True, exist_ok=True)
     target = scripts_dir / "control"
-    body = f"""#!/bin/sh
+
+    if source is not None and source.is_file():
+        body = source.read_text(encoding="utf-8")
+    else:
+        body = f"""#!/bin/sh
 # 由 install 生成：给 plugincenter 一个成功的应答，
 # 实际的服务启停交给 systemd（{service}）。
 log() {{ logger -t "plugin" "[$(basename "$(dirname "$(dirname "$0")")")] control: $*"; }}
@@ -75,10 +82,10 @@ disable) systemctl stop  {service} 2>/dev/null ;;
 esac
 exit 0
 """
-    changed = True
-    if target.is_file() and target.read_text(encoding="utf-8") == body:
-        changed = False
-    target.write_text(body, encoding="utf-8")
+
+    changed = not (target.is_file() and target.read_text(encoding="utf-8") == body)
+    if changed:
+        target.write_text(body, encoding="utf-8")
     target.chmod(0o755)
 
     hotplug = scripts_dir / "hotplug"
@@ -88,7 +95,8 @@ exit 0
     return changed
 
 
-def ensure_layout(home_dir: Path, meta: dict, *, user: str, service: str) -> dict:
+def ensure_layout(home_dir: Path, meta: dict, *, user: str, service: str,
+                  control_source: Path | None = None) -> dict:
     src_dir = home_dir / "src"
     if not src_dir.is_dir():
         raise SystemExit(f"缺少 UI 目录: {src_dir}")
@@ -96,7 +104,7 @@ def ensure_layout(home_dir: Path, meta: dict, *, user: str, service: str) -> dic
     for name in SUBDIRS:
         (home_dir / name).mkdir(parents=True, exist_ok=True)
 
-    write_control(home_dir / "scripts", service)
+    write_control(home_dir / "scripts", service, control_source)
 
     # abstract 必须最后算：它覆盖 src/ 下全部文件
     abstract = compute_abstract(src_dir)
@@ -132,6 +140,8 @@ def main() -> int:
     parser.add_argument("--version", default="")
     parser.add_argument("--desc", default="")
     parser.add_argument("--tags", default="tool")
+    parser.add_argument("--meta", default="", help="插件自带的 plugin-meta.json")
+    parser.add_argument("--control", default="", help="插件自带的 control 脚本")
     parser.add_argument("--home", default="", help="覆盖插件目录")
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args()
@@ -156,7 +166,28 @@ def main() -> int:
         "forceupgrade": False,
         "timestamp": int(time.time()),
     }
-    result = ensure_layout(home_dir, meta, user=args.user, service=args.service)
+
+    # 插件自带的元数据优先（deploy/plugin-meta.json）
+    meta_file = Path(args.meta) if args.meta else None
+    if meta_file is not None and meta_file.is_file():
+        try:
+            supplied = json.loads(meta_file.read_text(encoding="utf-8"))
+            if isinstance(supplied, dict):
+                for field in ("plugin", "name", "id", "desc", "tags",
+                              "developer", "publisher", "system", "type"):
+                    if field in supplied:
+                        meta[field] = supplied[field]
+                if not args.version and supplied.get("version"):
+                    meta["version"] = supplied["version"]
+        except (OSError, json.JSONDecodeError) as error:
+            if not args.quiet:
+                log(f"  ! 读取 {meta_file} 失败: {error}")
+
+    meta.setdefault("version", args.version)
+
+    control_source = Path(args.control) if args.control else None
+    result = ensure_layout(home_dir, meta, user=args.user, service=args.service,
+                           control_source=control_source)
     if not args.quiet:
         log(f"已补齐 {home_dir}  abstract={result['abstract'][:16]}…")
     return 0

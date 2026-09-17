@@ -1,0 +1,16 @@
+{
+  "plugin": "devicemanager",
+  "name": "设备管家",
+  "id": 11001,
+  "desc": "监控 NAS 系统、网络、硬盘健康与 Docker 容器资源",
+  "tags": [
+    "tool",
+    "monitoring"
+  ],
+  "developer": "Kingwell Community",
+  "publisher": "community",
+  "system": false,
+  "type": "standard",
+  "service": "xiaomi-device-manager.service",
+  "uiKey": "devicemanager"
+}

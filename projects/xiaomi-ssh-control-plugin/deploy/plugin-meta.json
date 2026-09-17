@@ -1,0 +1,16 @@
+{
+  "plugin": "sshcontrol",
+  "name": "SSH 开关",
+  "id": 11005,
+  "desc": "启停 SSH 远程登录，并可设置开机自动保持运行",
+  "tags": [
+    "tool",
+    "system"
+  ],
+  "developer": "community",
+  "publisher": "community",
+  "system": false,
+  "type": "standard",
+  "service": "xiaomi-ssh-control.service",
+  "uiKey": "sshcontrol"
+}

@@ -311,6 +311,28 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
 ]
 
 
+def _attach_plugin_elements() -> None:
+    """把各插件自带的小米插件规范要素纳入打包内容。
+
+    每个插件可在自己的 deploy/ 下提供：
+      plugin-meta.json  —— INFO 的元数据（名称、描述、标签等）
+      control           —— plugincenter boot 时执行的 <plugin>/scripts/control
+    安装时会复制到插件目录，使 plugin.sh verify 通过。
+    """
+    elements = (
+        ("deploy/plugin-meta.json", "plugin-meta.json"),
+        ("deploy/control", "control"),
+    )
+    for spec in PACKAGE_SPECS:
+        project = PROJECTS / spec["project"]
+        for source, destination in elements:
+            if (project / source).is_file():
+                spec["runtime"].setdefault(source, destination)
+
+
+_attach_plugin_elements()
+
+
 def copy_required(source: Path, target: Path) -> None:
     if not source.exists():
         raise SystemExit(f"Missing package source: {source}")

@@ -84,6 +84,93 @@ apps.json          → raw.githubusercontent.com/<repo>/<branch>/apps.json
 
 本地没有对应文件时自动从 GitHub 下载；已缓存的包不会重复下载。所有插件安装前都校验 `apps.json` 中声明的 SHA-256。
 
+### apps.json 的缓存与 CDN
+
+商店优先从 GitHub 拉取清单，但有两点容易踩：
+
+- **`raw.githubusercontent.com` 的分支路径会被 CDN 缓存。** `<repo>/main/apps.json`
+  在仓库更新后仍可能长时间返回旧内容（加 `Cache-Control: no-cache` 或 `?t=` 都无效）。
+  因此商店先用 GitHub API 解析 HEAD 的 commit SHA，再按
+  `<repo>/<sha>/apps.json` 拉取；失败才退回分支路径和本地缓存。
+- **本地缓存只作加速与断网兜底。** 命中缓存有 180 秒 TTL，过期即重新拉取，
+  不会再出现「装了新插件但列表不更新」。
+
+## 插件如何被系统认可
+
+小米智能存储有一套插件规范。**每次开机** `plugin.boot` 会执行
+`plugincenter boot --system`，对它认定的每个「已安装」插件运行
+`/usr/bin/plugin.sh verify`；校验不通过的插件会被判定为
+`can't use forever, force uninstall` —— 删除插件目录并从注册表移除条目，
+表现为「服务还在跑，但客户端应用列表里插件消失」。
+
+### verify 到底校验什么
+
+它**不是厂商签名校验**，而是**文件摘要自校验**：
+
+```sh
+plugin_verify() {
+    [ ! -d "$PLUG_SRC_DIR" ] && return 1        # 缺 src 目录 → 失败
+    [ ! -f "$PLUG_HOME_DIR/INFO" ] && return 1  # 缺 INFO 文件 → 失败
+
+    abstract=$(find src/ -type f | LC_COLLATE=C sort \
+               | xargs sha256sum | sha256sum)   # 逐文件摘要拼接后再取摘要
+
+    if [ "installing" = "$PLUG_STATUS" ]; then
+        jq --arg v "$abstract" '.["abstract"] = $v' "$PLUG_HOME_DIR/INFO"
+    elif [ "unverified" = "$PLUG_STATUS" ]; then
+        [ "$abstract" = "$(jq -r .abstract "$PLUG_HOME_DIR/INFO")" ] || return 1
+    fi
+}
+```
+
+即「对比当前文件与上次记录的摘要」，没有公钥、证书链或厂商密钥。
+
+### 每个插件需要提供的要素
+
+```text
+/home/<小米用户>/plugin/<插件key>/
+├── etc/  var/  tmp/          # 规范要求的目录，缺一不可
+├── scripts/
+│   ├── control               # plugincenter boot 会执行 `<control> enable`
+│   └── hotplug
+├── src/ui/                   # 前端页面
+└── INFO                      # 元数据，含 "abstract" 摘要字段
+```
+
+因此**每个插件在仓库里都自带两个要素文件**：
+
+| 文件 | 作用 |
+|------|------|
+| `deploy/plugin-meta.json` | `INFO` 的元数据来源（名称、描述、标签、服务名等） |
+| `deploy/control` | 规范要求的控制脚本，转发到对应 systemd 服务 |
+
+打包时会自动纳入 bundle（`runtime/plugin-meta.json`、`runtime/control`），
+安装时由 `deploy/native_layout.py` 复制就位、创建目录、并按上面的算法
+**重算 `abstract` 写入 `INFO`**。
+
+> `abstract` 覆盖 `src/` 下**全部**文件，因此必须在 UI 文件全部就位后最后计算；
+> 之后任何文件改动都会让校验失败——这是设计上的防篡改，重装即可恢复。
+>
+> 复刻算法时注意换行符：`plugin.sh` 是逐行写入文件后再整体取摘要，
+> 拼接时少了 `\n` 摘要就对不上。
+
+### 相关组件
+
+| 脚本 | 职责 |
+|------|------|
+| `deploy/native_layout.py` | 补齐目录结构、`scripts/control`、`INFO`（含 abstract） |
+| `deploy/restore-plugins.py` | 兜底：注册表或目录被清时重建条目、UI 与结构 |
+| `deploy/community-plugins-boot.sh` | 开机钩子：恢复插件状态并启动服务 |
+| `deploy/install-boot-hook.sh` | 安装上述钩子的 crontab 条目 |
+
+### 另一个坑：/etc 是 overlay
+
+小米 NAS 的根文件系统是只读 erofs，`/etc` 是 overlay（upperdir 在 `/data/etc/upper`）。
+systemd 在 overlay 挂载**之前**就已读取单元目录，所以安装时新增到
+`/etc/systemd/system/` 的 unit 虽然 `enabled`、符号链接也正确，开机时却不会
+被拉起。`community-plugins-boot.sh` 由 root crontab 每分钟触发，在开机窗口内
+`daemon-reload` 并补启动这些服务。
+
 ## 开发
 
 ### 目录结构
@@ -145,9 +232,13 @@ python3 server.py --dev    # 预览模式，不修改 NAS
 ### 添加新插件
 
 1. 在 `projects/` 下创建插件目录（参考现有插件结构）。
-2. 在 `scripts/build_apps.py` 的 `PACKAGE_SPECS` 中添加条目。
-3. 运行 `python3 scripts/build_apps.py --only <id>` 验证打包。
-4. 提交推送，CI 自动更新 `apps/` 和 `apps.json`。
+2. **提供规范要素文件**（否则开机后会被系统强制卸载）：
+   - `deploy/plugin-meta.json`：名称、描述、标签、服务名等元数据
+   - `deploy/control`：转发到该插件 systemd 服务的控制脚本
+3. 在 `scripts/build_apps.py` 的 `PACKAGE_SPECS` 中添加条目。
+4. 运行 `python3 scripts/build_apps.py --only <id>` 验证打包，
+   确认 bundle 里包含 `runtime/plugin-meta.json` 与 `runtime/control`。
+5. 提交推送，CI 自动更新 `apps/` 和 `apps.json`。
 
 ## 当前限制
 

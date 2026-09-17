@@ -1,0 +1,16 @@
+{
+  "plugin": "aliyundrivesync",
+  "name": "阿里云盘备份",
+  "id": 1002,
+  "desc": "扫码连接阿里云盘并同步 NAS 文件",
+  "tags": [
+    "cloud",
+    "backup"
+  ],
+  "developer": "community",
+  "publisher": "community",
+  "system": false,
+  "type": "standard",
+  "service": "xiaomi-aliyundrive-sync.service",
+  "uiKey": "aliyundrivesync"
+}

@@ -1,0 +1,16 @@
+{
+  "plugin": "webdav",
+  "name": "WebDAV 文件桥",
+  "id": 11003,
+  "desc": "NAS HTTPS 文件共享，以及远程 WebDAV 上传下载与定时备份",
+  "tags": [
+    "files",
+    "backup"
+  ],
+  "developer": "community",
+  "publisher": "community",
+  "system": false,
+  "type": "standard",
+  "service": "xiaomi-webdav.service",
+  "uiKey": "webdav"
+}

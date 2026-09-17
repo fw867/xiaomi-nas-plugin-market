@@ -1,0 +1,15 @@
+{
+  "plugin": "qbittorrent",
+  "name": "qB 下载",
+  "id": 11004,
+  "desc": "磁力与种子下载、暂停继续和限速",
+  "tags": [
+    "download"
+  ],
+  "developer": "community",
+  "publisher": "community",
+  "system": false,
+  "type": "standard",
+  "service": "xiaomi-qbittorrent.service",
+  "uiKey": "qbittorrent"
+}
