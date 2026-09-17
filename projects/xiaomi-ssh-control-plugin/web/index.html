@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+    <title>SSH 开关</title>
+    <link rel="stylesheet" href="styles.css?v=1" />
+  </head>
+  <body>
+    <header class="topbar">
+      <button class="icon-button" id="backButton" aria-label="返回">‹</button>
+      <div class="brand"><strong>SSH 开关</strong><small>远程登录控制</small></div>
+      <button class="icon-button refresh" id="refreshButton" aria-label="刷新">↻</button>
+    </header>
+
+    <main>
+      <section class="card status-card">
+        <span class="status-dot" id="statusDot" aria-hidden="true"></span>
+        <div class="status-copy">
+          <strong id="statusText">读取中…</strong>
+          <small id="statusHint">正在查询 SSH 服务状态</small>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="row">
+          <div class="row-copy">
+            <strong>开机自动启动</strong>
+            <small>开启后，每次开机自动保持 SSH 可用</small>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="autostartToggle" />
+            <span class="slider" aria-hidden="true"></span>
+          </label>
+        </div>
+      </section>
+
+      <section class="actions">
+        <button class="btn primary" id="startBtn">启动 SSH</button>
+        <button class="btn danger" id="stopBtn">停止 SSH</button>
+      </section>
+
+      <p class="note" id="note"></p>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="app.js?v=1" defer></script>
+  </body>
+</html>

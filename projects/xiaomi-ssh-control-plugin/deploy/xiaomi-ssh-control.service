@@ -1,0 +1,20 @@
+[Unit]
+Description=Xiaomi SSH Control
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/data/plugin/ssh-control/current
+Environment=HOST=127.0.0.1
+Environment=PORT=18130
+Environment=WEB_DIR=/data/plugin/ssh-control/current/web
+Environment=RUNTIME_DIR=/data/plugin/ssh-control/current
+Environment=STATE_FILE=/data/plugin/ssh-control/state.json
+ExecStart=/usr/bin/python3 /data/plugin/ssh-control/current/server.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

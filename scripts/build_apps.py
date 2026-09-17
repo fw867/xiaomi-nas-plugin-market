@@ -263,6 +263,51 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
             "info": {"tags": ["download"], "publisher": "community", "ext": {"admin": True}},
         },
     },
+    {
+        "id": "sshcontrol",
+        "name": "SSH 开关",
+        "version": "0.1.0",
+        "summary": "启停 SSH 远程登录，并设置开机自动保持运行",
+        "description": "在客户端内启停 SSH，支持开机自启。用于绕过 boot_check.sh 每次开机强制关闭 SSH 的行为。",
+        "project": "xiaomi-ssh-control-plugin",
+        "pluginId": 11005,
+        "port": 18130,
+        "releaseRoot": "/data/plugin/ssh-control",
+        "uiKey": "sshcontrol",
+        "iconSource": "web/assets/ssh-control-icon.png",
+        "iconName": "ssh-control.icon",
+        "runtime": {
+            "server.py": "server.py",
+            "keepalive.sh": "keepalive.sh",
+            "web": "web",
+            "README.md": "README.md",
+        },
+        "ui": "web",
+        "serviceSource": "deploy/xiaomi-ssh-control.service",
+        "service": "xiaomi-ssh-control.service",
+        "nginxSource": "deploy/xiaomi-ssh-control.nginx.conf",
+        "nginx": "xiaomi-ssh-control.conf",
+        "healthPath": "/api/status",
+        "tags": ["tool", "system"],
+        "author": "community",
+        "registry": {
+            "icon": "/icon/ssh-control.icon?v=1",
+            "frontend": {
+                "title": "SSH 开关",
+                "desc": "远程登录控制",
+                "type": "url",
+                "permission": ["admin"],
+                "dev_type": [1, 2, 3, 4],
+                "url": [
+                    {"dev_type": [1], "url": "/index.html#/sshControl_app"},
+                    {"dev_type": [2, 3, 4], "url": "/index.html#/sshControl_pc"},
+                ],
+                "sortid": 11005,
+                "widget": [],
+            },
+            "info": {"tags": ["tool", "system"], "publisher": "community", "ext": {"admin": True}},
+        },
+    },
 ]
 
 
@@ -389,6 +434,18 @@ def load_existing_versions() -> dict[str, str]:
         return {}
 
 
+def load_existing_apps() -> list[dict[str, Any]]:
+    """读取现有 apps.json 中的应用条目（用于 --only 时保留其它条目）。"""
+    if not APPS_JSON.is_file():
+        return []
+    try:
+        data = json.loads(APPS_JSON.read_text(encoding="utf-8"))
+        apps = data.get("apps", [])
+        return [a for a in apps if isinstance(a, dict) and "id" in a]
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
 def bump_patch(version: str) -> str:
     """递增 patch 版本号：0.4.1 → 0.4.2；0.2.0-rc5 → 0.2.1-rc5。"""
     import re as _re
@@ -431,12 +488,13 @@ def main() -> int:
     APPS.mkdir(parents=True, exist_ok=True)
     (APPS / "icons").mkdir(parents=True, exist_ok=True)
 
-    # 清理旧版本 zip（只保留本次构建的）
-    keep_names: set[str] = set()
-    for spec in specs:
-        keep_names.add(f"{spec['id']}-{spec['version']}.zip")
+    # 清理被重建应用的旧版本 zip（保留其它应用的包）
+    keep_names: set[str] = {f"{spec['id']}-{spec['version']}.zip" for spec in specs}
     for old_zip in APPS.glob("*.zip"):
-        if old_zip.name not in keep_names:
+        stem = old_zip.name
+        if stem in keep_names:
+            continue
+        if any(stem.startswith(f"{spec['id']}-") for spec in specs):
             old_zip.unlink()
             print(f"清理旧包: {old_zip.name}")
 
@@ -457,6 +515,14 @@ def main() -> int:
 
     if not apps:
         raise SystemExit("No apps were built")
+
+    # 使用 --only 时保留未重建应用的既有条目，避免清单被清空
+    rebuilt_ids = {entry["id"] for entry in apps}
+    if args.only:
+        for app in load_existing_apps():
+            if app.get("id") not in rebuilt_ids:
+                apps.append(app)
+        apps.sort(key=lambda entry: entry["id"])
 
     repo = detect_repo_slug()
     branch = "main"
