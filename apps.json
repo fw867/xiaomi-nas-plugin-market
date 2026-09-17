@@ -1,11 +1,11 @@
 {
   "schemaVersion": 2,
   "name": "小米智能存储应用商店",
-  "generatedAt": 1789582447,
+  "generatedAt": 1789658285,
   "repository": "fw867/xiaomi-nas-plugin-market",
   "branch": "main",
   "store": {
-    "version": "0.2.9",
+    "version": "0.2.10",
     "releasesUrl": "https://github.com/fw867/xiaomi-nas-plugin-market/releases",
     "latestReleaseApi": "https://api.github.com/repos/fw867/xiaomi-nas-plugin-market/releases/latest"
   },
@@ -13,11 +13,11 @@
     {
       "id": "devicemanager",
       "name": "设备管家",
-      "version": "0.4.2",
+      "version": "0.4.3",
       "summary": "2 秒实时监控系统、网络、磁盘健康与 Docker 容器资源",
       "description": "只读查看 CPU、内存、温度、网络、磁盘 SMART 与 Docker 容器资源占用，页面可见时每 2 秒刷新。",
-      "bundle": "apps/devicemanager-0.4.2.zip",
-      "sha256": "37ff981c0825f36634e965b7c721173cd5a3de8d7c2374315df94a3368e865b8",
+      "bundle": "apps/devicemanager-0.4.3.zip",
+      "sha256": "7ced763caadaa9541715abcd8f4474912f7ce4646454759c36fefcb6b82199a2",
       "size": 2819645,
       "icon": "apps/icons/devicemanager.png",
       "channel": "stable",
@@ -32,12 +32,12 @@
     {
       "id": "115sync",
       "name": "115 云备份",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "summary": "使用 115 官方 OpenAPI 同步与备份 NAS 文件",
       "description": "需要自己获批的 115 App ID，扫码授权后同步与备份 NAS 文件。",
-      "bundle": "apps/115sync-0.1.1.zip",
-      "sha256": "8461e66dbdf7459e990bb433e017ef852935e133656d761feb4b303ac560da24",
-      "size": 61511,
+      "bundle": "apps/115sync-0.1.2.zip",
+      "sha256": "deda4b9d6172f4bf411b6fc141c851f8d95fe87cb7f00565ea833e3c169bc26d",
+      "size": 61512,
       "icon": "apps/icons/115sync.png",
       "channel": "stable",
       "tags": [
@@ -51,11 +51,11 @@
     {
       "id": "aliyundrivesync",
       "name": "阿里云盘备份",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "summary": "扫码连接阿里云盘并同步 NAS 文件",
       "description": "需要自己获批的阿里云盘应用，扫码授权后同步 NAS 文件。",
-      "bundle": "apps/aliyundrivesync-0.1.1.zip",
-      "sha256": "dad1891acdb82528ddfe71aaad26c27aad88cec28055e4a1fbec45b2da4037e1",
+      "bundle": "apps/aliyundrivesync-0.1.2.zip",
+      "sha256": "021ee684a6a82fb01e516f36d3e08c614b083eada1e26d33cd581c4ac9561b3f",
       "size": 253971,
       "icon": "apps/icons/aliyundrivesync.png",
       "channel": "stable",
@@ -66,6 +66,25 @@
       "author": "community",
       "pluginId": 1002,
       "port": 18117
+    },
+    {
+      "id": "sshcontrol",
+      "name": "SSH 开关",
+      "version": "0.1.0",
+      "summary": "启停 SSH 远程登录，并设置开机自动保持运行",
+      "description": "在客户端内启停 SSH，支持开机自启。用于绕过 boot_check.sh 每次开机强制关闭 SSH 的行为。",
+      "bundle": "apps/sshcontrol-0.1.0.zip",
+      "sha256": "ebe33d34c1dc17524c6edb44e626ab3ffb640a1690abcae85179b45777838ad3",
+      "size": 21444,
+      "icon": "apps/icons/sshcontrol.png",
+      "channel": "stable",
+      "tags": [
+        "tool",
+        "system"
+      ],
+      "author": "community",
+      "pluginId": 11005,
+      "port": 18130
     }
   ]
 }
