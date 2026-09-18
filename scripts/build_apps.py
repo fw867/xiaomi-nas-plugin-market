@@ -509,6 +509,21 @@ def load_existing_versions() -> dict[str, str]:
         return {}
 
 
+def load_existing_hashes() -> dict[str, str]:
+    """从现有 apps.json 读取各插件已发布包的 SHA-256，用于判断内容是否变化。"""
+    if not APPS_JSON.is_file():
+        return {}
+    try:
+        data = json.loads(APPS_JSON.read_text(encoding="utf-8"))
+        return {
+            a["id"]: a["sha256"]
+            for a in data.get("apps", [])
+            if "id" in a and isinstance(a.get("sha256"), str)
+        }
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
 def load_existing_apps() -> list[dict[str, Any]]:
     """读取现有 apps.json 中的应用条目（用于 --only 时保留其它条目）。"""
     if not APPS_JSON.is_file():
@@ -539,15 +554,16 @@ def main() -> int:
     parser.add_argument("--no-bump", action="store_true", help="Do not auto-increment patch version")
     args = parser.parse_args()
 
-    # 自动递增版本号（基于现有 apps.json）
+    # 版本号策略：默认沿用 apps.json 里已发布的版本，只有打包内容真的
+    # 变了才递增 patch。否则每次 CI 构建都会把全部插件抬一个版本，
+    # 客户端会对所有已安装插件显示「可更新」。
     existing_versions = load_existing_versions()
+    existing_hashes = load_existing_hashes()
     if existing_versions and not args.no_bump:
         for spec in PACKAGE_SPECS:
             old = existing_versions.get(spec["id"])
             if old:
-                spec["version"] = bump_patch(old)
-                if spec["version"] != old:
-                    print(f"版本递增: {spec['id']}  {old} → {spec['version']}")
+                spec["version"] = old
 
     specs = PACKAGE_SPECS
     if args.only:
@@ -563,19 +579,10 @@ def main() -> int:
     APPS.mkdir(parents=True, exist_ok=True)
     (APPS / "icons").mkdir(parents=True, exist_ok=True)
 
-    # 清理被重建应用的旧版本 zip（保留其它应用的包）
-    keep_names: set[str] = {f"{spec['id']}-{spec['version']}.zip" for spec in specs}
-    for old_zip in APPS.glob("*.zip"):
-        stem = old_zip.name
-        if stem in keep_names:
-            continue
-        if any(stem.startswith(f"{spec['id']}-") for spec in specs):
-            old_zip.unlink()
-            print(f"清理旧包: {old_zip.name}")
-
     apps: list[dict[str, Any]] = []
     skipped_ids: list[str] = []
     for spec in specs:
+        published = existing_versions.get(spec["id"])
         print(f"Building {spec['id']} {spec['version']} ...")
         try:
             entry = build_bundle(spec)
@@ -585,11 +592,33 @@ def main() -> int:
                 skipped_ids.append(spec["id"])
                 continue
             raise
+
+        # 内容与已发布包一致 → 保持版本号，客户端不会提示更新。
+        # 只有内容真的变了才递增 patch 并重新打包。
+        if published and not args.no_bump:
+            if existing_hashes.get(spec["id"]) == entry["sha256"]:
+                print("  内容未变，保持版本")
+            else:
+                bumped = bump_patch(published)
+                spec["version"] = bumped
+                print(f"  内容有变，版本递增 {published} → {bumped}")
+                entry = build_bundle(spec)
+
         apps.append(entry)
         print(f"  → {entry['bundle']}  sha256={entry['sha256'][:16]}…  {entry['size']//1024} KiB")
 
     if not apps:
         raise SystemExit("No apps were built")
+
+    # 清理被重建应用的旧版本 zip（按最终版本号判断，保留其它应用的包）
+    keep_names = {Path(entry["bundle"]).name for entry in apps}
+    built_ids = {entry["id"] for entry in apps}
+    for old_zip in APPS.glob("*.zip"):
+        if old_zip.name in keep_names:
+            continue
+        if any(old_zip.name.startswith(f"{app_id}-") for app_id in built_ids):
+            old_zip.unlink()
+            print(f"清理旧包: {old_zip.name}")
 
     # 使用 --only 时保留未重建应用的既有条目，避免清单被清空
     rebuilt_ids = {entry["id"] for entry in apps}
