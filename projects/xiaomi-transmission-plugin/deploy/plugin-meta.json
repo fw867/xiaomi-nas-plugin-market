@@ -1,0 +1,15 @@
+{
+  "plugin": "transmission",
+  "name": "Transmission 下载",
+  "id": 11006,
+  "desc": "BT 下载，可设置下载目录、并发数、连接数与限速",
+  "tags": [
+    "download"
+  ],
+  "developer": "community",
+  "publisher": "community",
+  "system": false,
+  "type": "standard",
+  "service": "xiaomi-transmission.service",
+  "uiKey": "transmission"
+}

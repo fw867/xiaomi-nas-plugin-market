@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+    <title>Transmission 下载</title>
+    <link rel="stylesheet" href="styles.css?v=1" />
+  </head>
+  <body>
+    <header class="topbar">
+      <button class="icon-button" id="backButton" aria-label="返回">‹</button>
+      <div class="brand"><strong>Transmission 下载</strong><small>下载任务与限速设置</small></div>
+      <button class="icon-button refresh" id="refreshButton" aria-label="刷新">↻</button>
+    </header>
+
+    <main>
+      <section class="card status-card">
+        <span class="status-dot" id="statusDot" aria-hidden="true"></span>
+        <div class="status-copy">
+          <strong id="statusText">读取中…</strong>
+          <small id="statusHint">正在查询 transmission-daemon 状态</small>
+        </div>
+      </section>
+
+      <section class="actions">
+        <button class="btn primary" id="startBtn">启动</button>
+        <button class="btn ghost" id="restartBtn">重启</button>
+        <button class="btn danger" id="stopBtn">停止</button>
+      </section>
+
+      <p class="note note-inline" id="autostartHint"></p>
+
+      <section class="card web-control" id="webControlCard" hidden>
+        <div class="row">
+          <div class="row-copy">
+            <strong>Transmission Web 界面</strong>
+            <small>用 transmission-web-control 完整管理任务、种子与 Tracker</small>
+          </div>
+          <a class="btn link" id="webControlLink" href="twc/index.html" target="_blank" rel="noopener">打开</a>
+        </div>
+      </section>
+
+      <section class="card missing" id="missingCard" hidden>
+        <div class="row-copy">
+          <strong>运行文件未就绪</strong>
+          <small id="missingHint"></small>
+        </div>
+      </section>
+
+      <form id="settingsForm" autocomplete="off">
+        <div id="groups"></div>
+        <section class="actions actions-save">
+          <button class="btn primary" id="saveBtn" type="submit">保存并应用</button>
+          <button class="btn ghost" id="reloadBtn" type="button">放弃修改</button>
+        </section>
+      </form>
+
+      <p class="note" id="note"></p>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="app.js?v=1" defer></script>
+  </body>
+</html>

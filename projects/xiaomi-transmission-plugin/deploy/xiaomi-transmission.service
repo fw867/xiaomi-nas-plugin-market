@@ -1,0 +1,29 @@
+[Unit]
+Description=Xiaomi Transmission Plugin
+After=network.target nginx.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/data/plugin/transmission/current
+Environment=HOST=127.0.0.1
+Environment=PORT=18140
+Environment=WEB_DIR=/data/plugin/transmission/current/web
+Environment=RUNTIME_DIR=/data/plugin/transmission/current
+Environment=DATA_DIR=/data/plugin/transmission/data
+Environment=RPC_PORT=19191
+Environment=LOCAL_ROOT=/nas/pool0/__NAS_USER_ID__/data
+ExecStart=/usr/bin/python3 /data/plugin/transmission/current/server.py
+ExecStopPost=-/bin/sh -c 'kill -TERM "$(cat /data/plugin/transmission/data/transmission-daemon.pid 2>/dev/null)" 2>/dev/null || true'
+Restart=on-failure
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=40
+# 下载文件默认 0644，让设备上的文件管理能正常读取
+# （daemon 自己还会按 settings.json 的 umask 再设一次，默认 022）。
+UMask=0022
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

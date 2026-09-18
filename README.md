@@ -71,6 +71,7 @@ NAS_USER_ID=u123456 bash -c "$(curl -fsSL https://raw.githubusercontent.com/fw86
 | [阿里云盘备份](projects/xiaomi-aliyundrive-sync-plugin) | 0.1.0 | 需要自己获批的阿里云盘应用，再扫码授权 |
 | [WebDAV 文件桥](projects/xiaomi-webdav-plugin) | 0.2.0-rc5 | 测试版；多账号、多目录授权、远程单向备份 |
 | [qB 下载](projects/xiaomi-qbittorrent-plugin) | 0.1.0-rc1 | 开发候选版；磁力/种子下载、限速；需要 Docker |
+| [Transmission 下载](projects/xiaomi-transmission-plugin) | 0.1.0 | BT 下载、限速与并发设置；随包携带 transmission-daemon，不需要 Docker |
 | 夸克网盘 | 未发布 | 目前没有可用实现 |
 
 ## 插件如何分发
@@ -183,6 +184,8 @@ projects/                          插件源码
   xiaomi-aliyundrive-sync-plugin/  阿里云盘备份
   xiaomi-webdav-plugin/            WebDAV 文件桥
   xiaomi-qbittorrent-plugin/       qB 下载
+  xiaomi-ssh-control-plugin/       SSH 开关
+  xiaomi-transmission-plugin/      Transmission 下载
 
 apps/                              构建产物（提交到 git）
 apps.json                          应用清单（自动生成）

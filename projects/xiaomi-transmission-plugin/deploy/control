@@ -1,0 +1,23 @@
+#!/bin/sh
+# 小米插件规范要求的控制脚本：
+# plugincenter boot 时会执行 `<plugin>/scripts/control enable`，
+# 返回值非 0 会导致插件被判定为启动失败。
+# 本插件的服务启停由 systemd 负责（xiaomi-transmission.service），
+# 这里只做转发并保证返回成功。
+
+log() {
+    logger -t "plugin" "[transmission] control: $*"
+}
+
+log "do $1"
+
+case "$1" in
+    enable)
+        systemctl start xiaomi-transmission.service 2>/dev/null
+        ;;
+    disable)
+        systemctl stop xiaomi-transmission.service 2>/dev/null
+        ;;
+esac
+
+exit 0

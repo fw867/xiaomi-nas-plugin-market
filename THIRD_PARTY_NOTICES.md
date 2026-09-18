@@ -10,3 +10,6 @@
 # qBittorrent 资产与容器
 
 `projects/xiaomi-qbittorrent-plugin/licenses` 保留 qBittorrent COPYING、GPLv3、AUTHORS 和原始 ICO 图标；PNG 仅为格式转换，上游资产继续适用其 GPL 许可，不代表品牌背书。qB 应用本体未嵌入 ZIP，使用者明确启动时从 LinuxServer 的 GHCR 仓库拉取锁定 digest 的镜像。Radix 按钮图标保留原许可证。
+# Transmission 资产与二进制
+
+`projects/xiaomi-transmission-plugin` 随包分发 **transmission-daemon / transmission-remote / transmission-cli**（Transmission 4.0.6，GPL-2.0-or-later）及其共享库依赖，二进制取自 Entware 的 `aarch64-k3.10` 仓库，不是本项目自行编译。`licenses/TRANSMISSION-COPYING` 保留上游 GPL-2.0 全文，`licenses/TRANSMISSION-WEB-CONTROL-LICENSE` 保留 transmission-web-control（MIT）的许可证。`runtime-manifest.json` 记录每个文件的来源 .ipk、下载 URL 与 SHA-256。Transmission 名称仅用于识别兼容软件，不表示官方背书；插件图标为本项目自绘，不复用上游商标。
