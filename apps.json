@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "name": "小米智能存储应用商店",
-  "generatedAt": 1789736310,
+  "generatedAt": 1789737405,
   "repository": "fw867/xiaomi-nas-plugin-market",
   "branch": "main",
   "store": {
@@ -13,12 +13,12 @@
     {
       "id": "devicemanager",
       "name": "设备管家",
-      "version": "0.4.6",
+      "version": "0.4.7",
       "summary": "2 秒实时监控系统、网络、磁盘健康与 Docker 容器资源",
       "description": "只读查看 CPU、内存、温度、网络、磁盘 SMART 与 Docker 容器资源占用，页面可见时每 2 秒刷新。",
-      "bundle": "apps/devicemanager-0.4.6.zip",
-      "sha256": "7d301ddf8b15654f94a5081b021158d4a152bf7f9b5b8ccfa43c67dac6b10357",
-      "size": 2820555,
+      "bundle": "apps/devicemanager-0.4.7.zip",
+      "sha256": "155b49bbcf21cd42077c88ea315e2b311aa07b129300fa248fd4198bd7584e00",
+      "size": 2820283,
       "icon": "apps/icons/devicemanager.png",
       "channel": "stable",
       "tags": [
@@ -126,12 +126,12 @@
     {
       "id": "transmission",
       "name": "Transmission 下载",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "summary": "BT 下载，可设置下载目录、并发数、连接数与上传下载限速",
       "description": "随包携带 aarch64 的 transmission-daemon（从 Entware 提取），不需要 Docker 或 Entware；内置 transmission-web-control 界面。",
-      "bundle": "apps/transmission-0.1.0.zip",
-      "sha256": "953f00b94637b09e11a293af81d40ac1c76ea9ffaaaf6decf6a84a3a4fa7fc43",
-      "size": 15699319,
+      "bundle": "apps/transmission-0.1.1.zip",
+      "sha256": "e4e7e17c6f8f233b46c4ba610c972b342774cbff542ab8dd8a7f0c03fa0d790c",
+      "size": 15699412,
       "icon": "apps/icons/transmission.png",
       "channel": "stable",
       "tags": [
