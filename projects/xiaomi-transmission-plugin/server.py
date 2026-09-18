@@ -740,7 +740,8 @@ def start_daemon(timeout: float = 25.0) -> tuple[bool, str]:
         return False, f"无法写入日志文件：{error}"
     try:
         subprocess.Popen(
-            runtime_argv(DAEMON, "-f", "-g", str(DATA_DIR), "-e", str(LOG_FILE)),
+            runtime_argv(DAEMON, "-f", "-g", str(DATA_DIR), "-e", str(LOG_FILE),
+                         "-x", str(PID_FILE)),
             cwd=str(RUNTIME_DIR),
             env=daemon_env(),
             stdout=log,
@@ -762,11 +763,68 @@ def start_daemon(timeout: float = 25.0) -> tuple[bool, str]:
     return False, f"等待 {timeout:g} 秒仍未就绪，请查看 {LOG_FILE}"
 
 
+def find_daemon_pids() -> list[int]:
+    """扫描 /proc 找出属于本插件数据目录的 daemon 进程。
+
+    兜底用：早期版本启动时没写 pid 文件（transmission 4.x 的开关是 -x，
+    不是 -P），一旦漏了就会「进程在跑但停不掉」。
+    匹配「本插件二进制完整路径 + 本插件数据目录」两个条件——只用
+    daemon 名会误伤任何命令行里恰好含该字符串的进程（例如一段 grep 命令）。
+    """
+    marker = str(BIN_DIR / DAEMON_NAME)
+    data_marker = str(DATA_DIR)
+    found: list[int] = []
+    proc = Path("/proc")
+    if not proc.is_dir():
+        return found
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            raw = (entry / "cmdline").read_bytes()
+        except OSError:
+            continue
+        command = raw.replace(b"\x00", b" ").decode("utf-8", "replace")
+        if marker in command and data_marker in command:
+            found.append(int(entry.name))
+    return found
+
+
+def terminate_pids(pids: list[int], timeout: float) -> None:
+    """先 SIGTERM 再按需 SIGKILL，等它们退出。"""
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            continue
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not any(process_exists(pid) for pid in pids):
+            return
+        time.sleep(0.2)
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            continue
+    time.sleep(1.0)
+
+
 def stop_daemon(timeout: float = 20.0) -> tuple[bool, str]:
     pid = read_pid()
     if pid is None:
+        # 没有 pid 文件：先扫进程兜底（历史遗留的实例会走到这里）
+        orphans = find_daemon_pids()
+        if orphans:
+            terminate_pids(orphans, timeout)
+            try:
+                PID_FILE.unlink()
+            except OSError:
+                pass
+            return True, ""
         if rpc_alive():
-            return False, "daemon 在运行但缺少 pid 文件，无法安全停止"
+            # 端口有响应但没有我们的进程——那是别人启的实例，不动它
+            return False, "RPC 端口有响应，但不是本插件启动的 daemon，无法安全停止"
         return True, ""
     if not process_exists(pid):
         try:
@@ -774,22 +832,11 @@ def stop_daemon(timeout: float = 20.0) -> tuple[bool, str]:
         except OSError:
             pass
         return True, ""
+    terminate_pids([pid], timeout)
     try:
-        os.kill(pid, signal.SIGTERM)
-    except (ProcessLookupError, PermissionError) as error:
-        if isinstance(error, ProcessLookupError):
-            return True, ""
-        return False, str(error)
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if not process_exists(pid) or read_pid() is None:
-            return True, ""
-        time.sleep(0.2)
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except OSError as error:
-        return False, str(error)
-    time.sleep(1.0)
+        PID_FILE.unlink()
+    except OSError:
+        pass
     return True, ""
 
 

@@ -677,13 +677,15 @@ class TransmissionTests(unittest.TestCase):
         self.data.mkdir(parents=True, exist_ok=True)
         module.PID_FILE.write_text("4242\n", encoding="utf-8")
         calls: list[tuple[int, int]] = []
+        alive = {"value": True}
 
         def fake_kill(pid, sig):
             calls.append((pid, sig))
             if sig == module.signal.SIGTERM:
+                alive["value"] = False
                 module.PID_FILE.unlink()
 
-        with mock.patch.object(module, "process_exists", return_value=True), \
+        with mock.patch.object(module, "process_exists", side_effect=lambda _pid: alive["value"]), \
                 mock.patch.object(module.os, "kill", side_effect=fake_kill):
             ok, error = module.stop_daemon(timeout=1)
 
@@ -692,9 +694,102 @@ class TransmissionTests(unittest.TestCase):
 
     def test_stop_daemon_is_noop_when_nothing_runs(self) -> None:
         module = self.module
-        with mock.patch.object(module, "rpc_alive", return_value=False):
+        with mock.patch.object(module, "rpc_alive", return_value=False), \
+                mock.patch.object(module, "find_daemon_pids", return_value=[]):
             ok, error = module.stop_daemon(timeout=1)
         self.assertTrue(ok, error)
+
+    # ------------------------------------------------------------------
+    # pid 文件缺失时的兜底停止
+    # ------------------------------------------------------------------
+
+    def test_stop_daemon_falls_back_to_scanning_processes(self) -> None:
+        """pid 文件缺失但进程在跑时必须能停掉，不能卡死。"""
+        module = self.module
+        killed: list[tuple[int, int]] = []
+
+        def fake_kill(pid, sig):
+            killed.append((pid, sig))
+
+        with mock.patch.object(module, "read_pid", return_value=None), \
+                mock.patch.object(module, "find_daemon_pids", return_value=[354294]), \
+                mock.patch.object(module, "process_exists", return_value=False), \
+                mock.patch.object(module.os, "kill", side_effect=fake_kill):
+            ok, error = module.stop_daemon(timeout=1)
+
+        self.assertTrue(ok, error)
+        self.assertEqual((354294, module.signal.SIGTERM), killed[0])
+
+    def test_stop_daemon_refuses_when_port_owned_by_something_else(self) -> None:
+        """端口有响应但不是我们的进程时不能乱杀。"""
+        module = self.module
+        with mock.patch.object(module, "read_pid", return_value=None), \
+                mock.patch.object(module, "find_daemon_pids", return_value=[]), \
+                mock.patch.object(module, "rpc_alive", return_value=True):
+            ok, error = module.stop_daemon(timeout=1)
+        self.assertFalse(ok)
+        self.assertIn("不是本插件启动的", error)
+
+    def test_find_daemon_pids_requires_binary_path_and_data_dir(self) -> None:
+        """必须同时匹配本插件二进制的完整路径与数据目录。
+
+        只用 daemon 名不够：任何命令行里恰好含该字符串的进程都会被误判
+        （例如一段带 grep 的 shell 命令），那样停止时会杀错进程。
+        """
+        module = self.module
+        binary = str(module.BIN_DIR / module.DAEMON_NAME)
+        data = str(module.DATA_DIR)
+        entries = {
+            "100": f"{binary} -f -g {data} -e {data}/transmission.log",
+            "200": f"{binary} -f -g /somewhere/else",
+            "300": f"python3 /opt/other -g {data}",
+            "400": f"sh -c grep 'transmission-daemon -g {data}'",  # 假阳性样例
+        }
+
+        class FakeProc:
+            def is_dir(self):
+                return True
+
+            def iterdir(self):
+                paths = []
+                for name, cmdline in entries.items():
+                    entry = mock.Mock()
+                    entry.name = name
+
+                    def reader(text=cmdline):
+                        return text.replace(" ", "\x00").encode()
+
+                    entry.__truediv__ = lambda self, other, _r=reader: mock.Mock(read_bytes=_r)
+                    paths.append(entry)
+                return paths
+
+        with mock.patch.object(
+            module, "Path", side_effect=lambda p: FakeProc() if p == "/proc" else Path(p)
+        ):
+            found = module.find_daemon_pids()
+        self.assertEqual([100], found)
+
+    def test_start_daemon_writes_pidfile(self) -> None:
+        """transmission 4.x 的 pid 文件开关是 -x（不是 -P），漏了就会停不掉。"""
+        module = self.module
+        captured: dict = {}
+
+        class FakePopen:
+            def __init__(self, argv, **kwargs):
+                captured["argv"] = argv
+
+        with mock.patch.object(module, "daemon_running", return_value=False), \
+                mock.patch.object(module, "ensure_runtime_executables"), \
+                mock.patch.object(module, "write_settings"), \
+                mock.patch.object(module, "read_settings", return_value={}), \
+                mock.patch.object(module, "rpc_alive", return_value=True), \
+                mock.patch.object(module.subprocess, "Popen", FakePopen):
+            ok, error = module.start_daemon(timeout=1)
+
+        self.assertTrue(ok, error)
+        argv = captured["argv"]
+        self.assertIn("-x", argv)
+        self.assertEqual(str(module.PID_FILE), argv[argv.index("-x") + 1])
 
     def test_daemon_version_parses_daemon_output(self) -> None:
         module = self.module
