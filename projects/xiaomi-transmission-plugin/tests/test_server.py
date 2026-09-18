@@ -673,6 +673,116 @@ class TransmissionTests(unittest.TestCase):
         env = module.daemon_env()
         self.assertEqual(str(twc), env.get("TRANSMISSION_WEB_HOME"))
 
+    def test_daemon_env_points_libcurl_at_an_existing_ca_bundle(self) -> None:
+        """随包 libcurl 的默认 CA 路径是 /opt/...，设备上没有 /opt。
+
+        不指一个真实存在的 CA 包，https tracker 会全部失败，报错文案是
+        「Could not connect to tracker」，很容易被误判成网络或防火墙问题。
+        """
+        module = self.module
+        bundle = self.lib.parent / "ca-certificates.crt"
+        bundle.write_text("dummy\n", encoding="utf-8")
+        original = module.CA_BUNDLE_CANDIDATES
+        module.CA_BUNDLE_CANDIDATES = (str(bundle),)
+        try:
+            with mock.patch.dict(module.os.environ):
+                module.os.environ.pop("CURL_CA_BUNDLE", None)
+                self.assertEqual(str(bundle), module.daemon_env().get("CURL_CA_BUNDLE"))
+        finally:
+            module.CA_BUNDLE_CANDIDATES = original
+            bundle.unlink(missing_ok=True)
+
+    def test_daemon_env_skips_ca_bundle_when_none_exists(self) -> None:
+        """候选都不存在时不能瞎设一个路径，否则等于把证书校验指向空气。"""
+        module = self.module
+        original = module.CA_BUNDLE_CANDIDATES
+        module.CA_BUNDLE_CANDIDATES = (str(self.lib.parent / "nope.crt"),)
+        try:
+            with mock.patch.dict(module.os.environ):
+                module.os.environ.pop("CURL_CA_BUNDLE", None)
+                self.assertNotIn("CURL_CA_BUNDLE", module.daemon_env())
+        finally:
+            module.CA_BUNDLE_CANDIDATES = original
+
+    def test_ipv6_switch_reads_transmission_string_values(self) -> None:
+        """transmission 用 "::" / "" 表示 IPv6 开关，界面按 bool 呈现。"""
+        module = self.module
+        on = module.effective_values({"bind-address-ipv6": "::"}, "kebab")
+        off = module.effective_values({"bind-address-ipv6": ""}, "kebab")
+        self.assertIs(True, on["bind-address-ipv6"])
+        self.assertIs(False, off["bind-address-ipv6"])
+
+    def test_ipv6_switch_writes_transmission_string_values(self) -> None:
+        module = self.module
+        self.assertEqual("", module.merge_managed({}, "kebab", {"bind-address-ipv6": False})["bind-address-ipv6"])
+        self.assertEqual("::", module.merge_managed({}, "kebab", {"bind-address-ipv6": True})["bind-address-ipv6"])
+
+    def test_lpd_is_disabled_on_first_run(self) -> None:
+        """多数 PT 站不允许 LPD，首次运行要把 transmission 自带的默认（开启）改掉。"""
+        module = self.module
+        self.write_raw_settings({"lpd-enabled": True})
+        with mock.patch.object(module, "daemon_running", return_value=False):
+            module.apply_initial_defaults()
+        self.assertFalse(module.read_settings()["lpd-enabled"])
+        self.assertTrue(module.read_plugin_state()["network-defaults-applied"])
+
+    def test_lpd_initial_default_leaves_user_choice_alone(self) -> None:
+        """只在首次纠正一次：用户之后手动打开，不应该被再关掉。"""
+        module = self.module
+        self.write_raw_settings({"lpd-enabled": True})
+        module.write_plugin_state({"network-defaults-applied": True})
+        with mock.patch.object(module, "daemon_running", return_value=False):
+            module.apply_initial_defaults()
+        self.assertTrue(module.read_settings()["lpd-enabled"])
+
+    def test_watch_dir_fields_sit_right_after_download_dir(self) -> None:
+        module = self.module
+        ids = [field["id"] for field in module.FIELDS]
+        self.assertEqual("watch-dir-enabled", ids[ids.index("download-dir") + 1])
+        self.assertEqual("watch-dir", ids[ids.index("download-dir") + 2])
+        for name in ("watch-dir-enabled", "watch-dir"):
+            self.assertEqual("basic", module.FIELDS_BY_ID[name]["group"])
+
+    def test_watch_dir_accepts_empty_value(self) -> None:
+        """监视目录是可选路径，留空表示不使用，不能被路径校验拦下。"""
+        module = self.module
+        clean = module.validate_settings({"watch-dir": ""})
+        self.assertEqual("", clean["watch-dir"])
+
+    def test_watch_dir_must_be_set_when_enabled(self) -> None:
+        """开了监视目录却没填路径，要直接报错，不能写进 settings.json。"""
+        module = self.module
+        with mock.patch.object(module, "daemon_running", return_value=False):
+            with self.assertRaises(module.SettingsError) as caught:
+                module.apply_settings({"watch-dir-enabled": True, "watch-dir": ""})
+        self.assertIn("watch-dir", caught.exception.fields)
+
+    def test_watch_dir_is_created_when_enabled(self) -> None:
+        module = self.module
+        seen = []
+        with mock.patch.object(
+            module.Path, "mkdir", autospec=True,
+            side_effect=lambda self, **_kwargs: seen.append(self),
+        ):
+            module.ensure_watch_dir({"watch-dir-enabled": True, "watch-dir": "/nas/pool0/watch"})
+        self.assertEqual([module.Path("/nas/pool0/watch")], seen)
+
+    def test_watch_dir_is_not_created_when_disabled(self) -> None:
+        """没启用就不该顺手把目录建出来。"""
+        module = self.module
+        with mock.patch.object(module.Path, "mkdir", autospec=True) as mkdir:
+            module.ensure_watch_dir({"watch-dir-enabled": False, "watch-dir": "/nas/pool0/watch"})
+        mkdir.assert_not_called()
+
+    def test_watch_dir_error_happens_before_the_daemon_is_stopped(self) -> None:
+        """校验失败必须发生在停 daemon 之前，否则 daemon 会停在停止状态起不来。"""
+        module = self.module
+        with mock.patch.object(module, "daemon_running", return_value=True), \
+                mock.patch.object(module, "stop_daemon") as stop:
+            with self.assertRaises(module.SettingsError):
+                module.apply_settings({"watch-dir-enabled": True, "watch-dir": ""})
+        stop.assert_not_called()
+
     def test_start_daemon_reports_missing_binary(self) -> None:
         module = self.module
         self.daemon.unlink()

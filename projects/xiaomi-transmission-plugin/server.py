@@ -110,6 +110,17 @@ DEFAULT_DOWNLOAD_DIR = default_download_dir(os.environ.get("LOCAL_ROOT", ""), DA
 # 界面里 transmission-web-control 的入口（ui 目录下的相对路径）。
 WEB_CONTROL_DIRNAME = "twc"
 
+# HTTPS tracker 的证书要靠 libcurl 验证。随包的 Entware libcurl 把默认 CA 路径
+# 编译成了 /opt/etc/ssl/certs/ca-certificates.crt，而这台设备上根本没有 /opt
+# （根文件系统是只读 erofs），于是所有 https tracker 都连不上，报错文案是
+# 「Could not connect to tracker」——看起来像网络问题，其实是证书找不到。
+# 挑一个系统上真实存在的 CA 包指给它。
+CA_BUNDLE_CANDIDATES = (
+    "/etc/ssl/certs/ca-certificates.crt",
+    "/etc/pki/tls/certs/ca-bundle.crt",
+    "/etc/ssl/cert.pem",
+)
+
 STATE_LOCK = threading.Lock()
 WRITE_LOCK = threading.Lock()
 
@@ -147,6 +158,16 @@ FIELDS: list[dict] = [
         "download-dir", "下载目录", "path", "basic",
         "种子文件的保存位置，必须是绝对路径。目录不存在时会自动创建。",
         unit="", default=DEFAULT_DOWNLOAD_DIR,
+    ),
+    _field(
+        "watch-dir-enabled", "启用监视目录", "bool", "basic",
+        "开启后，放进监视目录的 .torrent 文件会被自动添加为下载任务。",
+        default=False,
+    ),
+    _field(
+        "watch-dir", "监视目录", "path", "basic",
+        "扫描 .torrent 文件的目录，必须是绝对路径。开启监视目录时必须填写。",
+        unit="", default="", allow_empty=True,
     ),
     # —— 并发（同时上传数 / 同时下载数）——
     _field(
@@ -266,6 +287,19 @@ FIELDS: list[dict] = [
         "插件不会把已保存的密码回显到界面。",
         unit="", default="",
     ),
+    # —— 网络（IPv6 / 本地对等发现）——
+    _field(
+        "bind-address-ipv6", "启用 IPv6", "bool", "network",
+        "关闭后只走 IPv4。设备本身没有 IPv6 出口时，开着只会不断产生"
+        "「Network is unreachable」的无效连接尝试。",
+        default=True, true_value="::", false_value="",
+    ),
+    _field(
+        "lpd-enabled", "启用 LPD（本地对等发现）", "bool", "network",
+        "LPD 靠组播在局域网内互相发现，多数 PT 站不允许开启。"
+        "插件首次运行时会把 transmission 自带的默认（开启）改为关闭。",
+        default=False,
+    ),
 ]
 
 FIELDS_BY_ID = {field["id"]: field for field in FIELDS}
@@ -277,6 +311,7 @@ GROUP_LABELS = {
     "limits": "连接数",
     "bandwidth": "速度限制",
     "schedule": "时段限速",
+    "network": "网络",
     "auth": "远程访问",
 }
 
@@ -349,11 +384,24 @@ def write_settings(settings: dict) -> None:
     os.chmod(SETTINGS_FILE, 0o644)
 
 
+def _to_settings_value(field: dict | None, value: object) -> object:
+    """界面上的值 → settings.json 里该存的形式。
+
+    有些开关在 transmission 那边存的是字符串（IPv6 的 "::" / ""），
+    界面仍按 bool 呈现，转换集中在这两个函数里。
+    """
+    if field is not None and "true_value" in field:
+        return field["true_value"] if value else field["false_value"]
+    return value
+
+
 def effective_values(raw: dict, style: str) -> dict:
     values = {}
     for field in FIELDS:
         key = key_for(field["id"], style)
         value = raw.get(key, field["default"])
+        if "true_value" in field:
+            value = value == field["true_value"]
         values[field["id"]] = value
     return values
 
@@ -371,7 +419,7 @@ def merge_managed(raw: dict, style: str, values: dict) -> dict:
         if key not in merged:
             merged[key] = FIELDS_BY_ID[logical]["default"]
     for logical, value in values.items():
-        merged[key_for(logical, style)] = value
+        merged[key_for(logical, style)] = _to_settings_value(FIELDS_BY_ID.get(logical), value)
     return merged
 
 
@@ -424,7 +472,12 @@ def coerce_path(field: dict, value: object) -> str:
     if not isinstance(value, str):
         raise SettingsError(f"{field['label']}必须是路径字符串")
     text = value.strip()
-    if not text or "\x00" in text or len(text) > 4096:
+    if not text:
+        # 监视目录这类可选路径允许留空，表示不使用
+        if field.get("allow_empty"):
+            return ""
+        raise SettingsError(f"{field['label']}不是有效路径")
+    if "\x00" in text or len(text) > 4096:
         raise SettingsError(f"{field['label']}不是有效路径")
     if not text.startswith("/"):
         raise SettingsError(f"{field['label']}必须是绝对路径（以 / 开头）")
@@ -487,8 +540,27 @@ def ensure_download_dir(values: dict) -> None:
         raise SettingsError(
             f"下载目录无法创建：{error}", {"download-dir": "无法创建目录"}
         ) from error
-    if not os.access(path, os.W_OK):
-        raise SettingsError("下载目录不可写", {"download-dir": "目录不可写"})
+
+
+def ensure_watch_dir(values: dict) -> None:
+    """开启监视目录时必须填路径，并把目录先建出来。
+
+    这一步要在停 daemon 之前做：失败时直接报错返回，
+    不能让 daemon 停在「已停止」的状态上。
+    """
+    if not values.get("watch-dir-enabled"):
+        return
+    directory = str(values.get("watch-dir") or "").strip()
+    if not directory:
+        raise SettingsError(
+            "启用监视目录后必须填写路径", {"watch-dir": "启用监视目录后必须填写路径"}
+        )
+    try:
+        Path(directory).mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise SettingsError(
+            f"监视目录无法创建：{error}", {"watch-dir": "无法创建目录"}
+        ) from error
 
 
 def apply_settings(values: object, restart: bool = True) -> dict:
@@ -499,6 +571,12 @@ def apply_settings(values: object, restart: bool = True) -> dict:
     """
     clean = validate_settings(values)
     ensure_download_dir(clean)
+    # 监视目录同样要在停 daemon 之前校验：这里会创建目录，
+    # 失败时不能让 daemon 停在那儿起不来。
+    raw_now = read_settings()
+    pending = effective_values(raw_now, detect_style(raw_now))
+    pending.update(clean)
+    ensure_watch_dir(pending)
     was_running = daemon_running()
     stopped = False
     if was_running and restart:
@@ -572,6 +650,12 @@ def daemon_env() -> dict:
     web_control = WEB_DIR / WEB_CONTROL_DIRNAME
     if (web_control / "index.html").is_file():
         env["TRANSMISSION_WEB_HOME"] = str(web_control)
+    # 同上的原因：不指 CA 包的话，随包 libcurl 会去不存在的 /opt 找证书，
+    # 所有 https tracker 都会以「Could not connect to tracker」告败。
+    for candidate in CA_BUNDLE_CANDIDATES:
+        if Path(candidate).is_file():
+            env.setdefault("CURL_CA_BUNDLE", candidate)
+            break
     return env
 
 
@@ -881,6 +965,28 @@ def set_enabled(enabled: bool) -> None:
 
 def should_autostart() -> bool:
     return bool(read_plugin_state().get("enabled")) and DAEMON.is_file()
+
+
+def apply_initial_defaults() -> None:
+    """首次运行时把 LPD 改关，之后尊重用户在界面里的选择。
+
+    transmission 自带的默认是开启 LPD，而多数 PT 站不允许组播发现。
+    daemon 只在退出时回写 settings.json，所以改文件前必须先让它停下来；
+    停不下来就放弃，留到下次启动再试。
+    """
+    state = read_plugin_state()
+    if state.get("network-defaults-applied"):
+        return
+    if daemon_running():
+        ok, _error = stop_daemon()
+        if not ok:
+            return
+    with WRITE_LOCK:
+        raw = read_settings()
+        raw[key_for("lpd-enabled", detect_style(raw))] = False
+        write_settings(raw)
+    state["network-defaults-applied"] = True
+    write_plugin_state(state)
 
 
 def status_payload() -> dict:
@@ -1196,6 +1302,7 @@ def main() -> int:
         )
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     ensure_runtime_executables()
+    apply_initial_defaults()
     if should_autostart():
         ok, error = start_daemon()
         print(
