@@ -1,11 +1,11 @@
 {
   "schemaVersion": 2,
   "name": "小米智能存储应用商店",
-  "generatedAt": 1789737405,
+  "generatedAt": 1789738790,
   "repository": "fw867/xiaomi-nas-plugin-market",
   "branch": "main",
   "store": {
-    "version": "0.2.15",
+    "version": "0.2.16",
     "releasesUrl": "https://github.com/fw867/xiaomi-nas-plugin-market/releases",
     "latestReleaseApi": "https://api.github.com/repos/fw867/xiaomi-nas-plugin-market/releases/latest"
   },
@@ -126,12 +126,12 @@
     {
       "id": "transmission",
       "name": "Transmission 下载",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "summary": "BT 下载，可设置下载目录、并发数、连接数与上传下载限速",
       "description": "随包携带 aarch64 的 transmission-daemon（从 Entware 提取），不需要 Docker 或 Entware；内置 transmission-web-control 界面。",
-      "bundle": "apps/transmission-0.1.1.zip",
-      "sha256": "e4e7e17c6f8f233b46c4ba610c972b342774cbff542ab8dd8a7f0c03fa0d790c",
-      "size": 15699412,
+      "bundle": "apps/transmission-0.1.2.zip",
+      "sha256": "041d699eccb83ad850fc0dcb4a7e182076432a3d6f178acca2cc31b4c2f28b36",
+      "size": 15703973,
       "icon": "apps/icons/transmission.png",
       "channel": "stable",
       "tags": [
