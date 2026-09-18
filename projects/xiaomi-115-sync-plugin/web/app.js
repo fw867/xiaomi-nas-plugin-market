@@ -2,6 +2,37 @@
 
 const app = document.querySelector('#app');
 
+/* 小米客户端在 WebView 里注入 flutter_inappwebview / android_webview，官方插件靠自带的
+   js-bridge.js 调宿主方法。这里只实现我们用到的那一小部分：调宿主方法并忽略返回结果。 */
+function callClient(method, params) {
+  const host = window.flutter_inappwebview || window.android_webview;
+  if (!host) return false;
+  if (!host.callHandler) {
+    // 部分客户端版本只暴露 _callHandler，照 js-bridge.js 的方式补一层
+    host.callHandler = function () {
+      const id = window.setTimeout(() => {});
+      host._callHandler(arguments[0], id, JSON.stringify([].slice.call(arguments, 1)));
+      return new Promise((resolve) => { host[id] = resolve; });
+    };
+  }
+  const payload = host === window.android_webview ? JSON.stringify(params || {}) : (params || {});
+  host.callHandler('hs_webCallAppHandler', method, payload, String(++callClient.seq));
+  return true;
+}
+callClient.seq = 0;
+// 宿主拿结果时会回调这个全局函数；我们不等结果，留个空实现免得它报错
+window.hs_appCallBackToWeb = window.hs_appCallBackToWeb || function () {};
+
+// 客户端里没有页面历史，window.close() 也会被 WebView 忽略，只能请宿主关掉当前页面
+function leavePlugin() {
+  if (callClient('normal_goback', {})) return;
+  if (window.history.length > 1) {
+    window.history.back();
+    return;
+  }
+  window.close();
+}
+
 function pluginAssetBase() {
   const loadedScript = document.currentScript?.src
     || [...document.scripts].map((script) => script.src).find((src) => /\/app\.js(?:$|\?)/.test(src));
@@ -617,7 +648,7 @@ app.addEventListener('click', async (event) => {
   if (!button || button.disabled) return;
   const { action } = button.dataset;
   if (action === 'refresh') await refreshStatus();
-  if (action === 'back') window.history.back();
+  if (action === 'back') leavePlugin();
   if (action === 'connect') await openClientConnection();
   if (action === 'close-modal') {
     clearAuthPolling();

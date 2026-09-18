@@ -2,6 +2,49 @@ import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeftIcon, ChevronDownIcon, ChevronRightIcon, ReloadIcon } from "@radix-ui/react-icons";
 import "./prototype.css";
 
+type WebViewHost = {
+  callHandler?: (name: string, method: string, data: unknown, requestId: string) => unknown;
+  _callHandler?: (name: string, requestId: number, argsJson: string) => unknown;
+};
+
+let clientCallSeq = 0;
+
+/* 小米客户端在 WebView 里注入 flutter_inappwebview / android_webview，官方插件靠自带的
+   js-bridge.js 调宿主方法。这里只实现我们用到的那一小部分：调宿主方法并忽略返回结果。 */
+function callClient(method: string, params: Record<string, unknown> = {}): boolean {
+  const scope = window as unknown as {
+    flutter_inappwebview?: WebViewHost;
+    android_webview?: WebViewHost;
+  };
+  const host = scope.flutter_inappwebview ?? scope.android_webview;
+  if (!host) return false;
+  if (!host.callHandler) {
+    // 部分客户端版本只暴露 _callHandler，照 js-bridge.js 的方式补一层
+    host.callHandler = function (name, method, data, requestId) {
+      const id = window.setTimeout(() => {});
+      host._callHandler?.(name, id, JSON.stringify([method, data, requestId]));
+      return new Promise((resolve) => {
+        (host as unknown as Record<number, unknown>)[id] = resolve;
+      });
+    };
+  }
+  const payload = host === scope.android_webview ? JSON.stringify(params) : params;
+  host.callHandler?.("hs_webCallAppHandler", method, payload, String(++clientCallSeq));
+  return true;
+}
+
+// 客户端里没有页面历史，window.close() 也会被 WebView 忽略，只能请宿主关掉当前页面
+function leavePlugin() {
+  if (callClient("normal_goback")) return;
+  if (window.history.length > 1) {
+    window.history.back();
+    return;
+  }
+  window.close();
+}
+
+(window as unknown as Record<string, unknown>).hs_appCallBackToWeb ??= () => {};
+
 type MetricKey = "cpu" | "memory" | "storage" | "temperature" | "network" | "diskIo";
 
 type Metric = {
@@ -564,7 +607,7 @@ export default function Prototype() {
   return (
     <div className="manager-app">
       <header className="manager-toolbar">
-        <button className="toolbar-button back-button" onClick={() => window.history.back()} aria-label="返回">
+        <button className="toolbar-button back-button" onClick={leavePlugin} aria-label="返回">
           <ArrowLeftIcon width={21} height={21} />
         </button>
         <span className="toolbar-title">设备管家</span>

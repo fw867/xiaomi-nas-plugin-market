@@ -403,8 +403,37 @@ document.getElementById('refreshButton').addEventListener('click', () => {
   refreshStatus();
   loadSettings();
 });
-document.getElementById('backButton').addEventListener('click', () =>
-  (history.length > 1 ? history.back() : window.close()));
+/* 小米客户端在 WebView 里注入 flutter_inappwebview / android_webview，官方插件靠自带的
+   js-bridge.js 调宿主方法。这里只实现我们用到的那一小部分：调宿主方法并忽略返回结果。 */
+function callClient(method, params) {
+  const host = window.flutter_inappwebview || window.android_webview;
+  if (!host) return false;
+  if (!host.callHandler) {
+    // 部分客户端版本只暴露 _callHandler，照 js-bridge.js 的方式补一层
+    host.callHandler = function () {
+      const id = window.setTimeout(() => {});
+      host._callHandler(arguments[0], id, JSON.stringify([].slice.call(arguments, 1)));
+      return new Promise((resolve) => { host[id] = resolve; });
+    };
+  }
+  const payload = host === window.android_webview ? JSON.stringify(params || {}) : (params || {});
+  host.callHandler('hs_webCallAppHandler', method, payload, String(++callClient.seq));
+  return true;
+}
+callClient.seq = 0;
+// 宿主拿结果时会回调这个全局函数；我们不等结果，留个空实现免得它报错
+window.hs_appCallBackToWeb = window.hs_appCallBackToWeb || function () {};
+
+document.getElementById('backButton').addEventListener('click', () => {
+  // 客户端里没有页面历史，window.close() 也会被 WebView 忽略，
+  // 只能请宿主关掉当前插件页面
+  if (callClient('normal_goback', {})) return;
+  if (history.length > 1) {
+    history.back();
+    return;
+  }
+  window.close();
+});
 reloadBtn.addEventListener('click', loadSettings);
 
 form.addEventListener('submit', async (event) => {
