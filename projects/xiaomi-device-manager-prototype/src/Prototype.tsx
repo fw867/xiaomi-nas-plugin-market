@@ -151,17 +151,20 @@ function formatTime(timestamp: number) {
   }).format(new Date(timestamp));
 }
 
+// 数值和单位之间用不换行空格：窄屏折行时不会把「MB」「B/s」单独甩到下一行
+const NBSP = "\u00A0";
+
 function formatRate(bytesPerSecond: number) {
-  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return "0 B/s";
-  if (bytesPerSecond >= 1024 ** 3) return `${(bytesPerSecond / 1024 ** 3).toFixed(1)} GB/s`;
-  if (bytesPerSecond >= 1024 ** 2) return `${(bytesPerSecond / 1024 ** 2).toFixed(1)} MB/s`;
-  if (bytesPerSecond >= 1024) return `${Math.round(bytesPerSecond / 1024)} KB/s`;
-  return `${Math.round(bytesPerSecond)} B/s`;
+  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return `0${NBSP}B/s`;
+  if (bytesPerSecond >= 1024 ** 3) return `${(bytesPerSecond / 1024 ** 3).toFixed(1)}${NBSP}GB/s`;
+  if (bytesPerSecond >= 1024 ** 2) return `${(bytesPerSecond / 1024 ** 2).toFixed(1)}${NBSP}MB/s`;
+  if (bytesPerSecond >= 1024) return `${Math.round(bytesPerSecond / 1024)}${NBSP}KB/s`;
+  return `${Math.round(bytesPerSecond)}${NBSP}B/s`;
 }
 
 function formatCapacity(bytes: number) {
   if (!Number.isFinite(bytes) || bytes <= 0) return "容量未知";
-  return bytes >= 10 ** 12 ? `${(bytes / 10 ** 12).toFixed(1)} TB` : `${Math.round(bytes / 10 ** 9)} GB`;
+  return bytes >= 10 ** 12 ? `${(bytes / 10 ** 12).toFixed(1)}${NBSP}TB` : `${Math.round(bytes / 10 ** 9)}${NBSP}GB`;
 }
 
 const fallbackStatus: NasStatus = {
@@ -423,7 +426,7 @@ export default function Prototype() {
       {
         key: "cpu",
         label: "处理器",
-        hint: `${status.metrics.cpu.cores} 核 · 系统负载 ${status.metrics.cpu.load}`,
+        hint: `${status.metrics.cpu.cores} 核 · 系统负载\n${status.metrics.cpu.load.replace(/ /g, NBSP)}`,
         value: `${status.metrics.cpu.percent}%`,
         badge: "CPU",
         tone: "cpu",
@@ -434,7 +437,7 @@ export default function Prototype() {
       {
         key: "memory",
         label: "内存",
-        hint: `已用 ${status.metrics.memory.usedMb} / ${status.metrics.memory.totalMb} MB`,
+        hint: `已用 ${status.metrics.memory.usedMb}${NBSP}MB ·\n共 ${status.metrics.memory.totalMb}${NBSP}MB`,
         value: `${status.metrics.memory.percent}%`,
         badge: "RAM",
         tone: "ram",
@@ -445,7 +448,7 @@ export default function Prototype() {
       {
         key: "storage",
         label: "存储",
-        hint: `${status.metrics.storage.mount ?? "存储池"} · ${status.metrics.storage.used} / ${status.metrics.storage.total}`,
+        hint: `${status.metrics.storage.mount ?? "存储池"} ·\n${status.metrics.storage.used} / ${status.metrics.storage.total}`,
         value: `${status.metrics.storage.percent}%`,
         badge: "SSD",
         tone: "ssd",
@@ -456,7 +459,7 @@ export default function Prototype() {
       {
         key: "temperature",
         label: "温度",
-        hint: "系统温度与散热状态",
+        hint: "系统散热状态",
         value:
           status.metrics.temperature.celsius === null
             ? "未知"
@@ -470,7 +473,7 @@ export default function Prototype() {
       {
         key: "network",
         label: "网络",
-        hint: `接收 ${formatRate(status.metrics.network.rxBps)} · 发送 ${formatRate(status.metrics.network.txBps)}`,
+        hint: `接收 ${formatRate(status.metrics.network.rxBps)} ·\n发送 ${formatRate(status.metrics.network.txBps)}`,
         value: formatRate(status.metrics.network.rxBps + status.metrics.network.txBps),
         badge: "NET",
         tone: "network",
@@ -481,7 +484,7 @@ export default function Prototype() {
       {
         key: "diskIo",
         label: "磁盘 I/O",
-        hint: `读取 ${formatRate(status.metrics.diskIo.readBps)} · 写入 ${formatRate(status.metrics.diskIo.writeBps)}`,
+        hint: `读取 ${formatRate(status.metrics.diskIo.readBps)} ·\n写入 ${formatRate(status.metrics.diskIo.writeBps)}`,
         value: formatRate(status.metrics.diskIo.readBps + status.metrics.diskIo.writeBps),
         badge: "I/O",
         tone: "diskio",

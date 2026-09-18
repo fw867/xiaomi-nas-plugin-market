@@ -233,6 +233,7 @@ button {
   color: #858d99;
   font-size: 12px;
   line-height: 1.35;
+  /* 文案里的 \n 只在窄屏断行（见文件末尾的媒体查询），宽屏折叠成空格排成一行 */
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
 }
@@ -698,8 +699,14 @@ button {
 @media (max-width: 430px) {
   .manager-main { padding: 10px 10px 24px; }
   .metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-  .metric-card { min-height: 92px; }
-  .metric-copy small { -webkit-line-clamp: 1; }
+  /* 卡片只剩一百多像素宽，留白和徽标要跟着收，否则数值会折行、
+     底部说明会被裁成一行省略号 */
+  .metric-card { min-height: 92px; padding: 12px; gap: 9px; }
+  .metric-badge { width: 34px; height: 34px; border-radius: 9px; font-size: 11px; }
+  .metric-copy > span { font-size: 12.5px; }
+  .metric-copy strong { margin-top: 5px; font-size: 20px; }
+  /* 说明文字放两行，并占住两行高度，让同一行的卡片等高 */
+  .metric-copy small { margin-top: 6px; min-height: 30px; font-size: 11px; white-space: pre-line; -webkit-line-clamp: 2; }
   .detail-heading { align-items: flex-start; flex-direction: column; gap: 7px; }
   .container-facts { grid-template-columns: 1fr; gap: 8px; }
   .container-title { flex-direction: column; gap: 8px; }
