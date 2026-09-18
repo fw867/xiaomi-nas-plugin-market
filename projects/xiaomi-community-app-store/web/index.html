@@ -20,13 +20,6 @@
     </header>
 
     <main>
-      <nav class="tabs" aria-label="插件视图">
-        <button class="tab active" data-view="featured">精选</button>
-        <button class="tab" data-view="installed">已安装</button>
-        <button class="tab" data-view="sources">来源</button>
-        <button class="tab" data-view="about">关于</button>
-      </nav>
-
       <section id="featuredView" class="view active">
         <div class="section-heading"><h2>可用插件</h2><span id="updatedAt">正在读取仓库</span></div>
         <div id="packageList" class="package-grid" aria-live="polite"></div>
@@ -80,6 +73,13 @@
         </div>
       </section>
     </main>
+
+    <nav class="tabbar" aria-label="插件视图">
+      <button class="tab active" data-view="featured"><span class="tab-icon" aria-hidden="true">▦</span><span class="tab-label">精选</span></button>
+      <button class="tab" data-view="installed"><span class="tab-icon" aria-hidden="true">✓</span><span class="tab-label">已安装</span></button>
+      <button class="tab" data-view="sources"><span class="tab-icon" aria-hidden="true">☁</span><span class="tab-label">来源</span></button>
+      <button class="tab" data-view="about"><span class="tab-icon" aria-hidden="true">ⓘ</span><span class="tab-label">关于</span></button>
+    </nav>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <script src="app.js?v=0.2.0" defer></script>
