@@ -82,36 +82,6 @@ button {
   padding: 46px 28px 32px;
 }
 
-.manager-hero {
-  display: flex;
-  align-items: end;
-  justify-content: space-between;
-  gap: 24px;
-  margin-bottom: 32px;
-}
-
-.eyebrow {
-  margin: 0 0 9px;
-  color: #7086a7;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.manager-hero h1 {
-  margin: 0;
-  color: var(--mi-ink);
-  font-size: 38px;
-  line-height: 1.08;
-  font-weight: 800;
-}
-
-.manager-hero p:not(.eyebrow) {
-  margin: 10px 0 0;
-  color: var(--mi-copy);
-  font-size: 16px;
-  line-height: 1.4;
-}
-
 .live-chip {
   display: inline-flex;
   align-items: center;
@@ -155,6 +125,13 @@ button {
   color: var(--mi-muted);
   font-size: 13px;
   white-space: nowrap;
+}
+
+/* 状态胶囊放在分组标题右侧时更紧凑 */
+.section-heading .live-chip {
+  min-height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
 }
 
 .metrics-grid {
@@ -700,24 +677,28 @@ button {
 }
 
 @media (max-width: 720px) {
-  .manager-toolbar { height: 54px; padding: 0 14px; }
-  .manager-main { padding: 28px 16px 24px; }
-  .manager-hero {
-    align-items: flex-start;
-    flex-direction: column;
-    gap: 14px;
-    margin-bottom: 26px;
+  .manager-toolbar {
+    height: 48px;
+    padding: 0 12px;
+    grid-template-columns: 38px 1fr 38px;
   }
-  .manager-hero h1 { font-size: 32px; }
-  .manager-grid { grid-template-columns: 1fr; gap: 22px; }
+  .toolbar-title { font-size: 15px; }
+  .toolbar-button { width: 34px; height: 34px; }
+  .manager-main { padding: 12px 12px 28px; }
+  .manager-grid { grid-template-columns: 1fr; gap: 16px; }
+  .section-heading { margin-bottom: 9px; }
+  .manager-section h2,
+  .drive-section h2 { font-size: 15px; }
   .trend-panel,
-  .docker-details { padding: 18px 16px; }
+  .docker-details { padding: 14px 12px; }
   .drive-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
+/* 窄屏仍保持两列指标卡：一列会把页面拉得很长 */
 @media (max-width: 430px) {
-  .metrics-grid { grid-template-columns: 1fr; }
-  .metric-card { min-height: 112px; }
+  .manager-main { padding: 10px 10px 24px; }
+  .metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .metric-card { min-height: 92px; }
   .metric-copy small { -webkit-line-clamp: 1; }
   .detail-heading { align-items: flex-start; flex-direction: column; gap: 7px; }
   .container-facts { grid-template-columns: 1fr; gap: 8px; }

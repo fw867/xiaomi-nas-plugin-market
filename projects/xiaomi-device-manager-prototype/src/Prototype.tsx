@@ -578,22 +578,13 @@ export default function Prototype() {
       </header>
 
       <main className="manager-main">
-        <header className="manager-hero">
-          <div>
-            <p className="eyebrow">系统总览</p>
-            <h1>设备管家</h1>
-            <p>全面了解设备状态，保持稳定运行</p>
-          </div>
-          <span className={`live-chip ${status.live ? "is-live" : "is-demo"}`}>
-            {status.live ? `实时 · ${statusSourceLabel}` : "离线演示"}
-          </span>
-        </header>
-
         <div className="manager-grid">
           <section className="manager-section system-section">
             <div className="section-heading">
               <h2>系统状态</h2>
-              <span>{status.updatedAt} 更新</span>
+              <span className={`live-chip ${status.live ? "is-live" : "is-demo"}`}>
+                {status.live ? `实时 · ${statusSourceLabel}` : "离线演示"}
+              </span>
             </div>
             <div className="metrics-grid">
               {metrics.map((metric) => (
