@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "name": "小米智能存储应用商店",
-  "generatedAt": 1789741317,
+  "generatedAt": 1789742629,
   "repository": "fw867/xiaomi-nas-plugin-market",
   "branch": "main",
   "store": {
@@ -13,12 +13,12 @@
     {
       "id": "devicemanager",
       "name": "设备管家",
-      "version": "0.4.8",
+      "version": "0.4.9",
       "summary": "2 秒实时监控系统、网络、磁盘健康与 Docker 容器资源",
       "description": "只读查看 CPU、内存、温度、网络、磁盘 SMART 与 Docker 容器资源占用，页面可见时每 2 秒刷新。",
-      "bundle": "apps/devicemanager-0.4.8.zip",
-      "sha256": "e3d6276dbc732da406c33c093a76cc3314ae5e84f4ee34bc5be5d640f050a2d3",
-      "size": 2820713,
+      "bundle": "apps/devicemanager-0.4.9.zip",
+      "sha256": "5eb6ed3d0f526fbbd5511dfed6f168c6c395eeeba15b23c42336d0f127e09430",
+      "size": 2821159,
       "icon": "apps/icons/devicemanager.png",
       "channel": "stable",
       "tags": [
