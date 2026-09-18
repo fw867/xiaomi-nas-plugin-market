@@ -664,6 +664,15 @@ class TransmissionTests(unittest.TestCase):
         module = self.module
         self.assertTrue(module.daemon_env()["LD_LIBRARY_PATH"].startswith(str(self.lib)))
 
+    def test_daemon_env_points_transmission_at_bundled_web_control(self) -> None:
+        """不设 TRANSMISSION_WEB_HOME 时，直接打开 RPC 端口会报找不到 web 界面。"""
+        module = self.module
+        twc = module.WEB_DIR / module.WEB_CONTROL_DIRNAME
+        twc.mkdir(parents=True, exist_ok=True)
+        (twc / "index.html").write_text("<html></html>", encoding="utf-8")
+        env = module.daemon_env()
+        self.assertEqual(str(twc), env.get("TRANSMISSION_WEB_HOME"))
+
     def test_start_daemon_reports_missing_binary(self) -> None:
         module = self.module
         self.daemon.unlink()

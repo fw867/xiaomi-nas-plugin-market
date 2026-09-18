@@ -91,7 +91,13 @@ function renderStatus(data) {
   const parts = [];
   if (data.version) parts.push(`版本 ${data.version}`);
   if (data.pid) parts.push(`PID ${data.pid}`);
-  parts.push(`RPC 127.0.0.1:${data.rpcPort}`);
+  // 反映实际绑定地址，别写死 127.0.0.1
+  const bind = data.rpcBind || '127.0.0.1';
+  if (bind === '0.0.0.0') {
+    parts.push(`RPC 所有网卡:${data.rpcPort}${data.rpcAuthRequired ? '（需登录）' : ''}`);
+  } else {
+    parts.push(`RPC 仅本机:${data.rpcPort}`);
+  }
   if (data.session && data.session.torrentCount !== null && data.session.torrentCount !== undefined) {
     parts.push(`任务 ${data.session.torrentCount}（活动中 ${data.session.activeTorrentCount ?? 0}）`);
     const down = Number(data.session.downloadSpeed || 0) / 1024;

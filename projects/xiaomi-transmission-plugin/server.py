@@ -565,6 +565,13 @@ def daemon_env() -> dict:
     existing = env.get("LD_LIBRARY_PATH", "")
     env["LD_LIBRARY_PATH"] = f"{LIB_DIR}:{existing}" if existing else str(LIB_DIR)
     env.setdefault("HOME", str(DATA_DIR))
+    # 让 daemon 自带的 web 服务指向随包的 transmission-web-control。
+    # 不设的话，用浏览器直接打开 RPC 端口会报
+    # 「Couldn't find Transmission's web interface files!」——
+    # 随包二进制没有编译内置 web 界面。
+    web_control = WEB_DIR / WEB_CONTROL_DIRNAME
+    if (web_control / "index.html").is_file():
+        env["TRANSMISSION_WEB_HOME"] = str(web_control)
     return env
 
 
@@ -896,6 +903,9 @@ def status_payload() -> dict:
         "settingsPath": str(SETTINGS_FILE),
         "settingsKeyStyle": style,
         "rpcPort": RPC_PORT,
+        "rpcBind": str(values.get("rpc-bind-address") or "127.0.0.1"),
+        "rpcAuthRequired": bool(values.get("rpc-authentication-required")),
+        "rpcUsername": str(values.get("rpc-username") or ""),
         "session": {
             "torrentCount": (stats or {}).get("torrentCount"),
             "activeTorrentCount": (stats or {}).get("activeTorrentCount"),
