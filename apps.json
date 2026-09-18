@@ -1,11 +1,11 @@
 {
   "schemaVersion": 2,
   "name": "小米智能存储应用商店",
-  "generatedAt": 1789661364,
+  "generatedAt": 1789736310,
   "repository": "fw867/xiaomi-nas-plugin-market",
   "branch": "main",
   "store": {
-    "version": "0.2.14",
+    "version": "0.2.15",
     "releasesUrl": "https://github.com/fw867/xiaomi-nas-plugin-market/releases",
     "latestReleaseApi": "https://api.github.com/repos/fw867/xiaomi-nas-plugin-market/releases/latest"
   },
@@ -13,11 +13,11 @@
     {
       "id": "devicemanager",
       "name": "设备管家",
-      "version": "0.4.5",
+      "version": "0.4.6",
       "summary": "2 秒实时监控系统、网络、磁盘健康与 Docker 容器资源",
       "description": "只读查看 CPU、内存、温度、网络、磁盘 SMART 与 Docker 容器资源占用，页面可见时每 2 秒刷新。",
-      "bundle": "apps/devicemanager-0.4.5.zip",
-      "sha256": "e2f92149d2a2ed6c5b21f50ff3af320d23dcf6a8c7559d9a4dc92af4dc1e1d1a",
+      "bundle": "apps/devicemanager-0.4.6.zip",
+      "sha256": "7d301ddf8b15654f94a5081b021158d4a152bf7f9b5b8ccfa43c67dac6b10357",
       "size": 2820555,
       "icon": "apps/icons/devicemanager.png",
       "channel": "stable",
@@ -32,12 +32,12 @@
     {
       "id": "115sync",
       "name": "115 云备份",
-      "version": "0.1.4",
+      "version": "0.1.5",
       "summary": "使用 115 官方 OpenAPI 同步与备份 NAS 文件",
       "description": "需要自己获批的 115 App ID，扫码授权后同步与备份 NAS 文件。",
-      "bundle": "apps/115sync-0.1.4.zip",
-      "sha256": "c4977b67b5c72f59faf9a456f19c6d11d281930514634f882be298dc5376cb64",
-      "size": 62375,
+      "bundle": "apps/115sync-0.1.5.zip",
+      "sha256": "580dc67a17058cf5b55fb8a1f235782cf8e1e3ee7f2a20dfe6b5cfcb71b7d83d",
+      "size": 62376,
       "icon": "apps/icons/115sync.png",
       "channel": "stable",
       "tags": [
@@ -51,12 +51,12 @@
     {
       "id": "aliyundrivesync",
       "name": "阿里云盘备份",
-      "version": "0.1.4",
+      "version": "0.1.5",
       "summary": "扫码连接阿里云盘并同步 NAS 文件",
       "description": "需要自己获批的阿里云盘应用，扫码授权后同步 NAS 文件。",
-      "bundle": "apps/aliyundrivesync-0.1.4.zip",
-      "sha256": "cd47b3a2e1a83f167187eda761059440db24a6518f3cc814881d73121085fb0a",
-      "size": 254856,
+      "bundle": "apps/aliyundrivesync-0.1.5.zip",
+      "sha256": "8f944ce3eaa390c5a6512b456659a81eb8aa28370e3cacac84ef9f6bc9d2bdb0",
+      "size": 254857,
       "icon": "apps/icons/aliyundrivesync.png",
       "channel": "stable",
       "tags": [
@@ -70,12 +70,12 @@
     {
       "id": "webdav",
       "name": "WebDAV 文件桥",
-      "version": "0.2.1-rc5",
+      "version": "0.2.2-rc5",
       "summary": "NAS HTTPS 文件共享，以及远程 WebDAV 上传、下载与定时备份",
       "description": "多账号、多目录授权、远程单向备份、目录新建与原位改名。测试版。",
-      "bundle": "apps/webdav-0.2.1-rc5.zip",
-      "sha256": "2898fcf649b604015f013d8d10185b5f138419c33158e0b2414b1a960b828843",
-      "size": 28780240,
+      "bundle": "apps/webdav-0.2.2-rc5.zip",
+      "sha256": "1c9f3e6928417a508cca77ff82334df50b5e0f9ef87a8787bad4b0e1d2fb74bf",
+      "size": 28780239,
       "icon": "apps/icons/webdav.png",
       "channel": "candidate",
       "tags": [
@@ -89,11 +89,11 @@
     {
       "id": "qbittorrent",
       "name": "qB 下载",
-      "version": "0.1.1-rc1",
+      "version": "0.1.2-rc1",
       "summary": "磁力与种子下载、暂停继续和限速；首次启动需拉取独立 Docker 镜像",
       "description": "磁力/种子下载、进度、暂停继续、限速。开发候选版，需要 Docker。",
-      "bundle": "apps/qbittorrent-0.1.1-rc1.zip",
-      "sha256": "1b8c183109168845d729a7d6c67fec69ab355d611c77ab523a3e9f67d987543b",
+      "bundle": "apps/qbittorrent-0.1.2-rc1.zip",
+      "sha256": "6d39dac3a157e5aadd1b3249612ce84e277c875f6dc35fb2a148f3f7ce085432",
       "size": 321010,
       "icon": "apps/icons/qbittorrent.png",
       "channel": "candidate",
@@ -107,12 +107,12 @@
     {
       "id": "sshcontrol",
       "name": "SSH 开关",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "summary": "启停 SSH 远程登录，并设置开机自动保持运行",
       "description": "在客户端内启停 SSH，支持开机自启。用于绕过 boot_check.sh 每次开机强制关闭 SSH 的行为。",
-      "bundle": "apps/sshcontrol-0.1.2.zip",
-      "sha256": "ff77893b9a5462fb092212462c8991870bf9e9bc03239006bfce6adb40c2f520",
-      "size": 22323,
+      "bundle": "apps/sshcontrol-0.1.3.zip",
+      "sha256": "04ade4e002716e53e18af1abd6399d4a4b3cc956bda647ec26261d2d31047775",
+      "size": 22322,
       "icon": "apps/icons/sshcontrol.png",
       "channel": "stable",
       "tags": [
@@ -122,6 +122,24 @@
       "author": "community",
       "pluginId": 11005,
       "port": 18130
+    },
+    {
+      "id": "transmission",
+      "name": "Transmission 下载",
+      "version": "0.1.0",
+      "summary": "BT 下载，可设置下载目录、并发数、连接数与上传下载限速",
+      "description": "随包携带 aarch64 的 transmission-daemon（从 Entware 提取），不需要 Docker 或 Entware；内置 transmission-web-control 界面。",
+      "bundle": "apps/transmission-0.1.0.zip",
+      "sha256": "953f00b94637b09e11a293af81d40ac1c76ea9ffaaaf6decf6a84a3a4fa7fc43",
+      "size": 15699319,
+      "icon": "apps/icons/transmission.png",
+      "channel": "stable",
+      "tags": [
+        "download"
+      ],
+      "author": "community",
+      "pluginId": 11006,
+      "port": 18140
     }
   ]
 }
