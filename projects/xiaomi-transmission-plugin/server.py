@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import mimetypes
 import os
@@ -241,6 +242,30 @@ FIELDS: list[dict] = [
         "全年无休 127、工作日 62、周末 65。",
         unit="", default=127, minimum=0, maximum=127,
     ),
+    # —— 远程访问（RPC 监听与账号验证）——
+    _field(
+        "rpc-bind-address", "RPC 监听地址", "choice", "auth",
+        "0.0.0.0 监听所有网卡，局域网内其它设备可直接连接 RPC（如 Transmission Remote）；"
+        "127.0.0.1 只允许本机访问。绑定到 0.0.0.0 时建议同时开启账号验证。",
+        unit="", default="127.0.0.1", choices=["0.0.0.0", "127.0.0.1"],
+    ),
+    _field(
+        "rpc-authentication-required", "开启账号验证", "bool", "auth",
+        "只读回报：实际是否要求鉴权。由「RPC 监听地址」与是否配齐用户名密码"
+        "共同决定——选 0.0.0.0 必须填齐用户名和密码，否则自动退回只监听本机。",
+        default=False,
+    ),
+    _field(
+        "rpc-username", "登录用户名", "text", "auth",
+        "开启账号验证时使用的用户名。",
+        unit="", default="",
+    ),
+    _field(
+        "rpc-password", "登录密码", "password", "auth",
+        "留空表示不修改现有密码。Transmission 保存时会对密码加盐哈希，"
+        "插件不会把已保存的密码回显到界面。",
+        unit="", default="",
+    ),
 ]
 
 FIELDS_BY_ID = {field["id"]: field for field in FIELDS}
@@ -252,6 +277,7 @@ GROUP_LABELS = {
     "limits": "连接数",
     "bandwidth": "速度限制",
     "schedule": "时段限速",
+    "auth": "远程访问",
 }
 
 GROUPS = [{"id": gid, "label": label} for gid, label in GROUP_LABELS.items()]
@@ -287,16 +313,15 @@ def key_for(logical: str, style: str) -> str:
     return logical.replace("-", "_") if style == "snake" else logical
 
 
-# daemon 的 RPC 端点必须由插件固定（界面通过同源反代访问），
-# 因此这些键每次写入都强制覆盖。
+# daemon 的 RPC 端点必须由插件固定，因此这些键每次写入都强制覆盖。
+# rpc-bind-address / 账号验证三项由界面配置，不在此列。
+# 白名单关闭：绑定到 0.0.0.0 后它只会拦住所有外部访问，
+# 访问控制改由「开启账号验证」承担。
 MANAGED_KEYS = {
     "rpc-enabled": True,
-    "rpc-bind-address": "127.0.0.1",
     "rpc-port": RPC_PORT,
-    "rpc-whitelist": "127.0.0.1",
-    "rpc-whitelist-enabled": True,
+    "rpc-whitelist-enabled": False,
     "rpc-host-whitelist-enabled": False,
-    "rpc-authentication-required": False,
     "rpc-url": RPC_PATH,
 }
 
@@ -339,6 +364,12 @@ def merge_managed(raw: dict, style: str, values: dict) -> dict:
         merged[key_for(key, style)] = value
     if not merged.get(key_for("download-dir", style)):
         merged[key_for("download-dir", style)] = DEFAULT_DOWNLOAD_DIR
+    # 界面字段首次写入时补默认值（只补缺失的，不覆盖已有值）。
+    # rpc-password 排除在外：它的「默认」是空串，写进去会把密码清掉。
+    for logical in ("rpc-bind-address", "rpc-authentication-required", "rpc-username"):
+        key = key_for(logical, style)
+        if key not in merged:
+            merged[key] = FIELDS_BY_ID[logical]["default"]
     for logical, value in values.items():
         merged[key_for(logical, style)] = value
     return merged
@@ -352,6 +383,24 @@ class SettingsError(ValueError):
 
 class DaemonError(RuntimeError):
     pass
+
+
+def normalize_remote_access(values: dict) -> dict:
+    """落实「要开 0.0.0.0 远程访问就必须配齐用户名密码，否则只听 127.0.0.1」。
+
+    实测 transmission 4.0.6 的白名单并不能豁免鉴权（开鉴权后带白名单的回环
+    请求同样返回 401），所以不能用「白名单放行本机 + 鉴权挡外部」的组合。
+    这里的规则是硬保证：凭据不全就绝不对外监听。
+    """
+    bind = str(values.get("rpc-bind-address", "") or "")
+    username = str(values.get("rpc-username", "") or "").strip()
+    password = str(values.get("rpc-password", "") or "")
+    if not password:
+        # 界面留空表示沿用已保存的口令
+        password = str(read_credential().get("password", "") or "")
+    if bind == "0.0.0.0" and username and password:
+        return {"rpc-bind-address": "0.0.0.0", "rpc-authentication-required": True}
+    return {"rpc-bind-address": "127.0.0.1", "rpc-authentication-required": False}
 
 
 def coerce_int(field: dict, value: object) -> int:
@@ -403,6 +452,21 @@ def validate_settings(values: object) -> dict:
                 clean[logical] = value
             elif field["kind"] == "path":
                 clean[logical] = coerce_path(field, value)
+            elif field["kind"] == "choice":
+                if value not in field["choices"]:
+                    raise SettingsError(
+                        f"{field['label']}只能是 {' 或 '.join(field['choices'])}"
+                    )
+                clean[logical] = value
+            elif field["kind"] in ("text", "password"):
+                if not isinstance(value, str):
+                    raise SettingsError(f"{field['label']}必须是文本")
+                if len(value) > 128 or any(ch in value for ch in "\r\n\x00"):
+                    raise SettingsError(f"{field['label']}含有不允许的字符或过长")
+                # 密码留空表示「不修改」，不写进 settings.json
+                if field["kind"] == "password" and not value:
+                    continue
+                clean[logical] = value
             else:  # int / clock / weekdays 都是整数
                 clean[logical] = coerce_int(field, value)
         except SettingsError as error:
@@ -445,6 +509,19 @@ def apply_settings(values: object, restart: bool = True) -> dict:
     with WRITE_LOCK:
         raw = read_settings()
         style = detect_style(raw)
+        # 用「现有值 + 本次提交」求出最终值，再据此决定监听地址与鉴权开关
+        effective = effective_values(raw, style)
+        effective.update(clean)
+        clean.update(normalize_remote_access(effective))
+        # 记住明文口令：daemon 侧存的是哈希，插件自己发 RPC 时用得上
+        username = str(effective.get("rpc-username", "") or "").strip()
+        new_password = str(clean.get("rpc-password", "") or "")
+        if new_password:
+            write_credential(username, new_password)
+        elif username:
+            existing = read_credential()
+            if existing.get("password"):
+                write_credential(username, str(existing["password"]))
         write_settings(merge_managed(raw, style, clean))
     started = False
     if stopped:
@@ -542,10 +619,52 @@ def process_exists(pid: int) -> bool:
     return DAEMON_NAME in command
 
 
+# ---------------------------------------------------------------------------
+# RPC 凭据
+# ---------------------------------------------------------------------------
+# transmission 把 rpc-password 以加盐哈希存进 settings.json，且实测无法用该哈希
+# 通过 RPC 鉴权（会返回 401，见 README「远程访问」）。所以开启鉴权后，插件必须
+# 自己记住用户设置的明文口令，才能继续向回环 daemon 发请求。
+# 文件权限 0600，与 admin token 同级的本机机密。
+CREDENTIAL_FILE = DATA_DIR / "rpc-credential.json"
+
+
+def read_credential() -> dict:
+    try:
+        data = json.loads(CREDENTIAL_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_credential(username: str, password: str) -> None:
+    CREDENTIAL_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temporary = CREDENTIAL_FILE.with_name(CREDENTIAL_FILE.name + ".plugin.tmp")
+    temporary.write_text(
+        json.dumps({"username": username, "password": password}, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    os.chmod(temporary, 0o600)
+    temporary.replace(CREDENTIAL_FILE)
+    os.chmod(CREDENTIAL_FILE, 0o600)
+
+
+def auth_header() -> dict:
+    """回环 RPC 请求要带的 Basic 凭据；没配置就返回空。"""
+    credential = read_credential()
+    username = str(credential.get("username", ""))
+    password = str(credential.get("password", ""))
+    if not username or not password:
+        return {}
+    token = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+    return {"Authorization": f"Basic {token}"}
+
+
 def rpc_request(payload: dict, timeout: float = 3.0) -> tuple[int, dict, bytes]:
     """调用 daemon 的 RPC。返回 (状态码, 响应头, 响应体)。"""
     body = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
+    headers.update(auth_header())
     if SESSION_ID["value"]:
         headers["X-Transmission-Session-Id"] = SESSION_ID["value"]
     connection = HTTPConnection("127.0.0.1", RPC_PORT, timeout=timeout)
@@ -746,6 +865,11 @@ def settings_payload() -> dict:
     values = effective_values(raw, style)
     fields = []
     for field in FIELDS:
+        value = values.get(field["id"])
+        # 绝不回显已保存的密码：settings.json 里存的是加盐哈希，
+        # 回显既没用又会泄漏。界面里留空即表示不修改。
+        if field["kind"] == "password":
+            value = ""
         fields.append(
             {
                 "id": field["id"],
@@ -756,9 +880,10 @@ def settings_payload() -> dict:
                 "help": field["help"],
                 "minimum": field.get("minimum"),
                 "maximum": field.get("maximum"),
+                "choices": field.get("choices"),
                 "default": field.get("default"),
                 "storageKey": key_for(field["id"], style),
-                "value": values.get(field["id"]),
+                "value": value,
             }
         )
     return {
@@ -878,6 +1003,12 @@ class Handler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "请求体过大"})
             return
         headers = {"Content-Type": "application/json"}
+        # 客户端自己带了 Authorization 就原样透传；否则用插件保存的口令，
+        # 这样开启鉴权后内嵌的 transmission-web-control 依然可用。
+        if self.headers.get("Authorization"):
+            headers["Authorization"] = self.headers["Authorization"]
+        else:
+            headers.update(auth_header())
         session = self.headers.get("X-Transmission-Session-Id")
         if session:
             headers["X-Transmission-Session-Id"] = session

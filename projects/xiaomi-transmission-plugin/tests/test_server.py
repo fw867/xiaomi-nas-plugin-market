@@ -281,16 +281,153 @@ class TransmissionTests(unittest.TestCase):
         self.assertLessEqual(set(merged), allowed)
         self.assertEqual(300, merged["peer-limit-global"])
         self.assertTrue(merged["rpc-enabled"])
-        self.assertEqual("127.0.0.1", merged["rpc-bind-address"])
         self.assertEqual(module.RPC_PORT, merged["rpc-port"])
         self.assertFalse(merged["rpc-host-whitelist-enabled"])
+        # 白名单交给「凭据齐全才对外监听」的规则替代，绑定地址默认只监听本机
+        self.assertFalse(merged["rpc-whitelist-enabled"])
+        self.assertEqual("127.0.0.1", merged["rpc-bind-address"])
+        self.assertFalse(merged["rpc-authentication-required"])
         self.assertEqual(module.DEFAULT_DOWNLOAD_DIR, merged["download-dir"])
+
+    def test_rpc_bind_defaults_to_loopback(self) -> None:
+        """没配凭据时绝不能对外监听。"""
+        module = self.module
+        self.assertEqual("127.0.0.1", module.FIELDS_BY_ID["rpc-bind-address"]["default"])
+
+    # ------------------------------------------------------------------
+    # 「0.0.0.0 必须配齐凭据」规则
+    # ------------------------------------------------------------------
+
+    def test_remote_access_requires_credentials(self) -> None:
+        module = self.module
+        with mock.patch.object(module, "read_credential", return_value={}):
+            # 只要凭据不齐，请求 0.0.0.0 也会被压回 127.0.0.1
+            for values in (
+                {"rpc-bind-address": "0.0.0.0"},
+                {"rpc-bind-address": "0.0.0.0", "rpc-username": "u"},
+                {"rpc-bind-address": "0.0.0.0", "rpc-password": "p"},
+                {"rpc-bind-address": "0.0.0.0", "rpc-username": "  "},
+            ):
+                result = module.normalize_remote_access(values)
+                self.assertEqual("127.0.0.1", result["rpc-bind-address"], values)
+                self.assertFalse(result["rpc-authentication-required"], values)
+
+    def test_remote_access_allowed_with_credentials(self) -> None:
+        module = self.module
+        with mock.patch.object(module, "read_credential", return_value={}):
+            result = module.normalize_remote_access({
+                "rpc-bind-address": "0.0.0.0", "rpc-username": "u", "rpc-password": "p",
+            })
+        self.assertEqual("0.0.0.0", result["rpc-bind-address"])
+        self.assertTrue(result["rpc-authentication-required"])
+
+    def test_remote_access_reuses_saved_password(self) -> None:
+        """界面留空表示不修改口令，此时应沿用已保存的密码。"""
+        module = self.module
+        with mock.patch.object(module, "read_credential",
+                               return_value={"username": "u", "password": "saved"}):
+            result = module.normalize_remote_access({
+                "rpc-bind-address": "0.0.0.0", "rpc-username": "u", "rpc-password": "",
+            })
+        self.assertEqual("0.0.0.0", result["rpc-bind-address"])
+        self.assertTrue(result["rpc-authentication-required"])
+
+    def test_loopback_never_requires_auth(self) -> None:
+        module = self.module
+        with mock.patch.object(module, "read_credential", return_value={}):
+            result = module.normalize_remote_access({
+                "rpc-bind-address": "127.0.0.1", "rpc-username": "u", "rpc-password": "p",
+            })
+        self.assertEqual("127.0.0.1", result["rpc-bind-address"])
+        self.assertFalse(result["rpc-authentication-required"])
+
+    def test_auth_header_encodes_basic_credential(self) -> None:
+        module = self.module
+        with mock.patch.object(module, "read_credential",
+                               return_value={"username": "u", "password": "p"}):
+            header = module.auth_header()
+        self.assertEqual("Basic dTpw", header["Authorization"])
+
+    def test_auth_header_empty_without_credentials(self) -> None:
+        module = self.module
+        with mock.patch.object(module, "read_credential", return_value={}):
+            self.assertEqual({}, module.auth_header())
+        with mock.patch.object(module, "read_credential",
+                               return_value={"username": "u", "password": ""}):
+            self.assertEqual({}, module.auth_header())
+
+    def test_merge_managed_keeps_user_choice_of_rpc_bind(self) -> None:
+        """用户把绑定地址改成 127.0.0.1 时不能被默认值覆盖。"""
+        module = self.module
+        merged = module.merge_managed({}, "kebab", {"rpc-bind-address": "127.0.0.1"})
+        self.assertEqual("127.0.0.1", merged["rpc-bind-address"])
+
+    def test_merge_managed_never_writes_a_default_password(self) -> None:
+        """默认值里不能有密码，否则每次保存都会把已设的密码清掉。"""
+        module = self.module
+        merged = module.merge_managed({}, "kebab", {})
+        self.assertNotIn("rpc-password", merged)
+        merged = module.merge_managed({"rpc-password": "hash"}, "kebab", {"rpc-username": "u"})
+        self.assertEqual("hash", merged["rpc-password"])
 
     def test_merge_managed_keeps_snake_style(self) -> None:
         module = self.module
         merged = module.merge_managed({"rpc_port": 9091}, "snake", {"peer-limit-global": 300})
         self.assertEqual(300, merged["peer_limit_global"])
         self.assertNotIn("peer-limit-global", merged)
+
+    # ------------------------------------------------------------------
+    # 远程访问：监听地址与账号验证
+    # ------------------------------------------------------------------
+
+    def test_choice_field_rejects_unknown_address(self) -> None:
+        module = self.module
+        with self.assertRaises(module.SettingsError):
+            module.validate_settings({"rpc-bind-address": "192.168.1.5"})
+
+    def test_choice_field_accepts_both_addresses(self) -> None:
+        module = self.module
+        for value in ("0.0.0.0", "127.0.0.1"):
+            clean = module.validate_settings({"rpc-bind-address": value})
+            self.assertEqual(value, clean["rpc-bind-address"])
+
+    def test_empty_password_means_keep_current(self) -> None:
+        """留空不能覆盖已保存的密码哈希。"""
+        module = self.module
+        clean = module.validate_settings({"rpc-password": ""})
+        self.assertNotIn("rpc-password", clean)
+
+    def test_nonempty_password_is_written(self) -> None:
+        module = self.module
+        clean = module.validate_settings({"rpc-password": "hunter2"})
+        self.assertEqual("hunter2", clean["rpc-password"])
+
+    def test_password_with_newline_is_rejected(self) -> None:
+        module = self.module
+        with self.assertRaises(module.SettingsError):
+            module.validate_settings({"rpc-password": "a\nb"})
+
+    def test_username_accepts_empty_string(self) -> None:
+        module = self.module
+        clean = module.validate_settings({"rpc-username": ""})
+        self.assertEqual("", clean["rpc-username"])
+
+    def test_payload_never_exposes_stored_password(self) -> None:
+        """settings.json 里是加盐哈希，接口不能回显。"""
+        module = self.module
+        with mock.patch.object(module, "read_settings",
+                               return_value={"rpc-password": "abcdef0123456789"}):
+            payload = module.settings_payload()
+        field = next(f for f in payload["fields"] if f["id"] == "rpc-password")
+        self.assertEqual("", field["value"])
+
+    def test_auth_group_is_exposed_to_the_ui(self) -> None:
+        module = self.module
+        groups = {group["id"] for group in module.GROUPS}
+        self.assertIn("auth", groups)
+        for field_id in ("rpc-bind-address", "rpc-authentication-required",
+                         "rpc-username", "rpc-password"):
+            self.assertEqual("auth", module.FIELDS_BY_ID[field_id]["group"])
 
     def test_merge_managed_preserves_unmanaged_keys(self) -> None:
         module = self.module

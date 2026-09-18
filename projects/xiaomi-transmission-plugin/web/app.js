@@ -21,6 +21,9 @@ const WEEKDAY_BITS = [1, 2, 4, 8, 16, 32, 64];
 
 let schema = null;
 let busy = false;
+let activeGroup = null;
+// 这些字段是派生值，界面只展示不允许直接编辑
+const DERIVED_FIELDS = new Set(['rpc-authentication-required']);
 const controls = new Map();
 
 function showToast(message, isError) {
@@ -62,6 +65,11 @@ function readControl(control) {
     });
     return bits;
   }
+  // 文本类：不做整数解析。密码保留原样（可含空格），
+  // 留空表示不修改现有密码，由后端跳过。
+  if (control.kind === 'choice') return control.input.value;
+  if (control.kind === 'text') return control.input.value.trim();
+  if (control.kind === 'password') return control.input.value;
   const raw = control.input.value.trim();
   if (raw === '') throw new Error(`${control.field.label}不能为空`);
   const value = Number(raw);
@@ -140,6 +148,11 @@ function fieldNode(field) {
     const input = document.createElement('input');
     input.type = 'checkbox';
     input.id = `field-${field.id}`;
+    // 这一项由「监听地址 + 是否配齐凭据」派生，不让用户直接改
+    if (DERIVED_FIELDS.has(field.id)) {
+      input.disabled = true;
+      wrapper.classList.add('is-derived');
+    }
     const slider = document.createElement('span');
     slider.className = 'slider';
     toggle.append(input, slider);
@@ -155,6 +168,26 @@ function fieldNode(field) {
       input.type = 'text';
       input.id = `field-${field.id}`;
       input.spellcheck = false;
+      controlBox.append(input);
+      control.input = input;
+    } else if (field.kind === 'choice') {
+      const select = document.createElement('select');
+      select.id = `field-${field.id}`;
+      for (const option of field.choices || []) {
+        const node = document.createElement('option');
+        node.value = option;
+        node.textContent = option === '0.0.0.0' ? '0.0.0.0（所有网卡）' : `${option}（仅本机）`;
+        select.append(node);
+      }
+      controlBox.append(select);
+      control.input = select;
+    } else if (field.kind === 'text' || field.kind === 'password') {
+      const input = document.createElement('input');
+      input.type = field.kind === 'password' ? 'password' : 'text';
+      input.id = `field-${field.id}`;
+      input.spellcheck = false;
+      input.autocomplete = field.kind === 'password' ? 'new-password' : 'off';
+      if (field.kind === 'password') input.placeholder = '留空则不修改';
       controlBox.append(input);
       control.input = input;
     } else if (field.kind === 'clock') {
@@ -230,22 +263,47 @@ function renderSettings(data) {
     if (!byGroup.has(field.group)) byGroup.set(field.group, []);
     byGroup.get(field.group).push(field);
   }
-  for (const group of data.groups) {
-    const fields = byGroup.get(group.id) || [];
-    if (!fields.length) continue;
-    const section = document.createElement('section');
-    section.className = 'group';
-    const title = document.createElement('h2');
-    title.textContent = group.label;
+  const visible = data.groups.filter((group) => (byGroup.get(group.id) || []).length);
+  if (!visible.some((group) => group.id === activeGroup)) {
+    activeGroup = visible.length ? visible[0].id : null;
+  }
+
+  // 先把所有分组的控件都建出来：切 tab 只是显示/隐藏，
+  // 这样来回切换不会丢掉已经填了一半的输入。
+  const panes = new Map();
+  for (const group of visible) {
+    const pane = document.createElement('section');
+    pane.className = 'group';
+    // 用 fieldset/legend 会在手机上有默认边框，这里用普通容器
     const body = document.createElement('div');
     body.className = 'group-body';
-    for (const field of fields) {
+    for (const field of byGroup.get(group.id)) {
       body.append(fieldNode(field));
       setControlValue(controls.get(field.id), field.value);
     }
-    section.append(title, body);
-    groupsBox.append(section);
+    pane.append(body);
+    panes.set(group.id, pane);
   }
+
+  const nav = document.createElement('nav');
+  nav.className = 'tabs';
+  nav.setAttribute('aria-label', '设置分组');
+  for (const group of visible) {
+    const tab = document.createElement('button');
+    tab.type = 'button';
+    tab.className = `tab${group.id === activeGroup ? ' active' : ''}`;
+    tab.textContent = group.label;
+    tab.addEventListener('click', () => {
+      activeGroup = group.id;
+      for (const [id, pane] of panes) pane.classList.toggle('active', id === activeGroup);
+      for (const node of nav.children) node.classList.toggle('active', node === tab);
+    });
+    nav.append(tab);
+  }
+  for (const [id, pane] of panes) pane.classList.toggle('active', id === activeGroup);
+
+  groupsBox.append(nav);
+  for (const group of visible) groupsBox.append(panes.get(group.id));
   note.innerHTML =
     `设置写入 <code>${data.settingsPath}</code>（当前键名风格：${data.settingsKeyStyle}）。` +
     '保存时会先停止 transmission-daemon、写入文件、再重新启动，改动立即生效。<br />' +
