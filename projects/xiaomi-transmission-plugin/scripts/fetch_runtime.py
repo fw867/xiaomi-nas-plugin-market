@@ -286,9 +286,13 @@ def command_fetch(arguments: argparse.Namespace) -> int:
     package_records: list[dict] = []
     staging = Path(tempfile.mkdtemp(prefix="entware-ipk-"))
     # 先清空上一次的产物，避免版本升级后旧 .so 残留。
-    for directory in (BIN_DIR, LIB_DIR, LICENSE_DIR):
+    for directory in (BIN_DIR, LIB_DIR):
         if directory.is_dir():
             shutil.rmtree(directory)
+    # licenses/ 里除了这里下载的上游许可，还有随仓库维护的文件（如图标许可），
+    # 所以只清掉自己管理的那几个，不要整个目录一起删。
+    for source in LICENSE_SOURCES:
+        (LICENSE_DIR / source["name"]).unlink(missing_ok=True)
     try:
         for name in selected:
             entry = packages[name]

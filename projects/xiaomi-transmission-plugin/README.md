@@ -234,26 +234,27 @@ python3 scripts/fetch_runtime.py --print-table  # 重新打印上面的 .ipk 表
 
 ## 生成运行时要跑的命令
 
-`bin/`、`lib/`、`licenses/`、`runtime-manifest.json`、`web/twc/` 与插件图标都由脚本生成，
+`bin/`、`lib/`、`licenses/`、`runtime-manifest.json` 与 `web/twc/` 都由脚本生成，
 它们是 `scripts/build_apps.py` 的打包输入，缺失时打包会直接失败：
 
 ```bash
 cd projects/xiaomi-transmission-plugin
-python3 scripts/make_icon.py             # → web/assets/transmission.png（纯本地，无需联网）
 python3 scripts/fetch_runtime.py         # Entware → bin/ lib/ licenses/ runtime-manifest.json
 python3 scripts/fetch_web_control.py     # transmission-web-control → web/twc/
 ```
 
+图标 `web/assets/transmission.png` 不在这里生成：它是 Transmission 官方图标
+（512×512、8-bit RGBA），随仓库一起存放。来源与许可见
+`licenses/TRANSMISSION-ICON-LICENSE`。
+
 `LICENSE` 层面：`licenses/TRANSMISSION-COPYING`（GPL-2.0）与
-`licenses/TRANSMISSION-WEB-CONTROL-LICENSE`（MIT）同样由 `fetch_runtime.py` 下载，
-随插件包一起分发，满足再分发时的许可要求。图标由 `make_icon.py` 用代码绘制
-（纯标准库、结果可复现），不复用上游商标。
+`licenses/TRANSMISSION-WEB-CONTROL-LICENSE`（MIT）由 `fetch_runtime.py` 下载，
+随插件包一起分发，满足再分发时的许可要求。
 
 ## 已知限制
 
 * **本仓库当前检出中尚未包含 vendored 运行时**：`bin/`、`lib/`、`licenses/`、
-  `runtime-manifest.json`、`web/twc/` 与 `web/assets/transmission.png` 需要跑上面三条
-  命令生成（其中图标生成不需要联网）。
+  `runtime-manifest.json` 与 `web/twc/` 需要跑上面两条命令生成。
   因此 `python3 scripts/build_apps.py --only transmission` 在跑脚本之前会报缺少源文件。
 * 二进制来自第三方（Entware），不是本项目自行编译。Entware 的 aarch64 目标按
   glibc 2.27 构建，随包连 Entware 自己的 glibc 和加载器一起带上，运行时不依赖

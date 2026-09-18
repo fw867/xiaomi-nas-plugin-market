@@ -323,7 +323,7 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
         "iconName": "transmission.icon",
         # bin/ lib/ licenses/ runtime-manifest.json 由 scripts/fetch_runtime.py 从
         # Entware 提取；web/twc/ 由 scripts/fetch_web_control.py 取回；
-        # web/assets/transmission.png 由 scripts/make_icon.py 生成。
+        # web/assets/transmission.png 是 Transmission 官方图标（MIT），随仓库存放。
         # 三者都是打包输入，缺失时 build_bundle 会直接报 “Missing package source”。
         "runtime": {
             "server.py": "server.py",
