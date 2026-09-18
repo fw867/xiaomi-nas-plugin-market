@@ -13,17 +13,17 @@ function showToast(message) {
   showToast.timer = window.setTimeout(() => toast.classList.remove('visible'), 3200);
 }
 
-function packageCard(item, installedView = false) {
-  const article = document.createElement('article');
-  article.className = 'package-item';
-
+function makeIcon(item) {
   const icon = document.createElement('img');
   icon.className = 'package-icon';
   icon.src = item.iconUrl || '';
   icon.alt = '';
   icon.loading = 'lazy';
   icon.onerror = () => { icon.style.visibility = 'hidden'; };
+  return icon;
+}
 
+function makeCopy(item, installed = false) {
   const copy = document.createElement('div');
   copy.className = 'package-copy';
   const name = document.createElement('strong');
@@ -31,34 +31,78 @@ function packageCard(item, installedView = false) {
   const summary = document.createElement('p');
   summary.textContent = (item.channel === 'candidate' ? '测试版 · ' : '') + item.summary;
   const version = document.createElement('small');
-  version.textContent = item.installedVersion ? `已安装 ${item.installedVersion} · 最新 ${item.version}` : `版本 ${item.version}`;
-  copy.append(name, summary, version);
-
-  const button = document.createElement('button');
-  button.className = `action-button${installedView ? ' remove' : ''}`;
-  if (installedView && item.managed) {
-    button.textContent = '卸载';
-    button.addEventListener('click', () => mutate('uninstall', item, button));
-  } else if (installedView) {
-    button.textContent = '外部安装';
-    button.disabled = true;
-  } else if (item.installedVersion === item.version) {
-    button.textContent = '已安装';
-    button.disabled = true;
+  if (installed) {
+    version.textContent = item.installedVersion === item.version
+      ? `已是最新 ${item.version}`
+      : `已安装 ${item.installedVersion} · 可更新到 ${item.version}`;
+    if (item.installedVersion !== item.version) version.classList.add('has-update');
   } else {
-    button.textContent = item.installedVersion ? '更新' : '安装';
-    button.addEventListener('click', () => mutate('install', item, button));
+    version.textContent = `版本 ${item.version}`;
   }
-  article.append(icon, copy, button);
+  copy.append(name, summary, version);
+  return copy;
+}
+
+function makeButton(label, variant, handler, action) {
+  const button = document.createElement('button');
+  button.className = `action-button${variant ? ` ${variant}` : ''}`;
+  button.textContent = label;
+  if (action) button.dataset.action = action;
+  if (handler) button.addEventListener('click', handler);
+  else button.disabled = true;
+  return button;
+}
+
+function emptyState(text) {
+  return Object.assign(document.createElement('div'), { className: 'empty', textContent: text });
+}
+
+// 精选：只展示还没装的插件
+function packageCard(item) {
+  const article = document.createElement('article');
+  article.className = 'package-item';
+  const actions = document.createElement('div');
+  actions.className = 'package-actions';
+  actions.append(makeButton('安装', '', () => mutate('install', item, actions), 'install'));
+  article.append(makeIcon(item), makeCopy(item), actions);
+  return article;
+}
+
+// 已安装：可更新时给「更新」，托管插件给「卸载」
+function installedCard(item) {
+  const article = document.createElement('article');
+  article.className = 'package-item';
+  const actions = document.createElement('div');
+  actions.className = 'package-actions';
+  if (item.installedVersion !== item.version) {
+    actions.append(makeButton('更新', '', () => mutate('install', item, actions), 'install'));
+  }
+  if (item.managed) {
+    actions.append(makeButton('卸载', 'remove', () => mutate('uninstall', item, actions), 'uninstall'));
+  } else {
+    actions.append(makeButton('外部安装', '', null));
+  }
+  article.append(makeIcon(item), makeCopy(item, true), actions);
   return article;
 }
 
 function render() {
-  packageList.replaceChildren(...packages.map(item => packageCard(item)));
+  const available = packages.filter(item => !item.installedVersion);
+  packageList.replaceChildren(...(available.length
+    ? available.map(packageCard)
+    : [emptyState('全部插件都已安装')]));
+
   const installed = packages.filter(item => item.installedVersion);
   installedList.replaceChildren(...(installed.length
-    ? installed.map(item => packageCard(item, true))
-    : [Object.assign(document.createElement('div'), { className: 'empty', textContent: '还没有通过插件市场安装插件' })]));
+    ? installed.map(installedCard)
+    : [emptyState('还没有通过插件市场安装插件')]));
+
+  const updates = installed.filter(item => item.installedVersion !== item.version).length;
+  const parts = [`${available.length} 个可安装`];
+  if (installed.length) parts.push(`${installed.length} 个已安装`);
+  if (updates) parts.push(`${updates} 个可更新`);
+  const counter = document.getElementById('updatedAt');
+  if (counter) counter.textContent = preview ? '本地预览' : parts.join(' · ');
 }
 
 async function loadCatalog() {
@@ -79,7 +123,6 @@ async function loadCatalog() {
     if (!response.ok || !payload.ok) throw new Error(payload.error || '仓库读取失败');
     packages = payload.catalog.packages;
     preview = payload.preview;
-    document.getElementById('updatedAt').textContent = preview ? '本地预览' : `${packages.length} 个应用`;
     render();
   } catch (error) {
     packageList.replaceChildren(Object.assign(document.createElement('div'), { className: 'empty', textContent: error.message }));
@@ -195,14 +238,16 @@ async function selfUpdate() {
 document.getElementById('checkUpdateButton').addEventListener('click', loadStoreStatus);
 document.getElementById('selfUpdateButton').addEventListener('click', selfUpdate);
 
-async function mutate(action, item, button) {
+async function mutate(action, item, actions) {
   if (preview) {
     showToast('本地预览不会修改 NAS');
     return;
   }
-  const original = button.textContent;
-  button.disabled = true;
-  button.textContent = action === 'install' ? '安装中' : '卸载中';
+  const buttons = [...actions.querySelectorAll('button')];
+  const clicked = actions.querySelector(`button[data-action="${action}"]`) || buttons[0];
+  const original = clicked ? clicked.textContent : '';
+  buttons.forEach((button) => { button.disabled = true; });
+  if (clicked) clicked.textContent = action === 'install' ? '处理中…' : '卸载中…';
   try {
     const response = await fetch(`api/${action}`, {
       method: 'POST',
@@ -220,8 +265,8 @@ async function mutate(action, item, button) {
     await loadCatalog();
   } catch (error) {
     showToast(error.message);
-    button.disabled = false;
-    button.textContent = original;
+    buttons.forEach((button) => { button.disabled = false; });
+    if (clicked) clicked.textContent = original;
   }
 }
 
