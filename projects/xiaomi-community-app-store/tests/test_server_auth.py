@@ -4,6 +4,7 @@ import http.client
 import json
 import threading
 import unittest
+from unittest import mock
 
 from server import StoreServer
 
@@ -79,6 +80,35 @@ class ServerAuthTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertNotIn(b"__SESSION_TOKEN__", payload)
         self.assertRegex(payload.decode("utf-8"), r'<meta name="session-token" content="[^\"]+"')
+
+    def session_token(self) -> str:
+        _, _, payload = self.request(
+            "GET", "/index.html", headers={"X-Xiaomi-Client-Verify": "SUCCESS"}
+        )
+        html = payload.decode("utf-8")
+        marker = '<meta name="session-token" content="'
+        return html.split(marker, 1)[1].split('"', 1)[0]
+
+    def test_static_assets_are_never_cached(self) -> None:
+        """页面脚本不能长缓存：商店升级后客户端必须拿到新的 app.js。"""
+        status, headers, _ = self.request("GET", "/app.js")
+        self.assertEqual(200, status)
+        self.assertEqual("no-store", headers["Cache-Control"])
+
+    def test_catalog_refresh_bypasses_ttl_cache(self) -> None:
+        """刷新按钮带 refresh=1，要跳过后端 TTL 缓存直接重拉远程。"""
+        session = self.session_token()
+        calls: list[bool] = []
+
+        def fake_catalog(*, cache_path=None, force_refresh=False):
+            calls.append(force_refresh)
+            return {"apps": [], "store": {}}
+
+        with mock.patch("server.load_apps_catalog", side_effect=fake_catalog):
+            for path in ("/api/catalog", "/api/catalog?refresh=1"):
+                status, _, _ = self.request("GET", path, headers={"X-Community-Session": session})
+                self.assertEqual(200, status)
+        self.assertEqual([False, True], calls)
 
 
 if __name__ == "__main__":

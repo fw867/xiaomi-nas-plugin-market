@@ -6,6 +6,38 @@ const toast = document.getElementById('toast');
 let packages = [];
 let preview = false;
 
+// 小米智能存储客户端在 WebView 里注入 flutter_inappwebview / android_webview，
+// 官方插件靠自带的 js-bridge.js 调宿主方法（浏览器里没有这两个对象）。
+// 只实现我们用到的那一小部分：调宿主方法并忽略返回结果。
+function callClient(method, params) {
+  const host = window.flutter_inappwebview || window.android_webview;
+  if (!host) return false;
+  if (!host.callHandler) {
+    // 部分客户端版本只暴露 _callHandler，照 js-bridge.js 的方式补一层
+    host.callHandler = function () {
+      const id = window.setTimeout(() => {});
+      host._callHandler(arguments[0], id, JSON.stringify([].slice.call(arguments, 1)));
+      return new Promise((resolve) => { host[id] = resolve; });
+    };
+  }
+  const payload = host === window.android_webview ? JSON.stringify(params || {}) : (params || {});
+  host.callHandler('hs_webCallAppHandler', method, payload, String(++callClient.seq));
+  return true;
+}
+callClient.seq = 0;
+// 宿主拿结果时会回调这个全局函数；我们不等结果，留个空实现免得它报错
+window.hs_appCallBackToWeb = window.hs_appCallBackToWeb || function () {};
+
+// 在客户端里让宿主关掉当前插件页面；不在客户端时退回浏览器历史
+function leavePlugin() {
+  if (callClient('normal_goback', {})) return;
+  if (history.length > 1) {
+    history.back();
+    return;
+  }
+  window.close();
+}
+
 function showToast(message) {
   toast.textContent = message;
   toast.classList.add('visible');
@@ -105,9 +137,9 @@ function render() {
   if (counter) counter.textContent = preview ? '本地预览' : parts.join(' · ');
 }
 
-async function loadCatalog() {
+async function loadCatalog(force) {
   try {
-    const response = await fetch('api/catalog', {
+    const response = await fetch(`api/catalog${force ? '?refresh=1' : ''}`, {
       credentials: 'same-origin',
       cache: 'no-store',
       headers: { 'X-Community-Session': sessionToken },
@@ -278,6 +310,6 @@ document.querySelectorAll('.tab').forEach(tab => {
     if (tab.dataset.view === 'about') loadStoreStatus();
   });
 });
-document.getElementById('refreshButton').addEventListener('click', loadCatalog);
-document.getElementById('backButton').addEventListener('click', () => history.length > 1 ? history.back() : window.close());
+document.getElementById('refreshButton').addEventListener('click', () => loadCatalog(true));
+document.getElementById('backButton').addEventListener('click', leavePlugin);
 loadCatalog();

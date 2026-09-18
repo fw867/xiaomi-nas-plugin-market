@@ -17,7 +17,7 @@ from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from storelib import (
     InstallManager,
@@ -156,8 +156,9 @@ class StoreHandler(BaseHTTPRequestHandler):
 
     def _serve_file(self, path: Path) -> None:
         mime = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        cache = "public, max-age=86400" if path.name != "index.html" else "no-store"
-        self._send(HTTPStatus.OK, path.read_bytes(), mime, {"Cache-Control": cache})
+        # 不要给静态资源长缓存：商店升级后 app.js/styles.css 变了，
+        # 客户端 WebView 拿着旧脚本会出现「按钮点了没反应」这类怪象。
+        self._send(HTTPStatus.OK, path.read_bytes(), mime, {"Cache-Control": "no-store"})
 
     def _serve_index(self) -> None:
         session = self._session()
@@ -197,7 +198,8 @@ class StoreHandler(BaseHTTPRequestHandler):
         if path == "/api/catalog":
             if not self._require_session():
                 return
-            self._handle_catalog()
+            query = parse_qs(urlparse(self.path).query)
+            self._handle_catalog(force_refresh=query.get("refresh") == ["1"])
             return
         # 静态资源（web/ 目录下的 JS/CSS/HTML）
         file_path = self._safe_file(WEB, path)
@@ -224,10 +226,13 @@ class StoreHandler(BaseHTTPRequestHandler):
                 "error": str(error),
             })
 
-    def _handle_catalog(self) -> None:
-        """从 GitHub 拉取 apps.json（带本地缓存），图标转为 raw URL。"""
+    def _handle_catalog(self, force_refresh: bool = False) -> None:
+        """从 GitHub 拉取 apps.json（带本地缓存），图标转为 raw URL。
+
+        带 refresh=1 时跳过 TTL 缓存，直接重新拉远程——页面上的刷新按钮用它。
+        """
         try:
-            catalog = load_apps_catalog(cache_path=CATALOG_CACHE)
+            catalog = load_apps_catalog(cache_path=CATALOG_CACHE, force_refresh=force_refresh)
             packages = catalog.get("apps", [])
             for package in packages:
                 icon = str(package.get("icon", ""))
