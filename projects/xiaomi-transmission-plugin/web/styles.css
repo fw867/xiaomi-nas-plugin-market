@@ -93,6 +93,7 @@ main { width: min(620px, calc(100% - 40px)); margin: 0 auto; padding: 24px 0 60p
   align-items: center;
   justify-content: center;
   text-decoration: none;
+  white-space: nowrap;
 }
 .btn.primary { color: #fff; background: var(--blue); }
 .btn.primary:hover:not(:disabled) { background: #1e6ac4; }
@@ -101,7 +102,8 @@ main { width: min(620px, calc(100% - 40px)); margin: 0 auto; padding: 24px 0 60p
 .btn.danger { color: var(--red); background: #fdeceb; }
 .btn.danger:hover:not(:disabled) { background: #fadad8; }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
-.btn.link { height: 38px; padding: 0 20px; font-size: 14px; color: #fff; background: var(--blue); }
+/* flex 行里按钮不能被右侧长文案挤扁，否则「打开」两字会竖排 */
+.btn.link { height: 38px; padding: 0 20px; font-size: 14px; color: #fff; background: var(--blue); flex: 0 0 auto; }
 
 /* 设置分组：分组名显示在 tab 栏里，面板本身不再重复标题 */
 .tabs {
