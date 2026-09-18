@@ -20,7 +20,7 @@ from unittest import mock
 ENVIRONMENT = {
     "HOST": "127.0.0.1",
     "PORT": "0",
-    "RPC_PORT": "19191",
+    "RPC_PORT": "9091",
     "LOCAL_ROOT": "",
     "SETTINGS_KEY_STYLE": "auto",
 }

@@ -90,9 +90,9 @@ LOG_FILE = DATA_DIR / "transmission.log"
 # 记录用户是否希望 daemon 运行，用于开机后自动拉起（transmission 自己不管这个）。
 PLUGIN_STATE_FILE = DATA_DIR / "plugin-state.json"
 
-# daemon 的 RPC 只监听回环。默认端口刻意避开 transmission 的 9091，
-# 免得与用户自己装的 transmission 冲突。
-RPC_PORT = int(os.environ.get("RPC_PORT", "19191"))
+# daemon 的 RPC 默认只监听回环（「RPC 监听地址」可以改成 0.0.0.0 做远程访问）。
+# 端口沿用 transmission 的默认值 9091，第三方客户端不用改端口就能连。
+RPC_PORT = int(os.environ.get("RPC_PORT", "9091"))
 RPC_PATH = "/transmission/"
 
 # 请求体上限：设置接口和 RPC 透传共用（RPC 还能带 metainfo）。

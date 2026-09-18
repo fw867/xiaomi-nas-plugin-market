@@ -44,12 +44,12 @@ xiaomi-transmission.service   127.0.0.1:18140（server.py，仅标准库）
   ├── 设置：读写 <config-dir>/settings.json，按需要重启 daemon
   └── 状态：pid 文件 + RPC session-stats
   ▼
-transmission-daemon   127.0.0.1:19191（RPC 只绑回环，不开鉴权）
+transmission-daemon   127.0.0.1:9091（默认只绑回环；开启远程访问后绑 0.0.0.0 并要求鉴权）
 ```
 
 `server.py` 只监听回环、只提供固定操作，它不是不受信任插件的沙箱。
-RPC 端口刻意用 19191 而不是 transmission 默认的 9091，避免与用户自己装的
-transmission 冲突（可用 `RPC_PORT` 环境变量调整）。
+RPC 端口用 transmission 的默认值 9091，第三方客户端不必改端口就能连
+（可用 `RPC_PORT` 环境变量调整）。
 
 ## 设置项与 settings.json 字段
 

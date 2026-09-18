@@ -11,7 +11,7 @@ Environment=PORT=18140
 Environment=WEB_DIR=/data/plugin/transmission/current/web
 Environment=RUNTIME_DIR=/data/plugin/transmission/current
 Environment=DATA_DIR=/data/plugin/transmission/data
-Environment=RPC_PORT=19191
+Environment=RPC_PORT=9091
 Environment=LOCAL_ROOT=/nas/pool0/__NAS_USER_ID__/data
 ExecStart=/usr/bin/python3 /data/plugin/transmission/current/server.py
 ExecStopPost=-/bin/sh -c 'kill -TERM "$(cat /data/plugin/transmission/data/transmission-daemon.pid 2>/dev/null)" 2>/dev/null || true'
