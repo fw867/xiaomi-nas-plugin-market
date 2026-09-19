@@ -85,7 +85,7 @@
                 <ul>
                     <li>容器 <code>xiaomi-plugin-qbittorrent</code> 只挂载插件私有配置目录和所选的下载目录，不挂载 Docker socket，不使用 privileged 或 host 网络。</li>
                     <li>WebUI 端口 18123 对整个局域网开放，可直接用 qBittorrent 官方客户端或网页连接，登录用户名 <code>admin</code>、密码为安装时设置的那个。</li>
-                    <li>不映射 BT 入站端口，也未启用 UPnP/NAT-PMP，部分网络下连接数和速度会受限，本版只做主动出站连接。</li>
+                    <li>BT 入站端口固定为 36754（TCP/UDP）并已映射到宿主机；要让公网上的其他 peer 连进来，还需在路由器上把该端口转发到本机。</li>
                     <li>「移除任务」始终保留已下载文件，插件里没有删除文件的操作。</li>
                     <li>停止或卸载插件只停止容器，qBittorrent 配置与已下载文件都会保留。</li>
                 </ul>

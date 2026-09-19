@@ -10,7 +10,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from engine import (Engine, Error, IMAGE, NAME, LABEL, PORT, VERSION, confined, mutation,
+from engine import (Engine, Error, IMAGE, NAME, LABEL, PORT, BT_PORT, VERSION, confined, mutation,
                     password_hash, container_config, installed_version)
 from server import Server, accepted
 
@@ -97,12 +97,16 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(cfg['Labels'], {LABEL: 'test'})
         host = cfg['HostConfig']
         self.assertEqual(host['RestartPolicy'], {'Name': 'no'})
-        # WebUI 对局域网开放，便于用 qBittorrent 官方客户端连接
-        self.assertEqual(host['PortBindings'],
-                         {str(PORT) + '/tcp': [{'HostIp': '0.0.0.0', 'HostPort': str(PORT)}]})
+        # WebUI 对局域网开放；BT 入站端口也要映射出去，否则别人连不进来
+        self.assertEqual(host['PortBindings'], {
+            str(PORT) + '/tcp': [{'HostIp': '0.0.0.0', 'HostPort': str(PORT)}],
+            str(BT_PORT) + '/tcp': [{'HostIp': '0.0.0.0', 'HostPort': str(BT_PORT)}],
+            str(BT_PORT) + '/udp': [{'HostIp': '0.0.0.0', 'HostPort': str(BT_PORT)}],
+        })
         # 端口必须在顶层 ExposedPorts 里一起声明：只给 PortBindings 时，
         # Engine API 会静默忽略镜像 EXPOSE 里没有的端口，映射不生效。
-        self.assertEqual(cfg['ExposedPorts'], {str(PORT) + '/tcp': {}})
+        self.assertEqual(cfg['ExposedPorts'],
+                         {str(PORT) + '/tcp': {}, str(BT_PORT) + '/tcp': {}, str(BT_PORT) + '/udp': {}})
         # 不能提权、不能改网络模式、不挂 docker socket
         self.assertNotIn('Privileged', host)
         self.assertNotIn('NetworkMode', host)

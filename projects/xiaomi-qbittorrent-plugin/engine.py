@@ -21,6 +21,10 @@ IMAGE = 'ghcr.io/linuxserver/qbittorrent@sha256:a00b6a597a3832a1814cde0ef60abc55
 NAME = 'xiaomi-plugin-qbittorrent'
 LABEL = 'io.xiaomi-plugin.qb.owner'
 PORT = 18123
+# BT 的入站监听端口（TCP + UDP）。必须固定下来并映射到宿主机，否则别人无法
+# 主动连进来：PT 做种没有上传、分享率上不去，连接状态会一直是 firewalled。
+# qB 默认会自己随机挑一个，这里写死，也方便在路由器上做端口转发。
+BT_PORT = 36754
 # qB 的 WebUI 会话有效期（秒）。插件把登录后的会话持久化到磁盘，下次打开
 # 下载列表直接复用，所以放宽到 30 天，避免频繁要求重新登录。
 SESSION_TIMEOUT = 30 * 24 * 3600
@@ -158,7 +162,7 @@ def container_config(config, data):
         # 必须同时声明 ExposedPorts：Engine API 不像 `docker run -p` 那样自动补，
         # 只给 HostConfig.PortBindings 的话，镜像 EXPOSE 里没有的端口会被静默忽略
         # ——容器只留下镜像自带的 6881/8080，WebUI 的 18123 根本映射不出去。
-        'ExposedPorts': {str(PORT) + '/tcp': {}},
+        'ExposedPorts': {str(PORT) + '/tcp': {}, str(BT_PORT) + '/tcp': {}, str(BT_PORT) + '/udp': {}},
         'Env': [
             'PUID=' + str(config['uid']),
             'PGID=' + str(config['gid']),
@@ -176,7 +180,12 @@ def container_config(config, data):
             'SecurityOpt': ['no-new-privileges:true'],
             'LogConfig': {'Type': 'json-file', 'Config': {'max-size': '5m', 'max-file': '2'}},
             # WebUI 对整个局域网开放，便于直接用 qBittorrent 官方客户端或网页连接。
-            'PortBindings': {str(PORT) + '/tcp': [{'HostIp': '0.0.0.0', 'HostPort': str(PORT)}]},
+            'PortBindings': {
+                str(PORT) + '/tcp': [{'HostIp': '0.0.0.0', 'HostPort': str(PORT)}],
+                # BT 入站端口要映射出去别人才能主动连进来；UDP 用于 uTP 打洞。
+                str(BT_PORT) + '/tcp': [{'HostIp': '0.0.0.0', 'HostPort': str(BT_PORT)}],
+                str(BT_PORT) + '/udp': [{'HostIp': '0.0.0.0', 'HostPort': str(BT_PORT)}],
+            },
             'Mounts': [
                 {'Type': 'bind', 'Source': str(data / 'config'), 'Target': '/config'},
                 {'Type': 'bind', 'Source': config['download'], 'Target': '/downloads'},
@@ -293,6 +302,7 @@ class Engine:
             os.chmod(path, 0o700)
         conf = ('[LegalNotice]\nAccepted=true\n[Network]\nPortForwardingEnabled=false\n'
                 '[BitTorrent]\nSession\\DefaultSavePath=/downloads\nSession\\QueueingSystemEnabled=true\n'
+                'Session\\Port=' + str(BT_PORT) + '\n'
                 'Session\\MaxActiveDownloads=2\nSession\\MaxActiveTorrents=4\nSession\\MaxConnections=150\n'
                 '[Preferences]\nWebUI\\Address=*\nWebUI\\Port=18123\nWebUI\\Username=admin\n'
                 'WebUI\\Password_PBKDF2="@ByteArray(' + hashed + ')"\n'
