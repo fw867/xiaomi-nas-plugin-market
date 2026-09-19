@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-from engine import Engine, Error, PORT, VERSION
+from engine import Engine, Error, PORT, installed_version
 
 WEB = Path(__file__).resolve().parent / 'web'
 TTL = 86400
@@ -146,15 +146,16 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         route = urlsplit(self.path)
         if route.path == '/healthz':
-            return self.send(200, {'ok': True, 'version': VERSION})
+            return self.send(200, {'ok': True, 'version': installed_version()})
         if route.path in ('/', '/index.html'):
             token = ''
             if self.trusted():
                 payload = str(int(time.time()) + TTL) + '.' + secrets.token_hex(16)
                 token = payload + '.' + self.sign(payload)
-            html = (WEB / 'index.html').read_text(encoding='utf-8').replace(
-                '__SESSION_TOKEN__', token).replace(
-                '__CSRF_TOKEN__', self.sign('csrf:' + token) if token else '')
+            html = (WEB / 'index.html').read_text(encoding='utf-8')
+            html = html.replace('__SESSION_TOKEN__', token)
+            html = html.replace('__CSRF_TOKEN__', self.sign('csrf:' + token) if token else '')
+            html = html.replace('__PLUGIN_VERSION__', installed_version())
             return self.send(200, html.encode(), 'text/html; charset=utf-8')
         if route.path in STATIC:
             name, mime = STATIC[route.path]

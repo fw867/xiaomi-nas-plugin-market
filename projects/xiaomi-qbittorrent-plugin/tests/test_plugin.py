@@ -10,7 +10,8 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from engine import Engine, Error, IMAGE, NAME, LABEL, PORT, confined, mutation, password_hash, container_config
+from engine import (Engine, Error, IMAGE, NAME, LABEL, PORT, VERSION, confined, mutation,
+                    password_hash, container_config, installed_version)
 from server import Server
 
 
@@ -126,6 +127,26 @@ class EngineTests(unittest.TestCase):
         stat = folder.stat()
         return {'owner': 'owner-token', 'relative': 'MiShare/qBDownloads', 'download': str(folder),
                 'uid': 1000, 'gid': 1000, 'device': stat.st_dev, 'inode': stat.st_ino, 'enabled': True}
+
+    def test_installed_version_from_release_directory(self):
+        """页脚要显示实际装上的包版本，不能再是源码里写死的常量。
+
+        回归用例：发布目录是 releases/<版本>-<时间戳>-<pid>，页脚却一直显示
+        代码里的 VERSION，装了 0.1.2-rc1 的包页面仍写 0.1.0-rc1。
+        """
+        with patch('engine.__file__',
+                   '/data/plugin/qbittorrent/releases/0.1.2-rc1-1789828016-8538/engine.py'):
+            self.assertEqual(installed_version(), '0.1.2-rc1')
+        with patch('engine.__file__',
+                   '/data/plugin/qbittorrent/releases/0.1.6-1789827953-8538/engine.py'):
+            self.assertEqual(installed_version(), '0.1.6')
+
+    def test_installed_version_falls_back_in_source_tree(self):
+        """源码树里跑（开发、预览）解析不出发布目录，回退到 VERSION。"""
+        self.assertEqual(installed_version(), VERSION)
+
+    def test_snapshot_reports_installed_version(self):
+        self.assertEqual(self.engine.snapshot()['version'], installed_version())
 
     def test_snapshot_before_setup(self):
         state = self.engine.snapshot()
@@ -340,6 +361,13 @@ class HTTPTests(unittest.TestCase):
         _, body = self.request('GET', '/', headers={'X-Xiaomi-Client-Verify':'SUCCESS','X-Xiaomi-Client-DN':'CN=nas.123456.test.2'})
         self.assertNotIn(b'name="qb-session" content=""', body)
 
+    def test_page_shows_installed_version(self):
+        """页脚版本由服务端注入，源码里不再留写死的字符串。"""
+        _, body = self.request('GET', '/')
+        text = body.decode()
+        self.assertNotIn('__PLUGIN_VERSION__', text)
+        self.assertIn('qB 下载 · ' + installed_version(), text)
+
 
 class UiTests(unittest.TestCase):
     """插件页是随包下发的静态文件，用静态检查补上浏览器之外的回归。"""
@@ -365,6 +393,11 @@ class UiTests(unittest.TestCase):
         used = set(re.findall(r'data-icon="([a-z0-9]+)"', html))
         self.assertTrue(used)
         self.assertEqual(used - self.icons, set())
+
+    def test_page_version_comes_from_server(self):
+        """页脚不能写死版本，必须留占位符由服务端填实际安装版本。"""
+        html = (self.web / 'index.html').read_text(encoding='utf-8')
+        self.assertIn('__PLUGIN_VERSION__', html)
 
     def test_html_references_existing_files(self):
         html = (self.web / 'index.html').read_text(encoding='utf-8')

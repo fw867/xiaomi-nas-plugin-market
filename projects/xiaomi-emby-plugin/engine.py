@@ -17,6 +17,8 @@ import time
 import urllib.parse
 from pathlib import Path
 
+# 开发环境（源码树里直接跑）的回退值。页面上显示的是插件包的真实版本，
+# 由 installed_version() 从自身所在的发布目录名里取。
 VERSION = '0.1.0'
 # Emby 官方镜像的多架构 manifest（含 amd64 / arm64v8 / arm32v7），
 # 与 `latest` 当前指向同一 digest。用 tag + digest 固定，避免被上游重新推送影响。
@@ -33,6 +35,21 @@ DOCKER_SOCKET = os.environ.get('DOCKER_SOCKET', '/var/run/docker.sock')
 
 class Error(RuntimeError):
     pass
+
+
+def installed_version():
+    """插件包的真实版本号。
+
+    商店安装器把包解压到 <releaseRoot>/releases/<版本>-<时间戳>-<pid>/ 下，
+    current 是指向它的符号链接，所以本文件所在目录名里就带着版本。这样页面
+    显示的版本跟着实际装上的包走，不会和代码里的常量各自漂移。
+
+    源码树里跑（开发、预览）时解析不出来，回退到 VERSION。
+    """
+    parts = Path(__file__).resolve().parent.name.split('-')
+    if len(parts) > 2 and parts[-1].isdigit() and parts[-2].isdigit():
+        return '-'.join(parts[:-2])
+    return VERSION
 
 
 class _UnixHTTPConnection(http.client.HTTPConnection):
@@ -230,7 +247,7 @@ class Engine:
                         wizard = info['StartupWizardCompleted']
                 except Error:
                     ready = False
-        return {'version': VERSION, 'configured': bool(self.config), 'running': running, 'ready': ready,
+        return {'version': installed_version(), 'configured': bool(self.config), 'running': running, 'ready': ready,
                 'busy': self.busy, 'error': error, 'preview': self.dev, 'port': PORT,
                 'directory': self.config['relative'] if self.config else '',
                 'serverVersion': server_version, 'wizardCompleted': wizard,

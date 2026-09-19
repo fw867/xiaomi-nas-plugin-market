@@ -8,7 +8,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from engine import Engine, Error, IMAGE, NAME, LABEL, PORT, confined, container_config
+from engine import (Engine, Error, IMAGE, NAME, LABEL, PORT, VERSION, confined,
+                    container_config, installed_version)
 from server import Server
 
 
@@ -74,6 +75,23 @@ class EngineTests(unittest.TestCase):
         self.engine.dev = True
         with self.assertRaises(Error):
             self.engine.launch('start', {})
+
+    def test_installed_version_from_release_directory(self):
+        """页脚要显示实际装上的包版本，不能再是源码里写死的常量。
+
+        回归用例：发布目录是 releases/<版本>-<时间戳>-<pid>，页脚却一直显示
+        代码里的 VERSION，装了 0.1.6 的包页面仍写 0.1.0。
+        """
+        with patch('engine.__file__',
+                   '/data/plugin/emby/releases/0.1.6-1789827953-8538/engine.py'):
+            self.assertEqual(installed_version(), '0.1.6')
+
+    def test_installed_version_falls_back_in_source_tree(self):
+        """源码树里跑（开发、预览）解析不出发布目录，回退到 VERSION。"""
+        self.assertEqual(installed_version(), VERSION)
+
+    def test_snapshot_reports_installed_version(self):
+        self.assertEqual(self.engine.snapshot()['version'], installed_version())
 
     def test_snapshot_before_setup(self):
         state = self.engine.snapshot()
@@ -328,6 +346,13 @@ class HTTPTests(unittest.TestCase):
             'X-Xiaomi-Client-DN': 'CN=nas.123456.test.2'})
         self.assertNotIn(b'name="emby-session" content=""', body)
 
+    def test_page_shows_installed_version(self):
+        """页脚版本由服务端注入，源码里不再留写死的字符串。"""
+        _, body = self.request('GET', '/')
+        text = body.decode()
+        self.assertNotIn('__PLUGIN_VERSION__', text)
+        self.assertIn('Emby 媒体服务器 · ' + installed_version(), text)
+
 
 class UiTests(unittest.TestCase):
     def test_ui_calls_the_api_with_relative_paths(self):
@@ -340,6 +365,12 @@ class UiTests(unittest.TestCase):
         self.assertNotIn("'/api", script)
         self.assertNotIn('"/api', script)
         self.assertIn("fetch('api' + path", script)
+
+
+    def test_page_version_comes_from_server(self):
+        """页脚不能写死版本，必须留占位符由服务端填实际安装版本。"""
+        html = (Path(__file__).resolve().parents[1] / 'web' / 'index.html').read_text(encoding='utf-8')
+        self.assertIn('__PLUGIN_VERSION__', html)
 
 
 if __name__ == '__main__':

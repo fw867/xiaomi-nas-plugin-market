@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit, parse_qs
 
+# 开发环境（源码树里直接跑）的回退值。页面上显示的是插件包的真实版本，
+# 由 installed_version() 从自身所在的发布目录名里取。
 VERSION = '0.1.0-rc1'
 IMAGE = 'ghcr.io/linuxserver/qbittorrent@sha256:a00b6a597a3832a1814cde0ef60abc55c94644f3f80902c3432f6af6de8d4a96'
 NAME = 'xiaomi-plugin-qbittorrent'
@@ -26,6 +28,21 @@ DOCKER_SOCKET = os.environ.get('DOCKER_SOCKET', '/var/run/docker.sock')
 
 class Error(RuntimeError):
     pass
+
+
+def installed_version():
+    """插件包的真实版本号。
+
+    商店安装器把包解压到 <releaseRoot>/releases/<版本>-<时间戳>-<pid>/ 下，
+    current 是指向它的符号链接，所以本文件所在目录名里就带着版本。这样页面
+    显示的版本跟着实际装上的包走，不会和代码里的常量各自漂移。
+
+    源码树里跑（开发、预览）时解析不出来，回退到 VERSION。
+    """
+    parts = Path(__file__).resolve().parent.name.split('-')
+    if len(parts) > 2 and parts[-1].isdigit() and parts[-2].isdigit():
+        return '-'.join(parts[:-2])
+    return VERSION
 
 
 class _UnixHTTPConnection(http.client.HTTPConnection):
@@ -240,7 +257,7 @@ class Engine:
                     ready = True
                 except Error:
                     ready = False
-        return {'version': VERSION, 'configured': bool(self.config), 'running': running, 'ready': ready,
+        return {'version': installed_version(), 'configured': bool(self.config), 'running': running, 'ready': ready,
                 'busy': self.busy, 'error': error, 'preview': self.dev,
                 'directory': self.config['relative'] if self.config else '',
                 'imageVersion': '5.2.3 / LSIO ls474'}
