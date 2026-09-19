@@ -274,6 +274,22 @@ class EngineTests(unittest.TestCase):
         self.assertIn('PortForwardingEnabled=false', conf)
         self.assertIn('CSRFProtection=true', conf)
 
+    def test_setup_saves_credential(self):
+        """安装时输入的密码要记下来，供以后自动登录，用户不必再输一次。"""
+        if not self.root.stat().st_uid or not self.root.stat().st_gid:
+            self.skipTest('requires non-root test directory owner')
+
+        def fake_api(method, path, body=None, timeout=30):
+            if path == '/info':
+                return 200, b'{"Architecture":"aarch64"}'
+            return 404, b'{"message":"No such container"}'
+
+        with patch('engine.os.chown'), patch('engine.docker_api', side_effect=fake_api):
+            self.engine.setup('MiShare', 'Example123')
+        self.assertEqual(self.engine.saved_credential(), 'Example123')
+        # 凭据文件权限收紧到仅属主可读
+        self.assertEqual(self.engine.credentialfile.stat().st_mode & 0o077, 0)
+
     def test_setup_refuses_existing_container(self):
         if not self.root.stat().st_uid or not self.root.stat().st_gid:
             self.skipTest('requires non-root test directory owner')
@@ -374,6 +390,31 @@ class HTTPTests(unittest.TestCase):
             code, body = self.request('GET', '/api/status', headers=self.auth())
         self.assertEqual(code, 200)
         self.assertEqual(json.loads(body)['address'], 'http://192.168.1.15:' + str(PORT))
+
+    def test_auto_login_uses_saved_credential(self):
+        """容器在跑但没有会话时，用安装时记下的密码自动补登，用户不必再输密码。"""
+        self.server.engine.config = {'relative': 'MiShare', 'download': '', 'device': 0, 'inode': 0}
+        self.server.engine.save_credential('saved-pass')
+        header = 'QBT_SID_18123=' + 'd' * 32 + '; HttpOnly; path=/'
+        with patch.object(self.server.engine, 'owned', return_value={'State': {'Running': True}}), \
+                patch('server.qb_request', return_value=(204, b'', header)) as login:
+            code, body = self.request('GET', '/api/status', headers=self.auth())
+        self.assertEqual(code, 200)
+        self.assertTrue(json.loads(body)['loggedIn'])
+        self.assertEqual(login.call_args.args[0], 'auth/login')
+        self.assertEqual(login.call_args.args[1]['password'], 'saved-pass')
+        self.assertEqual(self.server.qb_session(), 'QBT_SID_18123=' + 'd' * 32)
+
+    def test_auto_login_backs_off_after_failure(self):
+        """自动登录失败要冷却：下载列表是 3 秒轮询，不冷却会一直重试，
+        反而把 qB 的失败计数顶上去触发临时封禁。"""
+        self.server.engine.config = {'relative': 'MiShare', 'download': '', 'device': 0, 'inode': 0}
+        self.server.engine.save_credential('wrong')
+        with patch.object(self.server.engine, 'owned', return_value={'State': {'Running': True}}), \
+                patch('server.qb_request', return_value=(401, b'Unauthorized', '')) as login:
+            self.request('GET', '/api/status', headers=self.auth())
+            self.request('GET', '/api/status', headers=self.auth())
+        self.assertEqual(login.call_count, 1)
 
     def test_login_accepts_qb5_response(self):
         """qB 5.x 登录成功返回 204 + 空 body + QBT_SID_<端口> cookie。

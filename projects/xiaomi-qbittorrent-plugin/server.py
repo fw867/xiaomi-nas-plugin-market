@@ -25,6 +25,9 @@ from engine import (Engine, Error, PORT, SESSION_TIMEOUT, qb_request, mutation,
 
 WEB = Path(__file__).resolve().parent / 'web'
 TTL = 86400
+# 自动登录失败后的冷却时间（秒）：下载列表是 3 秒轮询一次，不冷却会一直重试，
+# 反而把 qB 的失败计数顶上去触发临时封禁。
+AUTO_LOGIN_COOLDOWN = 60
 
 
 def lan_ip():
@@ -76,6 +79,7 @@ class Server(ThreadingHTTPServer):
         # 列表时不必每次重输密码，插件重启后也能续上。
         self.qb_cookie = ''
         self.qb_expiry = 0.0
+        self.auto_login_at = 0.0
         self.qb_lock = threading.Lock()
         self.qb_session_file = engine.data / 'qb-session.json'
         self.load_qb_session()
@@ -112,6 +116,42 @@ class Server(ThreadingHTTPServer):
             self.qb_session_file.unlink()
         except OSError:
             pass
+
+    def login_qb(self, password):
+        """登录 qB 并保存会话；成功返回 True。"""
+        try:
+            code, body, header = qb_request('auth/login', {'username': 'admin', 'password': password})
+        except Error:
+            return False
+        # qB 5.x 登录成功是 204 + 空 body、cookie 名为 QBT_SID_<端口>；4.x 是
+        # 200 + "Ok." + SID。按 4.x 严格校验会让密码正确也报失败。
+        jar = SimpleCookie()
+        try:
+            jar.load(header)
+        except CookieError:
+            jar = SimpleCookie()
+        name = next((n for n in ('QBT_SID_' + str(PORT), 'SID') if n in jar), '')
+        sid = jar[name].value if name else ''
+        if code not in (200, 204) or not sid or not re.fullmatch(r'[A-Za-z0-9_-]{8,256}', sid):
+            return False
+        self.save_qb_session(name + '=' + sid)
+        return True
+
+    def ensure_qb_session(self):
+        """会话失效时，用安装时记下的密码自动补登一次。
+
+        这样用户点「qB Web 控制台」就能直接进下载列表，不必再输密码。
+        """
+        if self.qb_session():
+            return True
+        password = self.engine.saved_credential()
+        if not password:
+            return False
+        now = time.time()
+        if now - self.auto_login_at < AUTO_LOGIN_COOLDOWN:
+            return False
+        self.auto_login_at = now
+        return self.login_qb(password)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -227,6 +267,10 @@ class Handler(BaseHTTPRequestHandler):
             query = parse_qs(route.query)
             if route.path == '/api/status':
                 result = self.server.engine.snapshot()
+                if result['running']:
+                    # 容器在跑但没有会话（插件或 qB 重启过），用记下的密码自动
+                    # 补一次登录，用户就不必再输密码。
+                    self.server.ensure_qb_session()
                 result['loggedIn'] = bool(self.server.qb_session())
                 result['address'] = self.address()
             elif route.path == '/api/browse':
@@ -271,19 +315,10 @@ class Handler(BaseHTTPRequestHandler):
                 password = data.get('password')
                 if not isinstance(password, str) or not 1 <= len(password) <= 200:
                     raise Error('请输入 qBittorrent 密码')
-                code, body, header = qb_request('auth/login', {'username': 'admin', 'password': password})
-                # qB 5.x 登录成功是 204 空响应、cookie 名为 QBT_SID_<端口>；
-                # 4.x 是 200 + "Ok." + SID。按 4.x 严格校验会让密码正确也报失败。
-                jar = SimpleCookie()
-                try:
-                    jar.load(header)
-                except CookieError:
-                    jar = SimpleCookie()
-                name = next((n for n in ('QBT_SID_' + str(PORT), 'SID') if n in jar), '')
-                sid = jar[name].value if name else ''
-                if code not in (200, 204) or not sid or not re.fullmatch(r'[A-Za-z0-9_-]{8,256}', sid):
+                if not self.server.login_qb(password):
                     raise Error('登录失败，密码错误或登录次数过多')
-                self.server.save_qb_session(name + '=' + sid)
+                # 这次密码是对的，记下来供以后自动登录
+                self.server.engine.save_credential(password)
             elif action == 'logout':
                 self.server.clear_qb_session()
             elif action == 'torrent':

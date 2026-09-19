@@ -204,6 +204,7 @@ class Engine:
         self.worker = None
         self.cfgfile = self.data / 'settings.json'
         self.config = json.loads(self.cfgfile.read_text()) if self.cfgfile.exists() else None
+        self.credentialfile = self.data / 'credential.json'
 
     def _call(self, method, path, body=None, timeout=30, ok=(200, 201, 204)):
         """调一次 Engine API；非预期状态码统一报错。"""
@@ -319,6 +320,24 @@ class Engine:
                        'download': str(folder), 'uid': uid, 'gid': gid, 'device': stat.st_dev,
                        'inode': stat.st_ino, 'enabled': True}
         atomic_json(self.cfgfile, self.config)
+        self.save_credential(password)
+
+    def save_credential(self, password):
+        """记下 qB 的 WebUI 密码，供会话失效时自动重新登录。
+
+        它与 qB 自己的 QQBittorrent.conf 同处一个仅 root 可读的目录，后者也存着
+        等价的密码哈希，属于同一信任域，并没有多开一个口子。目的是让「进下载
+        列表」这一步不再要求用户重复输入密码。
+        """
+        atomic_json(self.credentialfile, {'password': password})
+
+    def saved_credential(self):
+        try:
+            data = json.loads(self.credentialfile.read_text(encoding='utf-8'))
+            password = data.get('password')
+        except (OSError, ValueError, TypeError):
+            return ''
+        return password if isinstance(password, str) and password else ''
 
     def check_directory(self):
         folder = confined(self.root, self.config['relative'])
