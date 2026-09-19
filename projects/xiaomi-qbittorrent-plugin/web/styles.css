@@ -181,6 +181,7 @@ button:focus-visible { outline: 2px solid rgba(24, 120, 187, .45); outline-offse
   font-weight: 600;
   cursor: pointer;
   flex-shrink: 0;
+  white-space: nowrap;
 }
 /* 图标必须限尺寸：素材是 64×64，不限的话整个按钮会被撑开。 */
 .btn img { flex: 0 0 auto; width: 16px; height: 16px; object-fit: contain; }
@@ -266,13 +267,14 @@ button:focus-visible { outline: 2px solid rgba(24, 120, 187, .45); outline-offse
   margin: 2px 0 10px;
 }
 
-/* 控制台底部：限速与退出并排 */
+/* 控制台底部：限速与退出并排、同高（文字不换行，否则高的那个会把另一个撑开） */
 .console-foot {
   display: flex;
+  align-items: stretch;
   gap: 8px;
   margin-top: 10px;
 }
-.console-foot .btn { flex: 1; }
+.console-foot .btn { flex: 1 1 0; min-width: 0; }
 
 /* ---------- 下载区 ---------- */
 
@@ -293,15 +295,21 @@ button:focus-visible { outline: 2px solid rgba(24, 120, 187, .45); outline-offse
   overflow-wrap: anywhere;
 }
 
+/* 工具栏固定一行：三件元素同高，搜索框吸收剩余宽度并允许收缩，
+   添加按钮与筛选下拉不参与伸缩。
+   注意选择器要盖过上面 input:not(...) 的 44px —— 那条特异性比 `.toolbar input` 高。 */
 .toolbar {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   margin-bottom: 12px;
 }
-.toolbar input { flex: 1 1 150px; }
-.toolbar select { flex: 0 0 auto; width: auto; min-width: 112px; }
+.toolbar .btn,
+.toolbar input[type=search],
+.toolbar select { height: 36px; min-height: 36px; }
+.toolbar .btn { flex: 0 0 auto; padding: 0 12px; }
+.toolbar input[type=search] { flex: 1 1 auto; min-width: 0; }
+.toolbar select { flex: 0 0 auto; width: auto; min-width: 92px; }
 
 .tasks { border-top: 1px solid var(--line); }
 .task {
