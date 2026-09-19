@@ -52,6 +52,9 @@ class EngineTests(unittest.TestCase):
         host = cfg['HostConfig']
         self.assertEqual(host['PortBindings'],
                          {str(PORT) + '/tcp': [{'HostIp': '0.0.0.0', 'HostPort': str(PORT)}]})
+        # 端口必须在顶层 ExposedPorts 里一起声明：只给 PortBindings 时，
+        # Engine API 会静默忽略镜像 EXPOSE 里没有的端口，映射不生效。
+        self.assertEqual(cfg['ExposedPorts'], {str(PORT) + '/tcp': {}})
         self.assertEqual(host['RestartPolicy'], {'Name': 'no'})
         # 不能提权、不能改网络模式、不挂 docker socket 或设备
         self.assertNotIn('Privileged', host)

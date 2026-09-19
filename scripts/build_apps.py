@@ -484,9 +484,10 @@ def build_bundle(spec: dict[str, Any]) -> dict[str, Any]:
         }
         if spec.get("requirements"):
             manifest["requirements"] = spec["requirements"]
-        (root / "manifest.json").write_text(
-            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
+        # 显式 LF：这个文件进 zip，Windows 上写成 CRLF 会让同一个包算出不同的
+        # sha256，CI 就会把「内容没变」误判成「内容有变」而凭空抬一个版本。
+        with (root / "manifest.json").open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
         bundle_name = f"{spec['id']}-{spec['version']}.zip"
         bundle_path = APPS / bundle_name
         write_deterministic_zip(root, bundle_path)

@@ -136,6 +136,10 @@ def container_config(config, data):
     """
     return {
         'Image': IMAGE,
+        # 必须显式声明 ExposedPorts：Engine API 不像 `docker run -p` 那样自动补，
+        # 只给 HostConfig.PortBindings 时，镜像 EXPOSE 里没有的端口会被静默忽略。
+        # Emby 镜像恰好自带 EXPOSE 8096 才没出问题，写明不依赖这个巧合。
+        'ExposedPorts': {str(PORT) + '/tcp': {}},
         'Env': [
             'UID=' + str(config['uid']),
             'GID=' + str(config['gid']),

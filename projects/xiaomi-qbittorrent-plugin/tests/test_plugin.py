@@ -100,6 +100,9 @@ class EngineTests(unittest.TestCase):
         # WebUI 端口只绑回环，不对局域网额外暴露
         self.assertEqual(host['PortBindings'],
                          {str(PORT) + '/tcp': [{'HostIp': '127.0.0.1', 'HostPort': str(PORT)}]})
+        # 端口必须在顶层 ExposedPorts 里一起声明：只给 PortBindings 时，
+        # Engine API 会静默忽略镜像 EXPOSE 里没有的端口，映射不生效。
+        self.assertEqual(cfg['ExposedPorts'], {str(PORT) + '/tcp': {}})
         # 不能提权、不能改网络模式、不挂 docker socket
         self.assertNotIn('Privileged', host)
         self.assertNotIn('NetworkMode', host)

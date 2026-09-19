@@ -269,9 +269,10 @@ def build_bundle(spec: dict[str, Any], private_key: Path) -> dict[str, Any]:
         }
         if spec.get("requirements"):
             manifest["requirements"] = spec["requirements"]
-        (root / "manifest.json").write_text(
-            json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-        )
+        # 显式 LF：这个文件进 zip，Windows 上写成 CRLF 会让同一个包在不同的
+        # 平台上算出不同的 sha256。
+        with (root / "manifest.json").open("w", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
         bundle_name = f"{spec['id']}-{spec['version']}.bundle.zip"
         bundle = CATALOG / "bundles" / bundle_name
         write_deterministic_zip(root, bundle)
@@ -318,13 +319,16 @@ def main() -> int:
         "packages": packages,
     }
     catalog_path = CATALOG / "catalog.json"
-    catalog_path.write_text(json.dumps(catalog, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    # 同样显式 LF：catalog.json 会被签名并提交，跨平台换行差异会破坏签名可比性。
+    with catalog_path.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(catalog, ensure_ascii=False, indent=2) + "\n")
     sign(catalog_path, args.signing_key.expanduser(), CATALOG / "catalog.json.sig")
     fingerprint = subprocess.check_output(
         ["openssl", "pkey", "-pubin", "-in", str(CATALOG / "repository-public.pem"), "-outform", "DER"]
     )
     fingerprint_text = hashlib.sha256(fingerprint).hexdigest()
-    (CATALOG / "repository-public.sha256").write_text(fingerprint_text + "\n", encoding="ascii")
+    with (CATALOG / "repository-public.sha256").open("w", encoding="ascii", newline="\n") as handle:
+        handle.write(fingerprint_text + "\n")
     print(f"Built {len(packages)} signed bundles; public-key fingerprint: {fingerprint_text}")
     return 0
 

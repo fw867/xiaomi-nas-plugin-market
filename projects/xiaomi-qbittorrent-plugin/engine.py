@@ -152,6 +152,10 @@ def container_config(config, data):
     """
     return {
         'Image': IMAGE,
+        # 必须同时声明 ExposedPorts：Engine API 不像 `docker run -p` 那样自动补，
+        # 只给 HostConfig.PortBindings 的话，镜像 EXPOSE 里没有的端口会被静默忽略
+        # ——容器只留下镜像自带的 6881/8080，WebUI 的 18123 根本映射不出去。
+        'ExposedPorts': {str(PORT) + '/tcp': {}},
         'Env': [
             'PUID=' + str(config['uid']),
             'PGID=' + str(config['gid']),
