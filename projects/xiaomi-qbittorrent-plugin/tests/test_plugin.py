@@ -125,10 +125,9 @@ class EngineTests(unittest.TestCase):
             self.engine.launch('start', {})
 
     def _engine_config(self):
-        folder = self.root / 'MiShare/qBDownloads'
-        folder.mkdir(exist_ok=True)
+        folder = self.root / 'MiShare'
         stat = folder.stat()
-        return {'owner': 'owner-token', 'relative': 'MiShare/qBDownloads', 'download': str(folder),
+        return {'owner': 'owner-token', 'relative': 'MiShare', 'download': str(folder),
                 'uid': 1000, 'gid': 1000, 'device': stat.st_dev, 'inode': stat.st_ino, 'enabled': True}
 
     def test_installed_version_from_release_directory(self):
@@ -193,7 +192,7 @@ class EngineTests(unittest.TestCase):
         cfg = calls[2][2]
         self.assertEqual(cfg['Image'], IMAGE)
         self.assertEqual(cfg['Labels'], {LABEL: 'owner-token'})
-        self.assertIn(str(self.root / 'MiShare/qBDownloads'),
+        self.assertIn(str(self.root / 'MiShare'),
                       [m['Source'] for m in cfg['HostConfig']['Mounts']])
 
         self.assertEqual(calls[3][0], 'POST')
@@ -210,13 +209,6 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(api.call_count, 1)
         self.assertEqual(api.call_args.args[0], 'POST')
         self.assertEqual(api.call_args.args[1], '/containers/' + NAME + '/start')
-
-    def test_refuses_existing_directory(self):
-        (self.root / 'MiShare/qBDownloads').mkdir()
-        with patch('engine.docker_api') as api, self.assertRaises(Error):
-            self.engine.setup('MiShare', 'Example123')
-        # 目录已存在时在碰 Docker 之前就失败
-        api.assert_not_called()
 
     def test_directory_identity_change(self):
         folder = self.root / 'MiShare'
@@ -252,7 +244,8 @@ class EngineTests(unittest.TestCase):
             self.engine.stop(remember=False)
         self.assertTrue(self.engine.config['enabled'])
 
-    def test_setup_writes_only_owned_child(self):
+    def test_setup_uses_selected_directory_directly(self):
+        """所选目录直接作为下载目录，不再自动嵌套一层 qBDownloads。"""
         # This test runs on a normal non-root Mac user and mocks only chown/Docker.
         if not self.root.stat().st_uid or not self.root.stat().st_gid:
             self.skipTest('requires non-root test directory owner')
@@ -267,8 +260,11 @@ class EngineTests(unittest.TestCase):
         with patch('engine.os.chown'), patch('engine.docker_api', side_effect=fake_api):
             self.engine.setup('MiShare', 'Example123')
         after = (self.root / 'MiShare').stat()
+        # 不改动所选目录的属主，也不在其中新建子目录
         self.assertEqual((before.st_uid, before.st_gid), (after.st_uid, after.st_gid))
-        self.assertEqual(self.engine.config['relative'], 'MiShare/qBDownloads')
+        self.assertEqual(self.engine.config['relative'], 'MiShare')
+        self.assertEqual(self.engine.config['download'], str(self.root / 'MiShare'))
+        self.assertFalse((self.root / 'MiShare/qBDownloads').exists())
         conf = (self.engine.data / 'config/qBittorrent/qBittorrent.conf').read_text()
         self.assertNotIn('Example123', conf)
         self.assertIn('PortForwardingEnabled=false', conf)

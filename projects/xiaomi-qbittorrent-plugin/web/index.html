@@ -48,7 +48,7 @@
                     </div>
                     <details class="fold">
                         <summary>目录和密码会怎么被使用</summary>
-                        <p>插件在该目录下新建专用的 <code>qBDownloads</code> 并挂载为 <code>/downloads</code>，不接管已有文件夹、也不修改原有文件的属主。密码只以 qBittorrent 的 PBKDF2-SHA512 哈希写入容器配置，插件本身不保存明文。</p>
+                        <p>该目录会直接挂载为容器内的 <code>/downloads</code>，下载的文件就放在它下面；插件不会新建子目录，也不会改动其中已有文件的属主，所以请选一个已经由该 NAS 用户拥有、并且愿意用来存放下载内容的目录。密码只以 qBittorrent 的 PBKDF2-SHA512 哈希写入容器配置，插件本身不保存明文。</p>
                     </details>
                     <label class="check">
                         <input type="checkbox" required>
@@ -105,7 +105,7 @@
             <details class="card fold fold-card" id="notes">
                 <summary>说明与限制</summary>
                 <ul>
-                    <li>容器 <code>xiaomi-plugin-qbittorrent</code> 只挂载插件私有配置目录和所选目录下的 <code>qBDownloads</code>，不挂载 Docker socket，不使用 privileged 或 host 网络。</li>
+                    <li>容器 <code>xiaomi-plugin-qbittorrent</code> 只挂载插件私有配置目录和所选的下载目录，不挂载 Docker socket，不使用 privileged 或 host 网络。</li>
                     <li>WebUI 端口 18123 对整个局域网开放，可直接用 qBittorrent 官方客户端或网页连接，登录用户名 <code>admin</code>、密码为安装时设置的那个。</li>
                     <li>不映射 BT 入站端口，也未启用 UPnP/NAT-PMP，部分网络下连接数和速度会受限，本版只做主动出站连接。</li>
                     <li>「移除任务」始终保留已下载文件，插件里没有删除文件的操作。</li>

@@ -272,21 +272,17 @@ class Engine:
         hashed = password_hash(password)
         if not relative:
             raise Error('请选择存储根目录下的文件夹')
-        parent = confined(self.root, relative)
-        if ',' in str(parent):
+        folder = confined(self.root, relative)
+        if ',' in str(folder):
             raise Error('Docker 挂载目录不能包含逗号')
-        # Only a new dedicated child is claimed; existing user data is never chowned.
-        target = parent / 'qBDownloads'
-        if target.exists() or target.is_symlink():
-            raise Error('qBDownloads 已存在，请选择其他父目录，避免接管已有文件')
-        uid, gid = parent.stat().st_uid, parent.stat().st_gid
+        # 直接使用所选目录：PUID/PGID 取自它的属主，容器以该身份读写下载内容。
+        # 不新建子目录，也不 chown 用户目录，因此不会改动已有文件的所有权。
+        uid, gid = folder.stat().st_uid, folder.stat().st_gid
         if not uid or not gid:
             raise Error('所选目录须由非 root 的 NAS 用户拥有')
         self._call('GET', '/info')
         if self.inspect() is not None:
             raise Error('同名容器已存在，拒绝覆盖')
-        target.mkdir(mode=0o700)
-        os.chown(target, uid, gid)
         cfgdir = self.data / 'config' / 'qBittorrent'
         cfgdir.mkdir(parents=True, mode=0o700)
         for path in (cfgdir.parent, cfgdir):
@@ -304,9 +300,9 @@ class Engine:
             os.chmod(confpath, 0o600)
             stream.write(conf)
         os.chown(confpath, uid, gid)
-        stat = target.stat()
-        self.config = {'owner': secrets.token_hex(24), 'relative': relative + '/qBDownloads',
-                       'download': str(target), 'uid': uid, 'gid': gid, 'device': stat.st_dev,
+        stat = folder.stat()
+        self.config = {'owner': secrets.token_hex(24), 'relative': relative,
+                       'download': str(folder), 'uid': uid, 'gid': gid, 'device': stat.st_dev,
                        'inode': stat.st_ino, 'enabled': True}
         atomic_json(self.cfgfile, self.config)
 
