@@ -1,11 +1,11 @@
 {
   "schemaVersion": 2,
   "name": "小米智能存储应用商店",
-  "generatedAt": 1789835750,
+  "generatedAt": 1789839140,
   "repository": "fw867/xiaomi-nas-plugin-market",
   "branch": "main",
   "store": {
-    "version": "0.2.17",
+    "version": "0.2.18",
     "releasesUrl": "https://github.com/fw867/xiaomi-nas-plugin-market/releases",
     "latestReleaseApi": "https://api.github.com/repos/fw867/xiaomi-nas-plugin-market/releases/latest"
   },
@@ -144,12 +144,12 @@
     {
       "id": "emby",
       "name": "Emby 媒体服务器",
-      "version": "0.1.8",
+      "version": "0.1.9",
       "summary": "在 NAS 上运行 Emby，向局域网设备串流个人影音",
       "description": "官方 Emby 镜像的受限容器；媒体目录读写挂载以便写回元数据，配置保存在插件私有目录，Emby 默认端口 8096 对局域网开放。",
-      "bundle": "apps/emby-0.1.8.zip",
-      "sha256": "1e4c446256e737896625e9163a42772b895ed0a367e782c295b44fca65f2faa2",
-      "size": 362902,
+      "bundle": "apps/emby-0.1.9.zip",
+      "sha256": "0747f97f5956bc58f3e4b26c3985e79781921f028f99a2adec026cc993d151c3",
+      "size": 366294,
       "icon": "apps/icons/emby.png",
       "channel": "stable",
       "tags": [
