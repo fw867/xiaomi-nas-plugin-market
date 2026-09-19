@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "name": "小米智能存储应用商店",
-  "generatedAt": 1789824059,
+  "generatedAt": 1789825583,
   "repository": "fw867/xiaomi-nas-plugin-market",
   "branch": "main",
   "store": {
@@ -126,12 +126,12 @@
     {
       "id": "transmission",
       "name": "Transmission 下载",
-      "version": "0.1.10",
+      "version": "0.1.11",
       "summary": "BT 下载，可设置下载目录、并发数、连接数与上传下载限速",
       "description": "随包携带 aarch64 的 transmission-daemon（从 Entware 提取），不需要 Docker 或 Entware；内置 transmission-web-control 界面。",
-      "bundle": "apps/transmission-0.1.10.zip",
-      "sha256": "b854ac3256618dad7fc7823c751ca7519315283464f8d46cdafa4504faeea244",
-      "size": 16147795,
+      "bundle": "apps/transmission-0.1.11.zip",
+      "sha256": "04152211644b3f565d6eaf9cc284443e85656efb4c6249fc5cbc9c1df4204483",
+      "size": 16149439,
       "icon": "apps/icons/transmission.png",
       "channel": "stable",
       "tags": [
@@ -144,12 +144,12 @@
     {
       "id": "emby",
       "name": "Emby 媒体服务器",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "summary": "在 NAS 上运行 Emby，向局域网设备串流个人影音",
       "description": "官方 Emby 镜像的受限容器；媒体目录读写挂载以便写回元数据，配置保存在插件私有目录，Emby 默认端口 8096 对局域网开放。",
-      "bundle": "apps/emby-0.1.2.zip",
-      "sha256": "a920daeb9f08548bc4a605125179a172df626f9accb0c0da92d15d5440f5cf4c",
-      "size": 186152,
+      "bundle": "apps/emby-0.1.3.zip",
+      "sha256": "7e072b1a7a402a5cab85f9b493221d6814706a0719579dc23791a05ed070e87f",
+      "size": 187265,
       "icon": "apps/icons/emby.png",
       "channel": "stable",
       "tags": [
