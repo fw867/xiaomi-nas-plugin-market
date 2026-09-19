@@ -72,6 +72,7 @@ NAS_USER_ID=u123456 bash -c "$(curl -fsSL https://raw.githubusercontent.com/fw86
 | [WebDAV 文件桥](projects/xiaomi-webdav-plugin) | 0.2.0-rc5 | 测试版；多账号、多目录授权、远程单向备份 |
 | [qB 下载](projects/xiaomi-qbittorrent-plugin) | 0.1.0-rc1 | 开发候选版；磁力/种子下载、限速；需要 Docker |
 | [Transmission 下载](projects/xiaomi-transmission-plugin) | 0.1.0 | BT 下载、限速与并发设置；随包携带 transmission-daemon，不需要 Docker |
+| [Emby 媒体服务器](projects/xiaomi-emby-plugin) | 0.1.0 | Emby 官方镜像的受限容器；媒体目录读写挂载，端口 8096 对局域网开放；需要 Docker |
 | 夸克网盘 | 未发布 | 目前没有可用实现 |
 
 ## 插件如何分发

@@ -1,0 +1,15 @@
+{
+  "plugin": "emby",
+  "name": "Emby 媒体服务器",
+  "id": 11007,
+  "desc": "在 NAS 上运行 Emby，整理并向局域网设备串流个人影音",
+  "tags": [
+    "media"
+  ],
+  "developer": "community",
+  "publisher": "community",
+  "system": false,
+  "type": "standard",
+  "service": "xiaomi-emby.service",
+  "uiKey": "emby"
+}
