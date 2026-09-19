@@ -200,7 +200,10 @@ class Handler(BaseHTTPRequestHandler):
                 value = data.get('path', '')
                 if not isinstance(value, str) or len(value) > 1024:
                     raise Error('目录路径无效')
-                self.server.engine.launch('setup', {'path': value})
+                config_value = data.get('configPath', '')
+                if not isinstance(config_value, str) or len(config_value) > 1024:
+                    raise Error('配置目录路径无效')
+                self.server.engine.launch('setup', {'path': value, 'configPath': config_value})
                 return self.send(202, {'ok': True})
             self.send(404, {'ok': False, 'error': 'not found'})
         except (Error, ValueError, OSError) as exc:

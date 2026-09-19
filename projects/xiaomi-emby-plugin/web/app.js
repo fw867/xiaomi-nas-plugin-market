@@ -4,6 +4,8 @@ const session = document.querySelector('meta[name="emby-session"]').content;
 const csrf = document.querySelector('meta[name="csrf-token"]').content;
 let current = null;
 let mediaSelection = null;
+let configSelection = '';
+let browseTarget = 'media';
 let browsePath = '';
 let toastTimer = null;
 
@@ -57,6 +59,9 @@ function render(state) {
   $('serviceActions').hidden = !state.configured;
   $('access').hidden = !state.configured;
   $('directory').textContent = state.configured ? state.directory : '—';
+  $('configDirectory').textContent = state.configured
+      ? (state.configDirectory || '插件私有目录（外部不可见）')
+      : '—';
   $('address').textContent = state.address || '（请通过小米客户端打开插件以获取地址）';
   $('wizardHint').hidden = state.wizardCompleted !== false;
   $('toggleService').textContent = state.running ? '停止服务' : '启动服务';
@@ -125,7 +130,8 @@ $('setupForm').addEventListener('submit', (event) => {
     showError('请选择媒体目录');
     return;
   }
-  act('/setup', { path: mediaSelection }, '正在初始化并启动，首次需要拉取镜像');
+  act('/setup', { path: mediaSelection, configPath: configSelection },
+      '正在初始化并启动，首次需要拉取镜像');
 });
 
 $('toggleService').addEventListener('click', () => {
@@ -133,10 +139,21 @@ $('toggleService').addEventListener('click', () => {
   act('/service/' + action, {}, action === 'start' ? '正在启动服务' : '正在停止服务');
 });
 
-$('choose').addEventListener('click', () => {
-  browsePath = mediaSelection || '';
+// 媒体目录和配置目录共用同一个目录选择框，靠 browseTarget 区分落点。
+function openBrowser(target, startPath) {
+  browseTarget = target;
+  browsePath = startPath || '';
+  $('browseTitle').textContent = target === 'config' ? '选择配置目录' : '选择媒体目录';
   $('browse').showModal();
   loadFolders();
+}
+
+$('choose').addEventListener('click', () => openBrowser('media', mediaSelection));
+$('chooseConfig').addEventListener('click', () => openBrowser('config', configSelection));
+
+$('clearConfig').addEventListener('click', () => {
+  configSelection = '';
+  $('configPath').value = '';
 });
 
 $('up').addEventListener('click', () => {
@@ -145,8 +162,13 @@ $('up').addEventListener('click', () => {
 });
 
 $('selectFolder').addEventListener('click', () => {
-  mediaSelection = browsePath;
-  $('mediaPath').value = browsePath || '用户存储根目录';
+  if (browseTarget === 'config') {
+    configSelection = browsePath;
+    $('configPath').value = browsePath;
+  } else {
+    mediaSelection = browsePath;
+    $('mediaPath').value = browsePath || '用户存储根目录';
+  }
   $('browse').close();
 });
 

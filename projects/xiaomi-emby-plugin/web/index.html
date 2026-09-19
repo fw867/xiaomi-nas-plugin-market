@@ -42,9 +42,18 @@
                             <button type="button" id="choose">选择</button>
                         </div>
                     </div>
+                    <div class="field">
+                        <span class="field-label">配置目录（可选）</span>
+                        <div class="field-row">
+                            <input name="configPath" id="configPath" readonly placeholder="留空则保存在插件私有目录">
+                            <button type="button" id="chooseConfig">选择</button>
+                            <button type="button" id="clearConfig">清除</button>
+                        </div>
+                    </div>
                     <details class="fold">
-                        <summary>这个目录会怎么被使用</summary>
-                        <p>该目录在容器内以读写方式挂载为 <code>/mnt/media</code>：Emby 会把元数据、字幕等写回该目录，也会以该目录属主身份修改其中的文件；添加媒体库时请选择其下的子目录。</p>
+                        <summary>这两个目录会怎么被使用</summary>
+                        <p>媒体目录在容器内以读写方式挂载为 <code>/mnt/media</code>：Emby 会把元数据、字幕等写回该目录，也会以该目录属主身份修改其中的文件；添加媒体库时请选择其下的子目录。</p>
+                        <p>配置目录挂载为 <code>/config</code>，存放 Emby 的数据库、缓存、插件与日志（当前约十几 MB）。留空时它保存在插件私有目录里、外部看不到；指定一个存储目录后就能在文件管理器里直接查看、备份或迁移。指定时插件不会改动该目录现有文件的属主，建议选一个空目录，或已有的 Emby 配置目录。</p>
                     </details>
                     <label class="check">
                         <input type="checkbox" required>
@@ -71,6 +80,8 @@
                 <div class="service-copy">
                     <span class="muted">媒体目录</span>
                     <strong id="directory">—</strong>
+                    <span class="muted spaced">配置目录</span>
+                    <strong id="configDirectory">—</strong>
                 </div>
                 <button id="toggleService" class="btn">启动服务</button>
             </section>
@@ -91,7 +102,7 @@
 
         <dialog id="browse">
             <div class="dialog-head">
-                <h2>选择媒体目录</h2>
+                <h2 id="browseTitle">选择媒体目录</h2>
                 <button data-close="browse" aria-label="关闭">关闭</button>
             </div>
             <div class="field-row">

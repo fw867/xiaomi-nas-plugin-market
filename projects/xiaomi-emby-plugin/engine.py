@@ -127,7 +127,7 @@ def emby_info():
         connection.close()
 
 
-def container_config(config, data):
+def container_config(config):
     """固定的容器配置（Engine API 的 create body）。
 
     固定参数，不接受调用方传入镜像、端口、挂载或命令。对应原来那串
@@ -157,8 +157,9 @@ def container_config(config, data):
             'LogConfig': {'Type': 'json-file', 'Config': {'max-size': '5m', 'max-file': '2'}},
             'PortBindings': {str(PORT) + '/tcp': [{'HostIp': '0.0.0.0', 'HostPort': str(PORT)}]},
             # 媒体目录以读写方式挂载：Emby 要把元数据、字幕写回媒体文件夹。
+            # 配置目录可能是插件私有目录，也可能是用户指定的存储目录，由 config 记录。
             'Mounts': [
-                {'Type': 'bind', 'Source': str(data / 'config'), 'Target': '/config'},
+                {'Type': 'bind', 'Source': config['config'], 'Target': '/config'},
                 {'Type': 'bind', 'Source': config['media'], 'Target': '/mnt/media'},
             ],
         },
@@ -254,10 +255,11 @@ class Engine:
         return {'version': installed_version(), 'configured': bool(self.config), 'running': running, 'ready': ready,
                 'busy': self.busy, 'error': error, 'preview': self.dev, 'port': PORT,
                 'directory': self.config['relative'] if self.config else '',
+                'configDirectory': self.config.get('config_relative', '') if self.config else '',
                 'serverVersion': server_version, 'wizardCompleted': wizard,
                 'imageVersion': '4.10.0.40'}
 
-    def setup(self, relative):
+    def setup(self, relative, config_relative=''):
         if self.config:
             raise Error('已完成初始化；现有媒体目录和 Emby 配置不会被覆盖')
         if not isinstance(relative, str) or len(relative) > 1024:
@@ -268,16 +270,34 @@ class Engine:
         uid, gid = folder.stat().st_uid, folder.stat().st_gid
         if not uid or not gid:
             raise Error('所选目录须由非 root 的 NAS 用户拥有')
+        # Emby 的配置目录。默认放在插件私有目录里（外部看不到，最干净）；
+        # 也可以指定存储中的一个目录，方便备份、迁移或直接在文件管理器里查看。
+        # 指定时不对该目录做 chown —— 与 qB 插件一致，绝不改动用户已有文件的所有权。
+        if config_relative:
+            if not isinstance(config_relative, str) or len(config_relative) > 1024:
+                raise Error('配置目录无效')
+            cfgdir = confined(self.root, config_relative)
+            if ',' in str(cfgdir):
+                raise Error('Docker 挂载目录不能包含逗号')
+            if cfgdir == folder or cfgdir in folder.parents or folder in cfgdir.parents:
+                raise Error('配置目录与媒体目录不能相同或互相包含')
+            cfg_stat = cfgdir.stat()
+            if not cfg_stat.st_uid or not cfg_stat.st_gid:
+                raise Error('配置目录须由非 root 的 NAS 用户拥有')
+        else:
+            cfgdir = self.data / 'config'
+            cfgdir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            os.chown(cfgdir, uid, gid)
+            os.chmod(cfgdir, 0o700)
         self._call('GET', '/info')
         if self.inspect() is not None:
             raise Error('同名容器已存在，拒绝覆盖')
-        cfgdir = self.data / 'config'
-        cfgdir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chown(cfgdir, uid, gid)
-        os.chmod(cfgdir, 0o700)
         stat = folder.stat()
+        cfg_stat = cfgdir.stat()
         self.config = {'owner': secrets.token_hex(24), 'relative': relative, 'media': str(folder),
                        'uid': uid, 'gid': gid, 'device': stat.st_dev, 'inode': stat.st_ino,
+                       'config': str(cfgdir), 'config_relative': config_relative or '',
+                       'config_device': cfg_stat.st_dev, 'config_inode': cfg_stat.st_ino,
                        'enabled': True}
         atomic_json(self.cfgfile, self.config)
 
@@ -286,6 +306,13 @@ class Engine:
         stat = folder.stat()
         if str(folder) != self.config['media'] or (stat.st_dev, stat.st_ino) != (self.config['device'], self.config['inode']):
             raise Error('媒体目录身份已变化，拒绝启动；请先检查存储挂载')
+        # 只有用户指定的配置目录（在存储里）需要校验身份；私有目录由插件自己管。
+        cfg_relative = self.config.get('config_relative')
+        if cfg_relative:
+            cfgdir = confined(self.root, cfg_relative)
+            cfg_stat = cfgdir.stat()
+            if (cfg_stat.st_dev, cfg_stat.st_ino) != (self.config['config_device'], self.config['config_inode']):
+                raise Error('配置目录身份已变化，拒绝启动；请先检查存储挂载')
 
     def start(self):
         if not self.config:
@@ -299,7 +326,7 @@ class Engine:
             self.pull()
             self.check_directory()
             self._call('POST', '/containers/create?name=' + NAME,
-                       body=container_config(self.config, self.data), timeout=120)
+                       body=container_config(self.config), timeout=120)
             self._call('POST', '/containers/' + NAME + '/start')
         self.config['enabled'] = True
         atomic_json(self.cfgfile, self.config)
@@ -335,7 +362,7 @@ class Engine:
         def work():
             try:
                 if action == 'setup':
-                    self.setup(data.get('path', ''))
+                    self.setup(data.get('path', ''), data.get('configPath', ''))
                 if action in ('setup', 'start'):
                     self.start()
                 else:

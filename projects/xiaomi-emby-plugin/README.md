@@ -12,7 +12,8 @@
 
 ## 隔离与生命周期
 
-- 独立容器 `xiaomi-plugin-emby`，只挂载插件私有配置目录（`/config`）和所选媒体目录（`/mnt/media`）。不挂载 Docker socket，不使用 privileged 或 host 网络。
+- 独立容器 `xiaomi-plugin-emby`，只挂载配置目录（`/config`）和所选媒体目录（`/mnt/media`）。不挂载 Docker socket，不使用 privileged 或 host 网络。
+- 配置目录（Emby 的数据库、缓存、插件与日志，约十几 MB）默认放在插件私有目录，外部不可见；初始化时也可以指定存储中的一个目录，便于备份、迁移或直接在文件管理器里查看。指定时插件不会改动该目录现有文件的属主，建议选空目录或已有的 Emby 配置目录。
 - Python 管理服务需 root/Docker 权限，仅提供固定操作（初始化、启动、停止）。它不是不受信任插件的沙箱；安装之前应信任发行者及其签名。
 - 1 GiB 容器内存上限、2 CPU 上限、512 PID。是上限，不是恒定资源占用。
 - 插件页仅绑定 NAS 回环端口 18150，通过现有设备同源入口访问，不写死 NAS IP。

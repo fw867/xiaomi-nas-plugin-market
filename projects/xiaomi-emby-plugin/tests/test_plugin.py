@@ -45,8 +45,8 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(self.engine.browse(''), [{'name': 'MiShare', 'path': 'MiShare'}])
 
     def test_container_isolation(self):
-        cfg = container_config({'owner': 'test', 'uid': 1000, 'gid': 1000, 'media': '/test/media'},
-                               Path('/test/private'))
+        cfg = container_config({'owner': 'test', 'uid': 1000, 'gid': 1000, 'media': '/test/media',
+                                'config': '/test/private/config'})
         self.assertEqual(cfg['Image'], IMAGE)
         self.assertEqual(cfg['Labels'], {LABEL: 'test'})
         host = cfg['HostConfig']
@@ -62,7 +62,7 @@ class EngineTests(unittest.TestCase):
         sources = [m['Source'] for m in host['Mounts']]
         self.assertEqual(len(sources), 2)
         self.assertIn('/test/media', sources)
-        self.assertIn(str(Path('/test/private') / 'config'), sources)
+        self.assertIn('/test/private/config', sources)
         self.assertFalse(any('docker.sock' in s for s in sources))
         self.assertFalse(any('/dev/dri' in s for s in sources))
         # 媒体目录必须可写：Emby 需要把元数据和字幕写回媒体文件夹
@@ -136,10 +136,15 @@ class EngineTests(unittest.TestCase):
         self.assertFalse(json.loads(self.engine.cfgfile.read_text(encoding='utf-8'))['enabled'])
 
     def _engine_config(self):
-        stat = (self.root / 'MiShare').stat()
-        return {'owner': 'owner-token', 'relative': 'MiShare',
-                'media': str(self.root / 'MiShare'), 'uid': 1000, 'gid': 1000,
-                'device': stat.st_dev, 'inode': stat.st_ino, 'enabled': True}
+        folder = self.root / 'MiShare'
+        stat = folder.stat()
+        cfg = self.engine.data / 'config'
+        cfg.mkdir(parents=True, exist_ok=True)
+        cstat = cfg.stat()
+        return {'owner': 'owner-token', 'relative': 'MiShare', 'media': str(folder),
+                'uid': 1000, 'gid': 1000, 'device': stat.st_dev, 'inode': stat.st_ino,
+                'config': str(cfg), 'config_relative': '',
+                'config_device': cstat.st_dev, 'config_inode': cstat.st_ino, 'enabled': True}
 
     def test_start_pulls_and_runs_the_container(self):
         """回归：容器还不存在时，点「启动」必须真的 pull 镜像、再建并启动容器。
@@ -200,6 +205,36 @@ class EngineTests(unittest.TestCase):
         with patch.object(self.engine, 'owned', return_value=None):
             self.engine.stop(remember=False)
         self.assertTrue(self.engine.config['enabled'])
+
+    def test_setup_accepts_custom_config_directory(self):
+        """可以指定存储里的一个目录作为 Emby 配置目录，便于备份与迁移。"""
+        if not self.root.stat().st_uid or not self.root.stat().st_gid:
+            self.skipTest('requires non-root test directory owner')
+        (self.root / 'EmbyConfig').mkdir()
+
+        def fake_api(method, path, body=None, timeout=30):
+            if path == '/info':
+                return 200, b'{"Architecture":"aarch64"}'
+            return 404, b'{"message":"No such container"}'
+
+        with patch('engine.os.chown'), patch('engine.docker_api', side_effect=fake_api):
+            self.engine.setup('MiShare', 'EmbyConfig')
+        self.assertEqual(self.engine.config['config_relative'], 'EmbyConfig')
+        self.assertEqual(self.engine.config['config'], str(self.root / 'EmbyConfig'))
+        cfg = container_config(self.engine.config)
+        mounts = {m['Target']: m['Source'] for m in cfg['HostConfig']['Mounts']}
+        self.assertEqual(mounts['/config'], str(self.root / 'EmbyConfig'))
+        self.assertEqual(mounts['/mnt/media'], str(self.root / 'MiShare'))
+
+    def test_setup_rejects_config_overlapping_media(self):
+        """配置目录不能与媒体目录相同或互相包含，否则两边会互相污染。"""
+        if not self.root.stat().st_uid or not self.root.stat().st_gid:
+            self.skipTest('requires non-root test directory owner')
+        (self.root / 'MiShare' / 'cfg').mkdir()
+        with self.assertRaises(Error):
+            self.engine.setup('MiShare', 'MiShare')
+        with self.assertRaises(Error):
+            self.engine.setup('MiShare', 'MiShare/cfg')
 
     @unittest.skipUnless(os.name == 'posix', 'requires POSIX ownership semantics')
     def test_setup_keeps_media_owner_and_marks_enabled(self):
