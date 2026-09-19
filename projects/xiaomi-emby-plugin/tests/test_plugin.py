@@ -285,13 +285,31 @@ class HTTPTests(unittest.TestCase):
         code, _ = self.request('POST', '/api/setup', {'path': ['x']}, self.auth())
         self.assertEqual(code, 400)
 
-    def test_address_uses_client_host(self):
-        code, body = self.request('GET', '/api/status', headers={**self.auth(), 'Host': 'nas.123456.local:8443'})
+    def test_address_prefers_local_network_ip(self):
+        """地址要用 NAS 自己的局域网 IP。
+
+        小米客户端是经客户端隧道访问 NAS 的，请求到了插件这里 Host 已经是
+        127.0.0.1，用它拼出来的地址在电视/手机上打不开。
+        """
+        with patch('server.lan_ip', return_value='192.168.1.15'):
+            code, body = self.request('GET', '/api/status',
+                                      headers={**self.auth(), 'Host': '127.0.0.1:18150'})
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(body)['address'], '192.168.1.15:' + str(PORT))
+
+    def test_address_falls_back_to_client_host(self):
+        """取不到本机网卡地址时，退回请求里的 Host。"""
+        with patch('server.lan_ip', return_value=''):
+            code, body = self.request('GET', '/api/status',
+                                      headers={**self.auth(), 'Host': 'nas.123456.local:8443'})
         self.assertEqual(code, 200)
         self.assertEqual(json.loads(body)['address'], 'nas.123456.local:' + str(PORT))
 
     def test_address_ignores_garbage_host(self):
-        code, body = self.request('GET', '/api/status', headers={**self.auth(), 'Host': 'evil/path'})
+        """本机地址取不到、Host 又不合法时，宁可为空也不要给出错的地址。"""
+        with patch('server.lan_ip', return_value=''):
+            code, body = self.request('GET', '/api/status',
+                                      headers={**self.auth(), 'Host': 'evil/path'})
         self.assertEqual(code, 200)
         self.assertEqual(json.loads(body)['address'], '')
 

@@ -13,6 +13,7 @@ import json
 import os
 import re
 import secrets
+import socket
 import tempfile
 import threading
 import time
@@ -24,6 +25,26 @@ from engine import Engine, Error, PORT, VERSION
 
 WEB = Path(__file__).resolve().parent / 'web'
 TTL = 86400
+
+
+def lan_ip():
+    """取本机在局域网里的地址；取不到返回空串。
+
+    用「连一个外部地址但不真发包」的办法让内核挑默认出口对应的网卡地址，
+    比 gethostbyname(gethostname()) 可靠——后者在没有 hosts 记录时常常
+    返回 127.0.1.1。UDP connect 不会产生任何流量。
+    """
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(('223.5.5.5', 53))
+        address = probe.getsockname()[0]
+        return address if address and not address.startswith('127.') else ''
+    except OSError:
+        return ''
+    finally:
+        probe.close()
+
+
 STATIC = {
     '/app.js': ('app.js', 'application/javascript; charset=utf-8'),
     '/styles.css': ('styles.css', 'text/css; charset=utf-8'),
@@ -109,10 +130,17 @@ class Handler(BaseHTTPRequestHandler):
         return None
 
     def address(self):
-        """用客户端访问 NAS 时用的主机名拼出 Emby 地址，不写死 NAS IP。"""
-        host = re.sub(r':\d+$', '', self.headers.get('Host', '').strip())
-        if not re.fullmatch(r'[A-Za-z0-9.\-]{1,253}', host):
-            return ''
+        """拼出局域网里能直接打开的 Emby 地址。
+
+        不能靠请求的 Host：小米客户端是经客户端自己的隧道访问 NAS 的，
+        到这里时 Host 已经被改写成 127.0.0.1，拼出的地址在电视/手机上打不开。
+        本机网卡地址取不到时才退回 Host。
+        """
+        host = lan_ip()
+        if not host:
+            host = re.sub(r':\d+$', '', self.headers.get('Host', '').strip())
+            if not re.fullmatch(r'[A-Za-z0-9.\-]{1,253}', host):
+                return ''
         return host + ':' + str(PORT)
 
     def do_GET(self):
