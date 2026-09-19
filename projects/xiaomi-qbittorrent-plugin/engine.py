@@ -172,8 +172,8 @@ def container_config(config, data):
             'PidsLimit': 128,
             'SecurityOpt': ['no-new-privileges:true'],
             'LogConfig': {'Type': 'json-file', 'Config': {'max-size': '5m', 'max-file': '2'}},
-            # WebUI 只绑回环：对外只由插件自己的服务代理，不额外暴露给局域网。
-            'PortBindings': {str(PORT) + '/tcp': [{'HostIp': '127.0.0.1', 'HostPort': str(PORT)}]},
+            # WebUI 对整个局域网开放，便于直接用 qBittorrent 官方客户端或网页连接。
+            'PortBindings': {str(PORT) + '/tcp': [{'HostIp': '0.0.0.0', 'HostPort': str(PORT)}]},
             'Mounts': [
                 {'Type': 'bind', 'Source': str(data / 'config'), 'Target': '/config'},
                 {'Type': 'bind', 'Source': config['download'], 'Target': '/downloads'},

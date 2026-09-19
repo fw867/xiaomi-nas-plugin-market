@@ -15,7 +15,7 @@
 - 独立容器 `xiaomi-plugin-qbittorrent`，只挂载私有配置目录及所选目录下新建的 `qBDownloads`。不挂载 Docker socket，不使用 privileged 或 host 网络。
 - Python 管理服务需 root/Docker 权限，仅提供固定操作。它不是不受信任插件的沙箱；安装之前应信任发行者及其签名。
 - 512 MiB 容器内存上限、1.5 CPU 上限、128 PID、默认两个并发下载。是上限，不是恒定资源占用。
-- Web API 仅绑定 NAS 回环端口 18123；插件服务仅绑定 18122，通过现有设备同源入口访问，不写死 NAS IP。
+- WebUI 监听 18123 并对局域网开放，可直接用 qBittorrent 官方客户端或网页连接；插件服务绑定 18122，通过现有设备同源入口访问，不写死 NAS IP。
 - 不映射 BT 入站端口，不启用 UPnP/NAT-PMP，因此部分网络下的连接数和速度可能受限。首版只支持主动出站连接。
 - qB API 的密码、CSRF、Host 校验保持开启；插件本身另要求设备所有者会话及 CSRF。密码只保存为 qB PBKDF2-SHA512 哈希；登录 Cookie 仅在服务内存保留。
 - 固定 LinuxServer 镜像版本 `5.2.3_v2.0.14-ls474` 及多架构 digest `sha256:a00b6a597a3832a1814cde0ef60abc55c94644f3f80902c3432f6af6de8d4a96`，上游清单包含 ARM64。LinuxServer 是第三方镜像维护者，不是 qB 官方。

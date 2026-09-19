@@ -97,9 +97,9 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(cfg['Labels'], {LABEL: 'test'})
         host = cfg['HostConfig']
         self.assertEqual(host['RestartPolicy'], {'Name': 'no'})
-        # WebUI 端口只绑回环，不对局域网额外暴露
+        # WebUI 对局域网开放，便于用 qBittorrent 官方客户端连接
         self.assertEqual(host['PortBindings'],
-                         {str(PORT) + '/tcp': [{'HostIp': '127.0.0.1', 'HostPort': str(PORT)}]})
+                         {str(PORT) + '/tcp': [{'HostIp': '0.0.0.0', 'HostPort': str(PORT)}]})
         # 端口必须在顶层 ExposedPorts 里一起声明：只给 PortBindings 时，
         # Engine API 会静默忽略镜像 EXPOSE 里没有的端口，映射不生效。
         self.assertEqual(cfg['ExposedPorts'], {str(PORT) + '/tcp': {}})
