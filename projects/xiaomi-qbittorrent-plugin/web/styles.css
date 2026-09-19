@@ -167,6 +167,10 @@ textarea:focus-visible,
 button:focus-visible { outline: 2px solid rgba(24, 120, 187, .45); outline-offset: 1px; }
 
 .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
   min-height: 44px;
   padding: 0 16px;
   border: 1px solid #ccd5df;
@@ -178,6 +182,8 @@ button:focus-visible { outline: 2px solid rgba(24, 120, 187, .45); outline-offse
   cursor: pointer;
   flex-shrink: 0;
 }
+/* 图标必须限尺寸：素材是 64×64，不限的话整个按钮会被撑开。 */
+.btn img { flex: 0 0 auto; width: 16px; height: 16px; object-fit: contain; }
 .btn:active { background: #eef2f6; }
 .btn.primary { border-color: var(--blue); background: var(--blue); color: #fff; }
 .btn.primary:active { background: var(--blue-dark); }
@@ -259,6 +265,14 @@ button:focus-visible { outline: 2px solid rgba(24, 120, 187, .45); outline-offse
   gap: 10px;
   margin: 2px 0 10px;
 }
+
+/* 控制台底部：限速与退出并排 */
+.console-foot {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.console-foot .btn { flex: 1; }
 
 /* ---------- 下载区 ---------- */
 

@@ -121,6 +121,7 @@
 
                 <section class="card">
                     <div class="toolbar">
+                        <button id="add" class="btn small" title="添加任务" aria-label="添加任务"><img data-icon="plus" alt="">添加</button>
                         <input id="search" type="search" placeholder="搜索任务" aria-label="搜索任务">
                         <select id="filter" aria-label="任务状态">
                             <option value="all">全部</option>
@@ -128,14 +129,15 @@
                             <option value="completed">已完成</option>
                             <option value="stopped">已停止</option>
                         </select>
-                        <button id="add" class="btn small" title="添加任务" aria-label="添加任务"><img data-icon="plus" alt="">添加</button>
-                        <button id="limits" class="btn small">限速</button>
                     </div>
                     <div id="tasks" class="tasks"></div>
                     <p id="empty" hidden>暂无下载任务</p>
                 </section>
 
-                <button id="logout" class="btn block">退出 qB 登录</button>
+                <div class="console-foot">
+                    <button id="limits" class="btn small">限速</button>
+                    <button id="logout" class="btn small">退出 qB 登录</button>
+                </div>
             </div>
         </main>
 
