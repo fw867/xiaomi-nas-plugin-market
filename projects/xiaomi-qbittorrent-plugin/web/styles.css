@@ -371,8 +371,6 @@ progress::-webkit-progress-value { border-radius: 3px; background: var(--green);
 
 #empty { padding: 40px 0; color: var(--muted); font-size: 13.5px; text-align: center; }
 
-#logout { margin-top: 10px; }
-
 footer { padding: 22px 0 4px; color: #97a1b0; font-size: 12px; text-align: center; }
 
 /* ---------- 对话框 ---------- */
