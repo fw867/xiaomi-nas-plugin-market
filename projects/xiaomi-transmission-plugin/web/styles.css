@@ -214,6 +214,24 @@ input:focus { outline: 2px solid rgba(40, 123, 224, .35); outline-offset: 0; bor
 .note-inline { margin: 0 2px 16px; }
 .note code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 
+/* daemon 日志：起不来的原因只写在它自己的日志里，直接摊在界面上省得去 SSH 翻文件 */
+.log-card { padding: 14px 20px; }
+.log-card summary { cursor: pointer; font-size: 14.5px; font-weight: 600; }
+.log-card pre {
+  max-height: 260px;
+  margin: 10px 0 0;
+  padding: 12px;
+  overflow: auto;
+  border-radius: 8px;
+  background: #f6f8fb;
+  color: #33415c;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .toast {
   position: fixed;
   right: 20px;

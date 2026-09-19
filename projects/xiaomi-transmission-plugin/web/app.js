@@ -15,6 +15,9 @@ const webControlLink = document.getElementById('webControlLink');
 const missingCard = document.getElementById('missingCard');
 const missingHint = document.getElementById('missingHint');
 const autostartHint = document.getElementById('autostartHint');
+const logCard = document.getElementById('logCard');
+const logDetails = document.getElementById('logDetails');
+const logText = document.getElementById('logText');
 
 const WEEKDAY_LABELS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 const WEEKDAY_BITS = [1, 2, 4, 8, 16, 32, 64];
@@ -91,12 +94,13 @@ function renderStatus(data) {
   const parts = [];
   if (data.version) parts.push(`版本 ${data.version}`);
   if (data.pid) parts.push(`PID ${data.pid}`);
-  // 反映实际绑定地址，别写死 127.0.0.1
+  // 反映 daemon 实际绑定、插件实际连接的地址，别写死 127.0.0.1
   const bind = data.rpcBind || '127.0.0.1';
-  if (bind === '0.0.0.0') {
-    parts.push(`RPC 所有网卡:${data.rpcPort}${data.rpcAuthRequired ? '（需登录）' : ''}`);
+  const target = data.rpcTarget || `${bind}:${data.rpcPort}`;
+  if (bind === '127.0.0.1' || bind === '::1') {
+    parts.push(`RPC 仅本机 ${target}`);
   } else {
-    parts.push(`RPC 仅本机:${data.rpcPort}`);
+    parts.push(`RPC 对外监听 ${target}${data.rpcAuthRequired ? '（需登录）' : ''}`);
   }
   if (data.session && data.session.torrentCount !== null && data.session.torrentCount !== undefined) {
     parts.push(`任务 ${data.session.torrentCount}（活动中 ${data.session.activeTorrentCount ?? 0}）`);
@@ -121,6 +125,14 @@ function renderStatus(data) {
   autostartHint.textContent = data.autostart
     ? '已开启开机自启：设备或插件服务重启后会重新拉起下载服务。'
     : '开机自启未开启：下次开机后需要手动点「启动」。';
+
+  // daemon 起不来的原因只写在它自己的日志里：停止状态下默认展开，省得用户去 SSH 翻。
+  const tail = (data.logTail || '').trim();
+  logCard.hidden = !tail;
+  if (tail) {
+    if (logText.textContent !== tail) logText.textContent = tail;
+    if (!running) logDetails.open = true;
+  }
 }
 
 function fieldNode(field) {

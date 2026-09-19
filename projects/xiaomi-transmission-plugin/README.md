@@ -102,6 +102,25 @@ daemon 原本没在运行时不会把它拉起来，界面会提示「下次启�
 `validate_settings()` 是白名单校验：请求体里出现未声明的键直接 400，
 所以界面（或任何调用方）无法往 `settings.json` 里塞任意字段。
 
+### IPv6 与 RPC 监听地址（下面都是 transmission 4.0.6 的实际行为）
+
+* `bind-address-ipv6` 只是 **IPv6 监听地址**，不是「启用/关闭 IPv6」的开关。
+  transmission 4.x 没有关闭 IPv6 监听的设置项：留空或填非法值时，它会回退到
+  「本机默认全局 IPv6 地址」，没有全局地址才用 `::`。想让 IPv6 只监听本机、
+  不接受外部 IPv6 连入，填 `::1`。
+* `rpc-bind-address` 支持任意 IPv4/IPv6 字面量：`127.0.0.1` / `::1` 算「只监听本机」；
+  其它地址（`0.0.0.0`、`::`、具体网卡地址）都算对外提供 RPC，**必须同时填用户名和密码**，
+  否则保存会被拒绝并指出缺哪一项——插件不会悄悄把地址改回 `127.0.0.1`。
+  开启鉴权后，用户设置的明文口令保存在 `data/rpc-credential.json`（权限 0600），
+  用于插件向 daemon 发本机 RPC（daemon 侧只存加盐哈希，无法反推）。
+* 插件转发 `/rpc`、读取状态都按 `settings.json` 里实际的
+  `rpc-bind-address` / `rpc-port` / `rpc-url` 去连 daemon，所以把 RPC 改绑到 IPv6
+  或别的端口之后，界面依然能显示状态。transmission 的 `unix:/path` 形式插件转发不了，
+  会明确报错而不是静默失效。
+* daemon 起不来时先看插件页面底部的「daemon 日志」：那里直接显示
+  `transmission.log` 的末尾，端口被占、`settings.json` 解析失败、权限问题等
+  都会写在里面。
+
 ### 开机自动拉起
 
 点「启动」或「重启」时插件会把「用户希望 daemon 运行」写进

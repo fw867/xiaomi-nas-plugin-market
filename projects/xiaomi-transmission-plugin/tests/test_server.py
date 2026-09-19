@@ -10,10 +10,12 @@ import importlib
 import io
 import json
 import os
+import socket
 import tempfile
 import threading
 import unittest
 from http.client import HTTPConnection
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
@@ -40,6 +42,25 @@ REQUIRED_KEYS = {
 
 # 1.4x 的旧字段名，不能出现在 4.x 的设置项里。
 LEGACY_KEYS = {"max-peers-global", "max-peers-per-torrent", "max-peers"}
+
+
+class FakeRpcHandler(BaseHTTPRequestHandler):
+    """冒充 transmission 的 RPC 端点，用来验证插件真的连到了指定地址。"""
+
+    def do_POST(self) -> None:  # noqa: N802 - http.server 的接口名
+        body = json.dumps({"result": "success", "arguments": {"torrentCount": 1}}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args: object) -> None:
+        pass
+
+
+class IPv6RpcServer(ThreadingHTTPServer):
+    address_family = socket.AF_INET6
 
 
 class TransmissionTests(unittest.TestCase):
@@ -299,18 +320,40 @@ class TransmissionTests(unittest.TestCase):
     # ------------------------------------------------------------------
 
     def test_remote_access_requires_credentials(self) -> None:
+        """对外监听却没凭据时必须报错，不能悄悄退回只监听本机。
+
+        静默降级会把用户在 transmission-web-control 里配好的远程访问，
+        在插件保存任意一项设置时关掉。
+        """
         module = self.module
         with mock.patch.object(module, "read_credential", return_value={}):
-            # 只要凭据不齐，请求 0.0.0.0 也会被压回 127.0.0.1
-            for values in (
-                {"rpc-bind-address": "0.0.0.0"},
-                {"rpc-bind-address": "0.0.0.0", "rpc-username": "u"},
-                {"rpc-bind-address": "0.0.0.0", "rpc-password": "p"},
-                {"rpc-bind-address": "0.0.0.0", "rpc-username": "  "},
-            ):
-                result = module.normalize_remote_access(values)
-                self.assertEqual("127.0.0.1", result["rpc-bind-address"], values)
-                self.assertFalse(result["rpc-authentication-required"], values)
+            with self.assertRaises(module.SettingsError) as caught:
+                module.normalize_remote_access({"rpc-bind-address": "0.0.0.0"})
+            self.assertIn("rpc-username", caught.exception.fields)
+            with self.assertRaises(module.SettingsError) as caught:
+                module.normalize_remote_access({"rpc-bind-address": "0.0.0.0", "rpc-username": "u"})
+            self.assertIn("rpc-password", caught.exception.fields)
+            # 口令是在 transmission 里设的（插件没有明文）也要报错，而不是当作没配
+            with self.assertRaises(module.SettingsError):
+                module.normalize_remote_access(
+                    {"rpc-bind-address": "0.0.0.0", "rpc-username": "u", "rpc-password": ""}
+                )
+
+    def test_remote_access_keeps_foreign_address(self) -> None:
+        """外部写进去的监听地址不能被插件改写成 127.0.0.1。"""
+        module = self.module
+        self.assertEqual(
+            "::1", module.normalize_remote_access({"rpc-bind-address": "::1"})["rpc-bind-address"]
+        )
+        self.assertFalse(
+            module.normalize_remote_access({"rpc-bind-address": "::1"})["rpc-authentication-required"]
+        )
+        with mock.patch.object(module, "read_credential", return_value={"password": "p"}):
+            result = module.normalize_remote_access(
+                {"rpc-bind-address": "192.168.1.5", "rpc-username": "u"}
+            )
+        self.assertEqual("192.168.1.5", result["rpc-bind-address"])
+        self.assertTrue(result["rpc-authentication-required"])
 
     def test_remote_access_allowed_with_credentials(self) -> None:
         module = self.module
@@ -380,16 +423,19 @@ class TransmissionTests(unittest.TestCase):
     # 远程访问：监听地址与账号验证
     # ------------------------------------------------------------------
 
-    def test_choice_field_rejects_unknown_address(self) -> None:
+    def test_choice_field_rejects_non_addresses(self) -> None:
         module = self.module
-        with self.assertRaises(module.SettingsError):
-            module.validate_settings({"rpc-bind-address": "192.168.1.5"})
+        for value in ("192.168.1.5/24", "nas.local", "unix:/tmp/tr.sock", ""):
+            with self.subTest(value=value), self.assertRaises(module.SettingsError):
+                module.validate_settings({"rpc-bind-address": value})
 
-    def test_choice_field_accepts_both_addresses(self) -> None:
+    def test_choice_field_accepts_any_address(self) -> None:
+        """transmission 允许把 RPC 绑到任意 IPv4/IPv6 地址，接口不能只认下拉框里那两个。"""
         module = self.module
-        for value in ("0.0.0.0", "127.0.0.1"):
-            clean = module.validate_settings({"rpc-bind-address": value})
-            self.assertEqual(value, clean["rpc-bind-address"])
+        for value in ("0.0.0.0", "127.0.0.1", "::1", "::", "192.168.1.5"):
+            with self.subTest(value=value):
+                clean = module.validate_settings({"rpc-bind-address": value})
+                self.assertEqual(value, clean["rpc-bind-address"])
 
     def test_empty_password_means_keep_current(self) -> None:
         """留空不能覆盖已保存的密码哈希。"""
@@ -420,6 +466,28 @@ class TransmissionTests(unittest.TestCase):
             payload = module.settings_payload()
         field = next(f for f in payload["fields"] if f["id"] == "rpc-password")
         self.assertEqual("", field["value"])
+
+    def test_settings_payload_keeps_foreign_bind_choice_visible(self) -> None:
+        """外部写进去的监听地址要能出现在下拉框里，否则界面会退化成一个空选项。"""
+        module = self.module
+        self.write_raw_settings({"rpc-bind-address": "::1"})
+        payload = module.settings_payload()
+        field = next(f for f in payload["fields"] if f["id"] == "rpc-bind-address")
+        self.assertEqual("::1", field["value"])
+        self.assertIn("::1", field["choices"])
+
+    def test_status_payload_exposes_rpc_target_and_log_tail(self) -> None:
+        """界面要能显示插件实际连的地址，以及 daemon 日志末尾，便于自查。"""
+        module = self.module
+        self.write_raw_settings({"rpc-bind-address": "::", "rpc-port": 19191, "rpc-url": "/transmission/"})
+        module.LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        module.LOG_FILE.write_text("boom\n", encoding="utf-8")
+        with mock.patch.object(module, "daemon_running", return_value=False):
+            payload = module.status_payload()
+        self.assertEqual("[::]:19191", payload["rpcTarget"])
+        self.assertEqual("::", payload["rpcBind"])
+        self.assertEqual(19191, payload["rpcPort"])
+        self.assertEqual("boom", payload["logTail"])
 
     def test_auth_group_is_exposed_to_the_ui(self) -> None:
         module = self.module
@@ -580,6 +648,33 @@ class TransmissionTests(unittest.TestCase):
                 module.apply_settings({"peer-limit-global": 100})
         self.assertEqual(100, module.read_settings()["peer-limit-global"])
 
+    def test_apply_settings_restarts_daemon_when_write_fails(self) -> None:
+        """写盘阶段出错也要把 daemon 拉回来，不能把它留在停止状态。"""
+        module = self.module
+        calls: list[str] = []
+
+        def fake_start(*_args, **_kwargs):
+            calls.append("start")
+            return True, ""
+
+        with mock.patch.object(module, "daemon_running", return_value=True), \
+                mock.patch.object(module, "stop_daemon", return_value=(True, "")), \
+                mock.patch.object(module, "start_daemon", side_effect=fake_start), \
+                mock.patch.object(module, "write_settings", side_effect=OSError("磁盘满")):
+            with self.assertRaises(OSError):
+                module.apply_settings({"peer-limit-global": 100})
+        self.assertEqual(["start"], calls)
+
+    def test_remote_access_error_happens_before_the_daemon_is_stopped(self) -> None:
+        """校验失败不能留下「daemon 已停止」的状态。"""
+        module = self.module
+        self.write_raw_settings({"rpc-bind-address": "127.0.0.1"})
+        with mock.patch.object(module, "daemon_running", return_value=True), \
+                mock.patch.object(module, "read_credential", return_value={}), \
+                mock.patch.object(module, "stop_daemon", side_effect=AssertionError("不应停止 daemon")):
+            with self.assertRaises(module.SettingsError):
+                module.apply_settings({"rpc-bind-address": "0.0.0.0", "rpc-username": "u"})
+
     # ------------------------------------------------------------------
     # daemon 生命周期
     # ------------------------------------------------------------------
@@ -704,18 +799,34 @@ class TransmissionTests(unittest.TestCase):
         finally:
             module.CA_BUNDLE_CANDIDATES = original
 
-    def test_ipv6_switch_reads_transmission_string_values(self) -> None:
-        """transmission 用 "::" / "" 表示 IPv6 开关，界面按 bool 呈现。"""
-        module = self.module
-        on = module.effective_values({"bind-address-ipv6": "::"}, "kebab")
-        off = module.effective_values({"bind-address-ipv6": ""}, "kebab")
-        self.assertIs(True, on["bind-address-ipv6"])
-        self.assertIs(False, off["bind-address-ipv6"])
+    def test_ipv6_field_is_a_listen_address_not_a_switch(self) -> None:
+        """transmission 4.x 没有「关闭 IPv6 监听」的设置项，这个键只是 IPv6 监听地址。
 
-    def test_ipv6_switch_writes_transmission_string_values(self) -> None:
+        早先做成「启用/关闭」开关并写 ""，会让人以为关掉了 IPv6；实际 4.0.6 会把空串
+        当成「使用本机默认全局 IPv6 地址」（tr_session::publicAddress）。
+        """
         module = self.module
-        self.assertEqual("", module.merge_managed({}, "kebab", {"bind-address-ipv6": False})["bind-address-ipv6"])
-        self.assertEqual("::", module.merge_managed({}, "kebab", {"bind-address-ipv6": True})["bind-address-ipv6"])
+        field = module.FIELDS_BY_ID["bind-address-ipv6"]
+        self.assertEqual("text", field["kind"])
+        self.assertEqual("::", field["default"])
+        self.assertNotIn("true_value", field)
+        self.assertEqual(
+            "::1", module.effective_values({"bind-address-ipv6": "::1"}, "kebab")["bind-address-ipv6"]
+        )
+        # 留空也按原样写回，由 transmission 自己决定落到哪个默认地址
+        self.assertEqual(
+            "", module.merge_managed({}, "kebab", {"bind-address-ipv6": ""})["bind-address-ipv6"]
+        )
+
+    def test_ipv6_field_accepts_only_addresses(self) -> None:
+        module = self.module
+        for value in ("::", "::1", "2400:cb00::1", "fe80::1%eth0", ""):
+            with self.subTest(value=value):
+                clean = module.validate_settings({"bind-address-ipv6": value})
+                self.assertEqual(value, clean["bind-address-ipv6"])
+        for value in ("0.0.0.0", "nas.local", "::1/64", "1.2.3.4.5", "fe80::1%bad name"):
+            with self.subTest(value=value), self.assertRaises(module.SettingsError):
+                module.validate_settings({"bind-address-ipv6": value})
 
     def test_lpd_is_disabled_on_first_run(self) -> None:
         """多数 PT 站不允许 LPD，首次运行要把 transmission 自带的默认（开启）改掉。"""
@@ -910,6 +1021,39 @@ class TransmissionTests(unittest.TestCase):
         self.assertIn("-x", argv)
         self.assertEqual(str(module.PID_FILE), argv[argv.index("-x") + 1])
 
+    def test_log_tail_strips_ansi_and_keeps_the_end(self) -> None:
+        module = self.module
+        module.LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        module.LOG_FILE.write_bytes(
+            ("\n".join(f"line {index}" for index in range(60)) + "\n\x1b[31mboom\x1b[0m\n").encode()
+        )
+        tail = module.log_tail()
+        self.assertEqual("boom", tail.splitlines()[-1])
+        self.assertNotIn("\x1b", tail)
+        self.assertLessEqual(len(tail.splitlines()), 40)
+
+    def test_log_tail_is_empty_without_log_file(self) -> None:
+        self.assertEqual("", self.module.log_tail())
+
+    def test_start_daemon_reports_running_process_with_log_tail(self) -> None:
+        """进程活着却探测不到 RPC 时要说清这一点，并带上日志，而不是只说「没起来」。"""
+        module = self.module
+        module.LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        module.LOG_FILE.write_text("Couldn't bind to 127.0.0.1:9091\n", encoding="utf-8")
+        with mock.patch.object(module, "daemon_running", return_value=False), \
+                mock.patch.object(module, "ensure_runtime_executables"), \
+                mock.patch.object(module, "write_settings"), \
+                mock.patch.object(module, "read_settings", return_value={}), \
+                mock.patch.object(module, "rpc_alive", return_value=False), \
+                mock.patch.object(module, "read_pid", return_value=4321), \
+                mock.patch.object(module, "process_exists", return_value=True), \
+                mock.patch.object(module.subprocess, "Popen"):
+            ok, error = module.start_daemon(timeout=0)
+
+        self.assertFalse(ok)
+        self.assertIn("RPC", error)
+        self.assertIn("Couldn't bind to 127.0.0.1:9091", error)
+
     def test_daemon_version_parses_daemon_output(self) -> None:
         module = self.module
         module.VERSION_CACHE.update({"mtime": None, "value": None})
@@ -953,6 +1097,56 @@ class TransmissionTests(unittest.TestCase):
         module = self.module
         with mock.patch.object(module, "rpc_request", side_effect=ConnectionRefusedError()):
             self.assertFalse(module.rpc_alive())
+
+    def test_rpc_settings_follows_the_settings_file(self) -> None:
+        module = self.module
+        self.write_raw_settings({"rpc-bind-address": "0.0.0.0", "rpc-port": 19191, "rpc-url": "/tr"})
+        self.assertEqual(("0.0.0.0", 19191, "/tr/"), module.rpc_settings())
+        module.SETTINGS_FILE.unlink()
+        self.assertEqual(("127.0.0.1", module.RPC_PORT, module.RPC_PATH), module.rpc_settings())
+
+    def test_rpc_settings_tolerates_garbage(self) -> None:
+        module = self.module
+        self.write_raw_settings({"rpc-bind-address": 5, "rpc-port": "9091", "rpc-url": "rpc"})
+        self.assertEqual(("127.0.0.1", module.RPC_PORT, module.RPC_PATH), module.rpc_settings())
+
+    def test_rpc_hosts_maps_wildcards_to_loopback(self) -> None:
+        module = self.module
+        self.assertEqual(["127.0.0.1"], module.rpc_hosts("0.0.0.0"))
+        self.assertEqual(["127.0.0.1"], module.rpc_hosts(""))
+        self.assertEqual(["127.0.0.1", "::1"], module.rpc_hosts("::"))
+        self.assertEqual(["::1"], module.rpc_hosts("::1"))
+        self.assertEqual(["192.168.1.5"], module.rpc_hosts("192.168.1.5"))
+
+    def test_rpc_request_report_unix_socket_bind(self) -> None:
+        """transmission 4.0.6 的 RPC 也能绑 unix socket，但插件只能走 HTTP，要说清楚。"""
+        module = self.module
+        self.write_raw_settings({"rpc-bind-address": "unix:/tmp/tr.sock"})
+        with self.assertRaises(OSError) as caught:
+            module.rpc_request({"method": "session-stats"})
+        self.assertIn("unix socket", str(caught.exception))
+
+    def test_rpc_reaches_ipv6_bound_daemon(self) -> None:
+        """回归：RPC 绑到 IPv6 时必须还连得上。
+
+        以前 rpc_request 写死 127.0.0.1，用户把 rpc-bind-address 改成 ::1 之后插件一律
+        连不上，界面只会显示「daemon 起不来」。
+        """
+        module = self.module
+        try:
+            server = IPv6RpcServer(("::1", 0), FakeRpcHandler)
+        except OSError as error:  # pragma: no cover - 环境不支持 IPv6 回环
+            self.skipTest(f"环境不支持 IPv6 回环：{error}")
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.write_raw_settings({
+            "rpc-bind-address": "::1",
+            "rpc-port": server.server_address[1],
+            "rpc-url": "/transmission/",
+        })
+        self.assertTrue(module.rpc_alive())
+        self.assertEqual({"torrentCount": 1}, module.session_stats())
 
     def test_session_stats_returns_arguments(self) -> None:
         module = self.module
@@ -1304,12 +1498,8 @@ class TransmissionTests(unittest.TestCase):
             def read(self) -> bytes:
                 return b"<h1>409 Conflict</h1>"
 
-            def getheader(self, name):
-                if name.lower() == "x-transmission-session-id":
-                    return "session-42"
-                if name.lower() == "content-type":
-                    return "text/html"
-                return None
+            def getheaders(self):
+                return [("X-Transmission-Session-Id", "session-42"), ("Content-Type", "text/html")]
 
         class FakeConnection:
             def __init__(self, host, conn_port, timeout=None):
@@ -1363,10 +1553,8 @@ class TransmissionTests(unittest.TestCase):
             def read(self) -> bytes:
                 return b'{"result":"success"}'
 
-            def getheader(self, name):
-                if name.lower() == "content-type":
-                    return "application/json"
-                return None
+            def getheaders(self):
+                return [("Content-Type", "application/json")]
 
         class FakeConnection:
             def __init__(self, *args, **kwargs):

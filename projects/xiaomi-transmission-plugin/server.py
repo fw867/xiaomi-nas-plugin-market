@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import mimetypes
 import os
@@ -267,7 +268,8 @@ FIELDS: list[dict] = [
     _field(
         "rpc-bind-address", "RPC 监听地址", "choice", "auth",
         "0.0.0.0 监听所有网卡，局域网内其它设备可直接连接 RPC（如 Transmission Remote）；"
-        "127.0.0.1 只允许本机访问。绑定到 0.0.0.0 时建议同时开启账号验证。",
+        "127.0.0.1 只允许本机访问。除 127.0.0.1 / ::1 之外的地址都算对外监听，"
+        "必须配齐「登录用户名」和「登录密码」，否则保存会被拒绝。",
         unit="", default="127.0.0.1", choices=["0.0.0.0", "127.0.0.1"],
     ),
     _field(
@@ -288,11 +290,17 @@ FIELDS: list[dict] = [
         unit="", default="",
     ),
     # —— 网络（IPv6 / 本地对等发现）——
+    # 这里必须如实呈现 transmission 4.x 的语义：它没有「关闭 IPv6 监听」的设置项，
+    # bind-address-ipv6 只是 IPv6 监听地址，空串/非法值会被它当作
+    # 「使用本机默认全局 IPv6 地址」（见 4.0.6 的 tr_session::publicAddress）。
+    # 所以不能做成「启用/关闭 IPv6」的开关，那会让人以为关掉了 IPv6。
     _field(
-        "bind-address-ipv6", "启用 IPv6", "bool", "network",
-        "关闭后只走 IPv4。设备本身没有 IPv6 出口时，开着只会不断产生"
-        "「Network is unreachable」的无效连接尝试。",
-        default=True, true_value="::", false_value="",
+        "bind-address-ipv6", "IPv6 监听地址", "text", "network",
+        "peer 连接的 IPv6 监听地址，默认 ::（监听全部 IPv6 地址）。"
+        "transmission 4.x 没有「关闭 IPv6」的设置项：留空或填非法值，都会被当成"
+        "「使用本机默认全局 IPv6 地址」。想让 IPv6 只监听本机、不接受外部 IPv6 连入，"
+        "填 ::1。",
+        unit="", default="::", allow_empty=True, format="ipv6",
     ),
     _field(
         "lpd-enabled", "启用 LPD（本地对等发现）", "bool", "network",
@@ -384,25 +392,10 @@ def write_settings(settings: dict) -> None:
     os.chmod(SETTINGS_FILE, 0o644)
 
 
-def _to_settings_value(field: dict | None, value: object) -> object:
-    """界面上的值 → settings.json 里该存的形式。
-
-    有些开关在 transmission 那边存的是字符串（IPv6 的 "::" / ""），
-    界面仍按 bool 呈现，转换集中在这两个函数里。
-    """
-    if field is not None and "true_value" in field:
-        return field["true_value"] if value else field["false_value"]
-    return value
-
-
 def effective_values(raw: dict, style: str) -> dict:
     values = {}
     for field in FIELDS:
-        key = key_for(field["id"], style)
-        value = raw.get(key, field["default"])
-        if "true_value" in field:
-            value = value == field["true_value"]
-        values[field["id"]] = value
+        values[field["id"]] = raw.get(key_for(field["id"], style), field["default"])
     return values
 
 
@@ -419,7 +412,7 @@ def merge_managed(raw: dict, style: str, values: dict) -> dict:
         if key not in merged:
             merged[key] = FIELDS_BY_ID[logical]["default"]
     for logical, value in values.items():
-        merged[key_for(logical, style)] = _to_settings_value(FIELDS_BY_ID.get(logical), value)
+        merged[key_for(logical, style)] = value
     return merged
 
 
@@ -433,22 +426,50 @@ class DaemonError(RuntimeError):
     pass
 
 
+def is_bind_address(value: str) -> bool:
+    """RPC 监听地址只接受 IPv4/IPv6 字面量。
+
+    transmission 4.0.6 还支持 `unix:/path` 形式的 RPC 监听，但插件的 /rpc 反代与
+    状态探测都走 HTTP，连不了 unix socket，所以明确拒绝而不是让它悄悄失效。
+    """
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return True
+
+
 def normalize_remote_access(values: dict) -> dict:
-    """落实「要开 0.0.0.0 远程访问就必须配齐用户名密码，否则只听 127.0.0.1」。
+    """落实「只要对外监听就必须配齐用户名和口令」。
 
     实测 transmission 4.0.6 的白名单并不能豁免鉴权（开鉴权后带白名单的回环
-    请求同样返回 401），所以不能用「白名单放行本机 + 鉴权挡外部」的组合。
-    这里的规则是硬保证：凭据不全就绝不对外监听。
+    请求同样返回 401），所以不能用「白名单放行本机 + 鉴权挡外部」的组合，
+    只能是硬保证：凭据不全就绝不对外监听。
+
+    早先的做法是「凭据不全就悄悄压回 127.0.0.1」，副作用是：用户在别处
+    （transmission-web-control 或手工改 settings.json）配好的远程访问，会在插件里
+    保存任意一项设置时被静默关掉。现在改成直接报错，让用户自己决定补口令还是改回本机。
     """
-    bind = str(values.get("rpc-bind-address", "") or "")
+    bind = str(values.get("rpc-bind-address", "") or "").strip()
+    if bind in ("127.0.0.1", "::1"):
+        return {"rpc-bind-address": bind, "rpc-authentication-required": False}
     username = str(values.get("rpc-username", "") or "").strip()
     password = str(values.get("rpc-password", "") or "")
     if not password:
         # 界面留空表示沿用已保存的口令
         password = str(read_credential().get("password", "") or "")
-    if bind == "0.0.0.0" and username and password:
-        return {"rpc-bind-address": "0.0.0.0", "rpc-authentication-required": True}
-    return {"rpc-bind-address": "127.0.0.1", "rpc-authentication-required": False}
+    if not username:
+        raise SettingsError(
+            f"监听 {bind} 会对外提供 RPC，必须先填登录用户名",
+            {"rpc-username": "对外监听时必须填写"},
+        )
+    if not password:
+        raise SettingsError(
+            f"监听 {bind} 会对外提供 RPC，必须先设置登录密码；"
+            "插件没有已保存的口令（可能是在 transmission 里直接设的），请重新输入一次",
+            {"rpc-password": "对外监听时必须填写"},
+        )
+    return {"rpc-bind-address": bind, "rpc-authentication-required": True}
 
 
 def coerce_int(field: dict, value: object) -> int:
@@ -484,6 +505,25 @@ def coerce_path(field: dict, value: object) -> str:
     return text
 
 
+def coerce_ipv6(field: dict, value: object) -> str:
+    """IPv6 监听地址：留空表示不指定（transmission 会回退到默认全局 IPv6 地址）。"""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    # 链接本地地址可能带 zone 后缀（fe80::1%eth0），ipaddress 对 zone 的支持随版本而异，
+    # 这里先按 % 拆开分别校验。
+    address, _separator, zone = text.partition("%")
+    try:
+        ipaddress.IPv6Address(address)
+    except ValueError as error:
+        raise SettingsError(
+            f"{field['label']}必须是 IPv6 地址，例如 ::、::1 或 2400:cb00::1"
+        ) from error
+    if zone and not re.fullmatch(r"[A-Za-z0-9_.:-]{1,32}", zone):
+        raise SettingsError(f"{field['label']}的接口名（% 之后）无效")
+    return text
+
+
 def validate_settings(values: object) -> dict:
     """白名单校验：只有本插件声明过的设置项才允许写入。
 
@@ -506,11 +546,13 @@ def validate_settings(values: object) -> dict:
             elif field["kind"] == "path":
                 clean[logical] = coerce_path(field, value)
             elif field["kind"] == "choice":
-                if value not in field["choices"]:
+                text = str(value).strip()
+                if text not in field["choices"] and not is_bind_address(text):
                     raise SettingsError(
-                        f"{field['label']}只能是 {' 或 '.join(field['choices'])}"
+                        f"{field['label']}必须是 IPv4/IPv6 地址"
+                        f"（常用值：{' 或 '.join(field['choices'])}）"
                     )
-                clean[logical] = value
+                clean[logical] = text
             elif field["kind"] in ("text", "password"):
                 if not isinstance(value, str):
                     raise SettingsError(f"{field['label']}必须是文本")
@@ -519,6 +561,8 @@ def validate_settings(values: object) -> dict:
                 # 密码留空表示「不修改」，不写进 settings.json
                 if field["kind"] == "password" and not value:
                     continue
+                if field.get("format") == "ipv6":
+                    value = coerce_ipv6(field, value)
                 clean[logical] = value
             else:  # int / clock / weekdays 都是整数
                 clean[logical] = coerce_int(field, value)
@@ -568,6 +612,8 @@ def apply_settings(values: object, restart: bool = True) -> dict:
 
     顺序很重要：transmission 只在退出时回写 settings.json，
     所以必须「先停 daemon → 再写文件 → 再启动」，否则改动会被覆盖。
+    也正因为如此，所有可能报错的校验都必须放在停 daemon 之前——否则一次失败的保存
+    会把下载服务留在停止状态，界面看起来就是「daemon 起不来了」。
     """
     clean = validate_settings(values)
     ensure_download_dir(clean)
@@ -577,6 +623,8 @@ def apply_settings(values: object, restart: bool = True) -> dict:
     pending = effective_values(raw_now, detect_style(raw_now))
     pending.update(clean)
     ensure_watch_dir(pending)
+    # 监听地址与鉴权开关也在这里定下来（对外监听却没凭据时会直接报错）。
+    remote = normalize_remote_access(pending)
     was_running = daemon_running()
     stopped = False
     if was_running and restart:
@@ -584,23 +632,28 @@ def apply_settings(values: object, restart: bool = True) -> dict:
         if not ok:
             raise DaemonError(f"无法停止 transmission-daemon：{error}")
         stopped = True
-    with WRITE_LOCK:
-        raw = read_settings()
-        style = detect_style(raw)
-        # 用「现有值 + 本次提交」求出最终值，再据此决定监听地址与鉴权开关
-        effective = effective_values(raw, style)
-        effective.update(clean)
-        clean.update(normalize_remote_access(effective))
-        # 记住明文口令：daemon 侧存的是哈希，插件自己发 RPC 时用得上
-        username = str(effective.get("rpc-username", "") or "").strip()
-        new_password = str(clean.get("rpc-password", "") or "")
-        if new_password:
-            write_credential(username, new_password)
-        elif username:
-            existing = read_credential()
-            if existing.get("password"):
-                write_credential(username, str(existing["password"]))
-        write_settings(merge_managed(raw, style, clean))
+    try:
+        with WRITE_LOCK:
+            raw = read_settings()
+            style = detect_style(raw)
+            clean.update(remote)
+            # 记住明文口令：daemon 侧存的是哈希，插件自己发 RPC 时用得上
+            effective = effective_values(raw, style)
+            effective.update(clean)
+            username = str(effective.get("rpc-username", "") or "").strip()
+            new_password = str(clean.get("rpc-password", "") or "")
+            if new_password:
+                write_credential(username, new_password)
+            elif username:
+                existing = read_credential()
+                if existing.get("password"):
+                    write_credential(username, str(existing["password"]))
+            write_settings(merge_managed(raw, style, clean))
+    except Exception:
+        # 写盘失败也不要让 daemon 停在停止状态：尽力把它拉回来再报错。
+        if stopped:
+            start_daemon()
+        raise
     started = False
     if stopped:
         ok, error = start_daemon()
@@ -714,8 +767,8 @@ def process_exists(pid: int) -> bool:
 # RPC 凭据
 # ---------------------------------------------------------------------------
 # transmission 把 rpc-password 以加盐哈希存进 settings.json，且实测无法用该哈希
-# 通过 RPC 鉴权（会返回 401，见 README「远程访问」）。所以开启鉴权后，插件必须
-# 自己记住用户设置的明文口令，才能继续向回环 daemon 发请求。
+# 通过 RPC 鉴权（会返回 401，见 README「IPv6 与 RPC 监听地址」）。所以开启鉴权后，
+# 插件必须自己记住用户设置的明文口令，才能继续向 daemon 发请求。
 # 文件权限 0600，与 admin token 同级的本机机密。
 CREDENTIAL_FILE = DATA_DIR / "rpc-credential.json"
 
@@ -751,16 +804,65 @@ def auth_header() -> dict:
     return {"Authorization": f"Basic {token}"}
 
 
-def rpc_request(payload: dict, timeout: float = 3.0) -> tuple[int, dict, bytes]:
-    """调用 daemon 的 RPC。返回 (状态码, 响应头, 响应体)。"""
-    body = json.dumps(payload).encode("utf-8")
+def rpc_settings() -> tuple[str, int, str]:
+    """按 settings.json 的实际值决定插件该连哪个地址、端口和路径。
+
+    以前这里写死 127.0.0.1:9091，用户在 transmission 里把 RPC 绑到 IPv6 地址、
+    或改了端口/路径之后，插件就再也连不上 daemon，界面上只表现为「daemon 起不来」。
+    """
+    raw = read_settings()
+    style = detect_style(raw)
+    bind = raw.get(key_for("rpc-bind-address", style), "127.0.0.1")
+    port = raw.get(key_for("rpc-port", style), RPC_PORT)
+    path = raw.get(key_for("rpc-url", style), RPC_PATH)
+    bind = bind.strip() if isinstance(bind, str) else "127.0.0.1"
+    if isinstance(port, bool) or not isinstance(port, int) or not 0 < port < 65536:
+        port = RPC_PORT
+    if not isinstance(path, str) or not path.startswith("/"):
+        path = RPC_PATH
+    if not path.endswith("/"):
+        path += "/"
+    return bind, port, path
+
+
+def rpc_hosts(bind: str) -> list[str]:
+    """绑定地址 → 插件实际可以连的地址列表。
+
+    ``0.0.0.0``/空表示所有 IPv4 网卡，连回环即可；``::`` 是所有 IPv6 网卡，
+    先试 IPv4 回环（双栈时可用），再退到 IPv6 回环。
+    """
+    if bind in ("", "0.0.0.0"):
+        return ["127.0.0.1"]
+    if bind == "::":
+        return ["127.0.0.1", "::1"]
+    return [bind]
+
+
+def header_value(headers: dict, name: str) -> str:
+    """http.client 的响应头是普通 dict，键大小写按服务端原样，这里做不敏感查找。"""
+    for key, value in headers.items():
+        if key.lower() == name.lower():
+            return value
+    return ""
+
+
+def _rpc_call(
+    host: str,
+    port: int,
+    path: str,
+    payload: dict | bytes,
+    timeout: float,
+    extra_headers: dict | None = None,
+) -> tuple[int, dict, bytes]:
+    body = payload if isinstance(payload, bytes) else json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     headers.update(auth_header())
     if SESSION_ID["value"]:
         headers["X-Transmission-Session-Id"] = SESSION_ID["value"]
-    connection = HTTPConnection("127.0.0.1", RPC_PORT, timeout=timeout)
+    headers.update(extra_headers or {})
+    connection = HTTPConnection(host, port, timeout=timeout)
     try:
-        connection.request("POST", RPC_PATH + "rpc", body=body, headers=headers)
+        connection.request("POST", path + "rpc", body=body, headers=headers)
         response = connection.getresponse()
         data = response.read()
         return response.status, dict(response.getheaders()), data
@@ -768,14 +870,26 @@ def rpc_request(payload: dict, timeout: float = 3.0) -> tuple[int, dict, bytes]:
         connection.close()
 
 
+def rpc_request(payload: dict, timeout: float = 3.0) -> tuple[int, dict, bytes]:
+    """调用 daemon 的 RPC。返回 (状态码, 响应头, 响应体)。"""
+    bind, port, path = rpc_settings()
+    if bind.startswith("unix:"):
+        raise OSError("RPC 监听在 unix socket 上，插件只能通过 HTTP 访问")
+    error: Exception | None = None
+    for host in rpc_hosts(bind):
+        try:
+            return _rpc_call(host, port, path, payload, timeout)
+        except (OSError, HTTPException) as failure:
+            error = failure
+    raise error if error is not None else OSError("无法连接 transmission RPC")
+
+
 def rpc_alive() -> bool:
     try:
         status, headers, _ = rpc_request({"method": "session-stats"}, timeout=2.0)
     except (OSError, HTTPException):
         return False
-    session = headers.get("X-Transmission-Session-Id") or headers.get(
-        "x-transmission-session-id"
-    )
+    session = header_value(headers, "X-Transmission-Session-Id")
     if session:
         SESSION_ID["value"] = session
     # 200 = 正常；409 = daemon 在跑但要求带上 session id。
@@ -788,9 +902,7 @@ def session_stats() -> dict | None:
             status, headers, data = rpc_request({"method": "session-stats"})
         except (OSError, HTTPException):
             return None
-        session = headers.get("X-Transmission-Session-Id") or headers.get(
-            "x-transmission-session-id"
-        )
+        session = header_value(headers, "X-Transmission-Session-Id")
         if session:
             SESSION_ID["value"] = session
         if status == 409:
@@ -811,6 +923,25 @@ def daemon_running() -> bool:
     if pid is not None and process_exists(pid):
         return True
     return rpc_alive()
+
+
+def log_tail(limit: int = 8192) -> str:
+    """取 daemon 日志末尾若干字节。
+
+    daemon 起不来时，原因（端口被占、settings.json 解析失败、权限问题等）只写在
+    它自己的日志里。以前界面只给一句「启动失败」，用户只能自己上 SSH 翻文件，
+    所以这里把末尾内容带回界面。
+    """
+    try:
+        with LOG_FILE.open("rb") as stream:
+            stream.seek(0, os.SEEK_END)
+            size = stream.tell()
+            stream.seek(max(0, size - limit))
+            text = stream.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+    text = re.sub(r"\x1b\[[0-9;]*m", "", text)  # 去掉颜色控制字符
+    return "\n".join(text.strip().splitlines()[-40:])
 
 
 def start_daemon(timeout: float = 25.0) -> tuple[bool, str]:
@@ -851,7 +982,15 @@ def start_daemon(timeout: float = 25.0) -> tuple[bool, str]:
         if rpc_alive():
             return True, ""
         time.sleep(0.3)
-    return False, f"等待 {timeout:g} 秒仍未就绪，请查看 {LOG_FILE}"
+    if rpc_alive():
+        return True, ""
+    tail = log_tail()
+    detail = "；最近日志：" + " / ".join(tail.splitlines()[-3:]) if tail else ""
+    pid = read_pid()
+    if pid is not None and process_exists(pid):
+        # 进程活着却探测不到 RPC：多半是 RPC 绑到了别的地址/端口，或者插件没有正确口令。
+        return False, "daemon 进程在运行，但插件访问不到它的 RPC（监听地址、端口或鉴权不一致）" + detail
+    return False, f"等待 {timeout:g} 秒后 daemon 仍未就绪" + detail
 
 
 def find_daemon_pids() -> list[int]:
@@ -995,6 +1134,7 @@ def status_payload() -> dict:
     raw = read_settings()
     style = detect_style(raw)
     values = effective_values(raw, style)
+    bind, port, _path = rpc_settings()
     return {
         "ok": True,
         "daemonRunning": running,
@@ -1008,10 +1148,12 @@ def status_payload() -> dict:
         "downloadDir": values.get("download-dir"),
         "settingsPath": str(SETTINGS_FILE),
         "settingsKeyStyle": style,
-        "rpcPort": RPC_PORT,
-        "rpcBind": str(values.get("rpc-bind-address") or "127.0.0.1"),
+        "rpcPort": port,
+        "rpcBind": bind,
+        "rpcTarget": (f"[{bind}]:{port}" if ":" in bind and not bind.startswith("unix:") else f"{bind}:{port}"),
         "rpcAuthRequired": bool(values.get("rpc-authentication-required")),
         "rpcUsername": str(values.get("rpc-username") or ""),
+        "logTail": log_tail(),
         "session": {
             "torrentCount": (stats or {}).get("torrentCount"),
             "activeTorrentCount": (stats or {}).get("activeTorrentCount"),
@@ -1033,6 +1175,11 @@ def settings_payload() -> dict:
         # 回显既没用又会泄漏。界面里留空即表示不修改。
         if field["kind"] == "password":
             value = ""
+        choices = field.get("choices")
+        if choices and isinstance(value, str) and value not in choices:
+            # 外部（transmission-web-control 或手工编辑 settings.json）写进去的地址也要
+            # 能在下拉框里表示出来，否则 <select> 会退化成空值，用户连别的设置都存不了。
+            choices = [*choices, value]
         fields.append(
             {
                 "id": field["id"],
@@ -1043,7 +1190,7 @@ def settings_payload() -> dict:
                 "help": field["help"],
                 "minimum": field.get("minimum"),
                 "maximum": field.get("maximum"),
-                "choices": field.get("choices"),
+                "choices": choices,
                 "default": field.get("default"),
                 "storageKey": key_for(field["id"], style),
                 "value": value,
@@ -1165,37 +1312,40 @@ class Handler(BaseHTTPRequestHandler):
         if len(payload) > MAX_BODY_BYTES:
             self._json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "请求体过大"})
             return
-        headers = {"Content-Type": "application/json"}
+        extra: dict = {}
         # 客户端自己带了 Authorization 就原样透传；否则用插件保存的口令，
         # 这样开启鉴权后内嵌的 transmission-web-control 依然可用。
         if self.headers.get("Authorization"):
-            headers["Authorization"] = self.headers["Authorization"]
-        else:
-            headers.update(auth_header())
+            extra["Authorization"] = self.headers["Authorization"]
         session = self.headers.get("X-Transmission-Session-Id")
         if session:
-            headers["X-Transmission-Session-Id"] = session
-        connection = None
-        try:
-            connection = HTTPConnection("127.0.0.1", RPC_PORT, timeout=15)
-            connection.request("POST", RPC_PATH + "rpc", body=payload, headers=headers)
-            response = connection.getresponse()
-            body = response.read()
-            status = response.status
-            out: dict = {}
-            session_out = response.getheader("X-Transmission-Session-Id")
-            if session_out:
-                out["X-Transmission-Session-Id"] = session_out
-            content_type = response.getheader("Content-Type") or "application/json"
-        except (OSError, HTTPException) as error:
+            extra["X-Transmission-Session-Id"] = session
+        bind, port, path = rpc_settings()
+        if bind.startswith("unix:"):
+            self._json(
+                HTTPStatus.BAD_GATEWAY,
+                {"ok": False, "error": "RPC 监听在 unix socket 上，插件只能通过 HTTP 访问"},
+            )
+            return
+        # 与状态探测走同一套地址解析：RPC 绑到 IPv6/别的端口时也要能转发。
+        error: Exception | None = None
+        for host in rpc_hosts(bind):
+            try:
+                status, headers_out, body = _rpc_call(host, port, path, payload, 15, extra)
+                break
+            except (OSError, HTTPException) as failure:
+                error = failure
+        else:
             self._json(
                 HTTPStatus.BAD_GATEWAY,
                 {"ok": False, "error": f"transmission-daemon 未就绪：{error}"},
             )
             return
-        finally:
-            if connection is not None:
-                connection.close()
+        out: dict = {}
+        session_out = header_value(headers_out, "X-Transmission-Session-Id")
+        if session_out:
+            out["X-Transmission-Session-Id"] = session_out
+        content_type = header_value(headers_out, "Content-Type") or "application/json"
         self._send(status, body, content_type, out)
 
     # ---- 路由 ----
