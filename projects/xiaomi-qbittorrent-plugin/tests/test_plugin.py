@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from engine import (Engine, Error, IMAGE, NAME, LABEL, PORT, VERSION, confined, mutation,
                     password_hash, container_config, installed_version)
-from server import Server
+from server import Server, accepted
 
 
 class EngineTests(unittest.TestCase):
@@ -347,6 +347,40 @@ class HTTPTests(unittest.TestCase):
             code, _ = self.request('POST', '/api/login', {'password':'secret123'}, self.auth())
         self.assertEqual(code, 200)
         self.assertNotIn('secret123', repr(self.server.logins))
+
+    def test_login_accepts_qb5_response(self):
+        """qB 5.x 登录成功返回 204 + 空 body + QBT_SID_<端口> cookie。
+
+        回归用例：照 4.x 的 200 + "Ok." + SID 去校验，密码正确也会被判成
+        「登录失败」——qB 日志里记的却是 login success。
+        """
+        header = 'QBT_SID_18123=' + 'b' * 32 + '; HttpOnly; path=/'
+        with patch('server.qb_request', return_value=(204, b'', header)):
+            code, _ = self.request('POST', '/api/login', {'password': 'secret123'}, self.auth())
+        self.assertEqual(code, 200)
+        self.assertIn(self.token, self.server.logins)
+        self.assertTrue(self.server.logins[self.token][0].startswith('QBT_SID_18123='))
+
+    def test_login_still_accepts_qb4_response(self):
+        with patch('server.qb_request',
+                   return_value=(200, b'Ok.', 'SID=' + 'c' * 32 + '; HttpOnly')):
+            code, _ = self.request('POST', '/api/login', {'password': 'secret123'}, self.auth())
+        self.assertEqual(code, 200)
+        self.assertEqual(self.server.logins[self.token][0], 'SID=' + 'c' * 32)
+
+    def test_login_rejects_wrong_password(self):
+        with patch('server.qb_request', return_value=(401, b'Unauthorized', '')):
+            code, _ = self.request('POST', '/api/login', {'password': 'wrong'}, self.auth())
+        self.assertEqual(code, 400)
+        self.assertNotIn(self.token, self.server.logins)
+
+    def test_add_response_recognises_both_formats(self):
+        """qB 4.x 的 torrents/add 返回 "Ok."，5.x 返回 added_torrent_ids。"""
+        self.assertTrue(accepted(b'Ok.'))
+        self.assertTrue(accepted(b'{"added_torrent_ids":["abc"]}'))
+        self.assertFalse(accepted(b'{"added_torrent_ids":[]}'))
+        self.assertFalse(accepted(b'Fails.'))
+        self.assertFalse(accepted(b''))
 
     def test_expired_qb_cookie_cleared(self):
         self.server.logins[self.token] = ('SID=test', 9999999999)

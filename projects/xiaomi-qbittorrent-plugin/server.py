@@ -19,10 +19,26 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-from engine import Engine, Error, qb_request, mutation, torrent_hash, installed_version
+from engine import Engine, Error, PORT, qb_request, mutation, torrent_hash, installed_version
 
 WEB = Path(__file__).resolve().parent / 'web'
 TTL = 86400
+
+
+def accepted(body):
+    """判断 torrents/add 是否被接受。
+
+    qB 4.x 成功时返回纯文本 "Ok."；5.x 改成返回
+    {"added_torrent_ids": [...]}。两种都要认，否则正常添加也会被判成失败。
+    """
+    text = body.strip()
+    if text == b'Ok.':
+        return True
+    try:
+        data = json.loads(text)
+    except (ValueError, TypeError):
+        return False
+    return isinstance(data, dict) and bool(data.get('added_torrent_ids'))
 
 
 class Server(ThreadingHTTPServer):
@@ -115,7 +131,8 @@ class Handler(BaseHTTPRequestHandler):
             with self.server.login_lock:
                 self.server.logins.pop(token, None)
             raise Error('qBittorrent 登录已过期，请重新登录')
-        if code != 200:
+        # qB 5.x 的部分操作成功时返回 204 No Content，不再一律是 200。
+        if code not in (200, 204):
             raise Error('qBittorrent 拒绝此操作（HTTP ' + str(code) + '）')
         return body
 
@@ -191,18 +208,22 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(password, str) or not 1 <= len(password) <= 200:
                     raise Error('请输入 qBittorrent 密码')
                 code, body, header = qb_request('auth/login', {'username': 'admin', 'password': password})
+                # qB 5.x 登录成功是 204 空响应、cookie 名为 QBT_SID_<端口>；
+                # 4.x 是 200 + "Ok." + SID。按 4.x 严格校验会让密码正确也报失败。
+                jar = SimpleCookie()
                 try:
-                    cookie = SimpleCookie(header)
-                    sid = cookie['SID'].value
-                except (CookieError, KeyError):
-                    sid = ''
-                if code != 200 or body.strip() != b'Ok.' or not re.fullmatch(r'[A-Za-z0-9_-]{16,128}', sid):
+                    jar.load(header)
+                except CookieError:
+                    jar = SimpleCookie()
+                name = next((n for n in ('QBT_SID_' + str(PORT), 'SID') if n in jar), '')
+                sid = jar[name].value if name else ''
+                if code not in (200, 204) or not sid or not re.fullmatch(r'[A-Za-z0-9_-]{8,256}', sid):
                     raise Error('登录失败，密码错误或登录次数过多')
                 self.cookie(token)
                 with self.server.login_lock:
                     if len(self.server.logins) >= 64 and token not in self.server.logins:
                         raise Error('会话数量已达上限')
-                    self.server.logins[token] = ('SID=' + sid, time.time() + TTL)
+                    self.server.logins[token] = (name + '=' + sid, time.time() + TTL)
             elif action == 'logout':
                 with self.server.login_lock:
                     self.server.logins.pop(token, None)
@@ -221,12 +242,12 @@ class Handler(BaseHTTPRequestHandler):
                 for key, value in [('savepath', '/downloads'), ('autoTMM', 'false'), ('stopped', 'false')]:
                     body += ('\r\n--' + boundary + '\r\nContent-Disposition: form-data; name="' + key + '"\r\n\r\n' + value).encode()
                 body += ('\r\n--' + boundary + '--\r\n').encode()
-                if self.call_qb(token, 'torrents/add', raw=body, content_type='multipart/form-data; boundary=' + boundary).strip() != b'Ok.':
+                if not accepted(self.call_qb(token, 'torrents/add', raw=body, content_type='multipart/form-data; boundary=' + boundary)):
                     raise Error('种子未被接受，请检查文件内容')
             else:
                 target, params = mutation(action, data)
                 body = self.call_qb(token, target, params)
-                if action == 'magnet' and body.strip() != b'Ok.':
+                if action == 'magnet' and not accepted(body):
                     raise Error('磁力链接未被接受')
             self.send(200, {'ok': True})
         except (Error, ValueError, OSError) as exc:
