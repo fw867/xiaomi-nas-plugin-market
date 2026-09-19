@@ -10,7 +10,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from engine import Engine, Error, IMAGE, NAME, LABEL, confined, mutation, password_hash, container_args
+from engine import Engine, Error, IMAGE, NAME, LABEL, PORT, confined, mutation, password_hash, container_config
 from server import Server
 
 
@@ -44,11 +44,13 @@ class EngineTests(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(Error):
                 confined(self.root, name)
 
+    @unittest.skipUnless(os.name == 'posix', 'Windows 需要额外权限才能创建符号链接')
     def test_reject_symlink(self):
         (self.root / 'link').symlink_to(self.root / 'MiShare')
         with self.assertRaises(Error):
             confined(self.root, 'link')
 
+    @unittest.skipUnless(os.name == 'posix', 'Windows 需要额外权限才能创建符号链接')
     def test_browse_hides_symlinks(self):
         (self.root / 'alias').symlink_to(self.root / 'MiShare')
         self.assertEqual(self.engine.browse(''), [{'name': 'MiShare', 'path': 'MiShare'}])
@@ -88,25 +90,109 @@ class EngineTests(unittest.TestCase):
                 mutation('magnet', {'url': url})
 
     def test_container_isolation(self):
-        args = container_args({'owner': 'test', 'uid': 1000, 'gid': 1000, 'download': '/test/downloads'}, Path('/test/private'))
-        self.assertIn(IMAGE, args)
-        self.assertIn('127.0.0.1:18123:18123', args)
-        self.assertNotIn('--privileged', args)
-        self.assertNotIn('--network', args)
-        self.assertFalse(any('docker.sock' in a for a in args))
-        self.assertEqual(args.count('--mount'), 2)
-        self.assertEqual(args[args.index('--restart')+1], 'no')
+        cfg = container_config({'owner': 'test', 'uid': 1000, 'gid': 1000, 'download': '/test/downloads'},
+                               Path('/test/private'))
+        self.assertEqual(cfg['Image'], IMAGE)
+        self.assertEqual(cfg['Labels'], {LABEL: 'test'})
+        host = cfg['HostConfig']
+        self.assertEqual(host['RestartPolicy'], {'Name': 'no'})
+        # WebUI 端口只绑回环，不对局域网额外暴露
+        self.assertEqual(host['PortBindings'],
+                         {str(PORT) + '/tcp': [{'HostIp': '127.0.0.1', 'HostPort': str(PORT)}]})
+        # 不能提权、不能改网络模式、不挂 docker socket
+        self.assertNotIn('Privileged', host)
+        self.assertNotIn('NetworkMode', host)
+        sources = [m['Source'] for m in host['Mounts']]
+        self.assertEqual(len(sources), 2)
+        self.assertEqual([m['Target'] for m in host['Mounts']], ['/config', '/downloads'])
+        self.assertIn('/test/downloads', sources)
+        self.assertIn(str(Path('/test/private') / 'config'), sources)
+        self.assertFalse(any('docker.sock' in s for s in sources))
+        # 资源限制
+        self.assertEqual(host['Memory'], 512 * 1024 * 1024)
+        self.assertEqual(host['MemorySwap'], 512 * 1024 * 1024)
+        self.assertEqual(host['NanoCpus'], 1500000000)
+        self.assertEqual(host['PidsLimit'], 128)
+        self.assertEqual(host['SecurityOpt'], ['no-new-privileges:true'])
 
     def test_dev_cannot_start(self):
         self.engine.dev = True
         with self.assertRaises(Error):
             self.engine.launch('start', {})
 
+    def _engine_config(self):
+        folder = self.root / 'MiShare/qBDownloads'
+        folder.mkdir(exist_ok=True)
+        stat = folder.stat()
+        return {'owner': 'owner-token', 'relative': 'MiShare/qBDownloads', 'download': str(folder),
+                'uid': 1000, 'gid': 1000, 'device': stat.st_dev, 'inode': stat.st_ino, 'enabled': True}
+
+    def test_snapshot_before_setup(self):
+        state = self.engine.snapshot()
+        self.assertFalse(state['configured'])
+        self.assertFalse(state['running'])
+        self.assertFalse(state['ready'])
+
+    def test_start_pulls_and_runs_the_container(self):
+        """回归：容器还不存在时，点「启动」必须真的 pull 镜像、再建并启动容器。
+
+        NAS 上没有 docker 命令行，所有容器操作都走 Docker Engine API；这条路径
+        此前没有覆盖，出现过「点启动只报 Docker 不可用」。
+        """
+        self.engine.config = self._engine_config()
+        calls = []
+
+        def fake_api(method, path, body=None, timeout=30):
+            calls.append((method, path, body, timeout))
+            if path == '/containers/' + NAME + '/json':
+                return 404, b'{"message":"No such container"}'
+            if path.startswith('/images/create'):
+                return 200, b'{"status":"Downloaded newer image"}\n'
+            return 201, b'{}'
+
+        with patch('engine.docker_api', side_effect=fake_api), \
+                patch('engine.qb_request', return_value=(200, b'5.2.3', '')):
+            self.engine.start()
+
+        # 顺序：查容器（404）→ pull → create → start
+        self.assertEqual(calls[0][0], 'GET')
+        self.assertEqual(calls[0][1], '/containers/' + NAME + '/json')
+
+        self.assertEqual(calls[1][0], 'POST')
+        self.assertEqual(calls[1][1].split('?')[0], '/images/create')
+        self.assertIn('fromImage', calls[1][1])
+        # 镜像较大，pull 的超时要放宽
+        self.assertEqual(calls[1][3], 900)
+
+        self.assertEqual(calls[2][0], 'POST')
+        self.assertEqual(calls[2][1], '/containers/create?name=' + NAME)
+        cfg = calls[2][2]
+        self.assertEqual(cfg['Image'], IMAGE)
+        self.assertEqual(cfg['Labels'], {LABEL: 'owner-token'})
+        self.assertIn(str(self.root / 'MiShare/qBDownloads'),
+                      [m['Source'] for m in cfg['HostConfig']['Mounts']])
+
+        self.assertEqual(calls[3][0], 'POST')
+        self.assertEqual(calls[3][1], '/containers/' + NAME + '/start')
+        self.assertEqual(len(calls), 4)
+
+    def test_start_only_starts_an_existing_container(self):
+        """容器已存在时不能再建一次，只把它启动起来。"""
+        self.engine.config = self._engine_config()
+        with patch.object(self.engine, 'owned', return_value={'State': {'Running': False}}), \
+                patch('engine.docker_api', return_value=(204, b'')) as api, \
+                patch('engine.qb_request', return_value=(200, b'5.2.3', '')):
+            self.engine.start()
+        self.assertEqual(api.call_count, 1)
+        self.assertEqual(api.call_args.args[0], 'POST')
+        self.assertEqual(api.call_args.args[1], '/containers/' + NAME + '/start')
+
     def test_refuses_existing_directory(self):
         (self.root / 'MiShare/qBDownloads').mkdir()
-        with patch.object(self.engine, 'docker') as docker, self.assertRaises(Error):
+        with patch('engine.docker_api') as api, self.assertRaises(Error):
             self.engine.setup('MiShare', 'Example123')
-        docker.assert_not_called()
+        # 目录已存在时在碰 Docker 之前就失败
+        api.assert_not_called()
 
     def test_directory_identity_change(self):
         folder = self.root / 'MiShare'
@@ -117,16 +203,23 @@ class EngineTests(unittest.TestCase):
 
     def test_foreign_container_not_stopped(self):
         self.engine.config = {'owner': 'mine'}
-        with patch.object(self.engine, 'docker', side_effect=[NAME, json.dumps([{'Config': {'Labels': {LABEL: 'foreign'}}}])]) as docker:
+        foreign = json.dumps({'Config': {'Labels': {LABEL: 'foreign'}}}).encode('utf-8')
+        with patch('engine.docker_api', return_value=(200, foreign)) as api:
             with self.assertRaises(Error):
                 self.engine.stop()
-            self.assertEqual(docker.call_count, 2)
+        # 只读了一次容器详情就拒绝接管，没有发出任何写操作
+        self.assertEqual(api.call_count, 1)
+        self.assertEqual(api.call_args.args[0], 'GET')
+        self.assertIn('/containers/' + NAME + '/json', api.call_args.args[1])
 
     def test_stop_remembers_preference(self):
         self.engine.config = {'owner': 'mine', 'enabled': True}
-        with patch.object(self.engine, 'owned', return_value={'State': {'Running': True}}), patch.object(self.engine, 'docker') as docker:
+        with patch.object(self.engine, 'owned', return_value={'State': {'Running': True}}), \
+                patch('engine.docker_api', return_value=(204, b'')) as api:
             self.engine.stop()
-            docker.assert_called_once_with('stop', '--time', '15', NAME)
+        self.assertEqual(api.call_count, 1)
+        self.assertEqual(api.call_args.args[0], 'POST')
+        self.assertEqual(api.call_args.args[1], '/containers/' + NAME + '/stop?t=15')
         self.assertFalse(json.loads(self.engine.cfgfile.read_text())['enabled'])
 
     def test_service_stop_preserves_enabled(self):
@@ -139,8 +232,15 @@ class EngineTests(unittest.TestCase):
         # This test runs on a normal non-root Mac user and mocks only chown/Docker.
         if not self.root.stat().st_uid or not self.root.stat().st_gid:
             self.skipTest('requires non-root test directory owner')
+
+        def fake_api(method, path, body=None, timeout=30):
+            if path == '/info':
+                return 200, b'{"Architecture":"aarch64"}'
+            # 同名容器不存在 → 可以继续初始化
+            return 404, b'{"message":"No such container"}'
+
         before = (self.root / 'MiShare').stat()
-        with patch('engine.os.chown'), patch.object(self.engine, 'docker', return_value=''):
+        with patch('engine.os.chown'), patch('engine.docker_api', side_effect=fake_api):
             self.engine.setup('MiShare', 'Example123')
         after = (self.root / 'MiShare').stat()
         self.assertEqual((before.st_uid, before.st_gid), (after.st_uid, after.st_gid))
@@ -149,6 +249,18 @@ class EngineTests(unittest.TestCase):
         self.assertNotIn('Example123', conf)
         self.assertIn('PortForwardingEnabled=false', conf)
         self.assertIn('CSRFProtection=true', conf)
+
+    def test_setup_refuses_existing_container(self):
+        if not self.root.stat().st_uid or not self.root.stat().st_gid:
+            self.skipTest('requires non-root test directory owner')
+
+        def fake_api(method, path, body=None, timeout=30):
+            if path == '/info':
+                return 200, b'{"Architecture":"aarch64"}'
+            return 200, json.dumps({'Config': {'Labels': {LABEL: 'other'}}}).encode('utf-8')
+
+        with patch('engine.docker_api', side_effect=fake_api), self.assertRaises(Error):
+            self.engine.setup('MiShare', 'Example123')
 
 
 class HTTPTests(unittest.TestCase):
@@ -227,6 +339,47 @@ class HTTPTests(unittest.TestCase):
         self.server.dev = False
         _, body = self.request('GET', '/', headers={'X-Xiaomi-Client-Verify':'SUCCESS','X-Xiaomi-Client-DN':'CN=nas.123456.test.2'})
         self.assertNotIn(b'name="qb-session" content=""', body)
+
+
+class UiTests(unittest.TestCase):
+    """插件页是随包下发的静态文件，用静态检查补上浏览器之外的回归。"""
+
+    def setUp(self):
+        self.web = Path(__file__).resolve().parents[1] / 'web'
+        self.icons = {p.stem for p in (self.web / 'assets').glob('*.png')}
+
+    def test_ui_calls_the_api_with_relative_paths(self):
+        """插件页挂在 /plugin/<用户>/qbittorrent/ 下，接口必须用相对路径。
+
+        回归用例：写成 fetch('/api/status') 会打到站点根，nginx 没有对应 location，
+        返回 404，插件页只会显示「正在连接 / 请求失败」。
+        """
+        script = (self.web / 'app.js').read_text(encoding='utf-8')
+        self.assertNotIn("'/api", script)
+        self.assertNotIn('"/api', script)
+        self.assertIn("fetch('api/' + route", script)
+
+    def test_html_icon_references_have_assets(self):
+        """页面引用的图标名必须有对应 PNG，否则会渲染成空白图标。"""
+        html = (self.web / 'index.html').read_text(encoding='utf-8')
+        used = set(re.findall(r'data-icon="([a-z0-9]+)"', html))
+        self.assertTrue(used)
+        self.assertEqual(used - self.icons, set())
+
+    def test_html_references_existing_files(self):
+        html = (self.web / 'index.html').read_text(encoding='utf-8')
+        referenced = re.findall(r'(?:href|src)="([^"]+\.(?:css|js))(?:\?[^"]*)?"', html)
+        self.assertTrue(referenced)
+        for name in referenced:
+            self.assertTrue((self.web / name).is_file(), name)
+
+    def test_bundle_is_built_from_source(self):
+        """页面加载的是 app.bundle.js；改了 app.js 忘了重建，改动就等于没生效。"""
+        script = (self.web / 'app.js').read_text(encoding='utf-8')
+        icons = {p.stem: 'data:image/png;base64,' + base64.b64encode(p.read_bytes()).decode()
+                 for p in sorted((self.web / 'assets').glob('*.png'))}
+        self.assertEqual((self.web / 'app.bundle.js').read_text(encoding='utf-8'),
+                         script.replace('__ICON_ASSETS__', json.dumps(icons)))
 
 
 if __name__ == '__main__':

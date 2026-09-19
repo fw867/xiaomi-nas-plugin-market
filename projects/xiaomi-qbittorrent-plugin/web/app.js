@@ -12,42 +12,61 @@
   const bytes = (n) => { n = Number(n || 0); const u = ['B','KiB','MiB','GiB','TiB']; let i = 0; while (n >= 1024 && i < 4) {n /= 1024;i++;} return n.toFixed(i ? 1 : 0) + ' ' + u[i]; };
   const stopped = item => /stopped|paused|error|missingFiles/i.test(item.state);
   function toast(message) { $('#toast').textContent = message; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').hidden = true, 6500); }
+  function showError(message) { const box = $('#error'); box.textContent = message || ''; box.hidden = !message; }
   async function api(route, data) {
     const response = await fetch('api/' + route, {method:data === undefined ? 'GET':'POST', cache:'no-store', headers:{'X-QB-Session':session,'X-CSRF-Token':csrf,...(data === undefined ? {} : {'Content-Type':'application/json'})}, body:data === undefined ? undefined : JSON.stringify(data)});
-    const result = await response.json(); if (!response.ok || !result.ok) throw new Error(result.error || '请求失败'); return result;
+    const result = await response.json().catch(() => ({})); if (!response.ok || !result.ok) throw new Error(result.error || '请求失败'); return result;
   }
   async function busy(button, fn) { button.disabled = true; try {await fn();} catch(e) {toast(e.message);} finally {button.disabled = false;} }
+  function stateLabel(current) {
+    if (current.busy) return '正在处理，请稍候';
+    if (!current.configured) return '未初始化';
+    if (!current.running) return '已停止';
+    return current.ready ? '服务运行中' : '容器已启动，等待 qBittorrent 就绪';
+  }
+  function render(current) {
+    $('#serviceState').textContent = stateLabel(current);
+    // 圆点和文案同源，避免出现「绿点 + 未就绪」这种自相矛盾的画面
+    const dot = current.busy ? '' : (current.running && current.ready ? 'on' : 'off');
+    $('#statusDot').className = dot ? 'status-dot ' + dot : 'status-dot';
+    const info = [];
+    if (current.imageVersion) info.push('镜像 ' + current.imageVersion);
+    if (current.preview) info.push('预览模式，不会操作 Docker');
+    $('#serviceInfo').textContent = info.join(' · ');
+    $('#serviceInfo').hidden = !info.length;
+    $('#setup').hidden = current.configured || current.busy;
+    $('#login').hidden = !current.running || current.loggedIn || current.busy;
+    $('#downloads').hidden = !current.running || !current.loggedIn;
+    $('#serviceActions').hidden = !current.configured;
+    $('#toggleService').disabled = current.busy;
+    $('#toggleService').textContent = current.running ? '停止服务' : '启动服务';
+    $('#directory').textContent = current.directory ? '/' + current.directory : '—';
+    if (!current.busy) showError(current.error);
+  }
   function renderTasks() {
     const search = $('#search').value.toLowerCase(), filter = $('#filter').value;
     const visible = items.filter(item => item.name.toLowerCase().includes(search) && (filter === 'all' || filter === 'completed' && item.progress >= 1 || filter === 'stopped' && stopped(item) || filter === 'downloading' && item.progress < 1 && !stopped(item)));
     $('#count').textContent = `${visible.length} 个任务 · 最多显示最近 500 个`;
     $('#empty').hidden = visible.length > 0;
-    $('#tasks').innerHTML = visible.map(item => `<article class="task"><div class="task-body"><button class="task-name" data-action="detail" data-hash="${escape(item.hash)}">${escape(item.name)}</button><progress max="1" value="${Math.max(0,Math.min(1,Number(item.progress)||0))}" aria-label="下载进度"></progress><small>${(item.progress*100).toFixed(1)}% · ${bytes(item.size)} · ${escape(item.state)} · ↓ ${bytes(item.dlspeed)}/s · ↑ ${bytes(item.upspeed)}/s</small></div><div class="task-actions"><button class="icon" title="${stopped(item)?'继续':'暂停'}" aria-label="${stopped(item)?'继续':'暂停'}" data-action="${stopped(item)?'start':'stop'}" data-hash="${escape(item.hash)}">${icon(stopped(item)?'play':'stop')}</button><button class="icon" title="移除任务，保留文件" aria-label="移除任务，保留文件" data-action="remove" data-hash="${escape(item.hash)}">${icon('trash')}</button></div></article>`).join('');
+    $('#tasks').innerHTML = visible.map(item => `<article class="task"><div class="task-body"><button class="task-name" data-action="detail" data-hash="${escape(item.hash)}">${escape(item.name)}</button><progress max="1" value="${Math.max(0,Math.min(1,Number(item.progress)||0))}" aria-label="下载进度"></progress><small>${(item.progress*100).toFixed(1)}% · ${bytes(item.size)} · ${escape(item.state)} · ↓ ${bytes(item.dlspeed)}/s · ↑ ${bytes(item.upspeed)}/s</small></div><div class="task-actions"><button title="${stopped(item)?'继续':'暂停'}" aria-label="${stopped(item)?'继续':'暂停'}" data-action="${stopped(item)?'start':'stop'}" data-hash="${escape(item.hash)}">${icon(stopped(item)?'play':'stop')}</button><button title="移除任务，保留文件" aria-label="移除任务，保留文件" data-action="remove" data-hash="${escape(item.hash)}">${icon('trash')}</button></div></article>`).join('');
   }
   async function refresh() {
     if (polling) return; polling = true;
     try {
-      state = await api('status');
-      $('#setup').hidden = state.configured || state.busy;
-      $('#login').hidden = !state.running || state.loggedIn || state.busy;
-      $('#downloads').hidden = !state.running || !state.loggedIn;
-      $('#serviceActions').hidden = !state.configured;
-      $('#toggleService').disabled = state.busy;
-      $('#toggleService').textContent = state.running ? '停止服务' : '启动服务';
-      $('#serviceState').textContent = state.busy ? '正在处理，请稍候' : state.running ? '服务运行中' : state.preview ? '本机预览' : '服务未启动';
-      $('#directory').textContent = state.directory ? '/' + state.directory : '';
-      $('#error').hidden = !state.error; $('#error').textContent = state.error || '';
-      if (state.running && state.loggedIn) {
+      const current = await api('status');
+      state = current;
+      render(current);
+      if (current.running && current.loggedIn) {
         const result = await api('torrents'); items = result.items;
         $('#downSpeed').textContent = bytes(result.transfer.dl_info_speed) + '/s';
         $('#upSpeed').textContent = bytes(result.transfer.up_info_speed) + '/s';
         $('#downloaded').textContent = bytes(result.transfer.dl_info_data); renderTasks();
       }
-    } catch(e) { $('#error').hidden = false; $('#error').textContent = e.message; }
+    } catch(e) { showError(e.message); }
     finally {polling = false;}
   }
   async function browse(path) {
-    browsePath = path; const current = ++generation; $('#browsePath').textContent = '/' + path;
+    browsePath = path; const current = ++generation; $('#browsePath').textContent = path ? '/' + path : '用户存储根目录';
     $('#folders').textContent = '正在读取'; $('#selectFolder').disabled = true; $('#up').disabled = !path;
     try { const result = await api('browse?path=' + encodeURIComponent(path)); if(current !== generation) return;
       $('#folders').innerHTML = result.items.map(item => `<button type="button" data-folder="${escape(item.path)}">${icon('folder')}${escape(item.name)}</button>`).join('') || '<p class="muted">此目录下没有子文件夹</p>';
@@ -77,7 +96,7 @@
   $('#choose').onclick = () => {$('#browse').showModal();browse($('#downloadPath').value);};
   $('#up').onclick = () => browse(browsePath.split('/').slice(0,-1).join('/'));
   $('#selectFolder').onclick = () => {$('#downloadPath').value = browsePath; $('#browse').close();};
-  $('#setupForm').onsubmit = e => {e.preventDefault();const f=e.target;if(!f.elements.path.value){toast('请先选择下载目录');return;}busy(f.querySelector('[type=submit]'),async()=>{await api('service/setup',{path:f.elements.path.value,password:f.elements.password.value}); f.elements.password.value='';await refresh();});};
+  $('#setupForm').onsubmit = e => {e.preventDefault();const f=e.target;if(!f.elements.path.value){showError('请先选择下载目录');return;}busy(f.querySelector('[type=submit]'),async()=>{await api('service/setup',{path:f.elements.path.value,password:f.elements.password.value}); f.elements.password.value='';await refresh();});};
   $('#loginForm').onsubmit = e => {e.preventDefault();const f=e.target;busy(f.querySelector('[type=submit]'),async()=>{await api('login',{password:f.elements.password.value});f.reset();await refresh();});};
   $('#toggleService').onclick = () => busy($('#toggleService'),async()=>{await api('service/' + (state.running?'stop':'start'),{});await refresh();});
   $('#add').onclick = () => {$('#addForm').reset();$('#addDialog').showModal();};

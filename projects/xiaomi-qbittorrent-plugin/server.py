@@ -128,7 +128,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.trusted():
                 payload = str(int(time.time()) + TTL) + '.' + secrets.token_hex(16)
                 token = payload + '.' + self.sign(payload)
-            html = (WEB / 'index.html').read_text().replace('__SESSION_TOKEN__', token).replace('__CSRF_TOKEN__', self.sign('csrf:' + token) if token else '')
+            html = (WEB / 'index.html').read_text(encoding='utf-8').replace('__SESSION_TOKEN__', token).replace('__CSRF_TOKEN__', self.sign('csrf:' + token) if token else '')
             return self.send(200, html.encode(), 'text/html; charset=utf-8')
         if route.path in ('/app.bundle.js', '/styles.css'):
             file = WEB / route.path[1:]
