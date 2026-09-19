@@ -50,10 +50,13 @@ function stateLabel(state) {
 
 function render(state) {
   $('serviceState').textContent = stateLabel(state);
+  // 圆点和文案同源，避免出现「绿点 + 已停止」这种自相矛盾的画面
+  const dot = state.busy ? '' : (state.running && state.ready ? 'on' : 'off');
+  $('statusDot').className = dot ? 'status-dot ' + dot : 'status-dot';
   $('setup').hidden = state.configured;
   $('serviceActions').hidden = !state.configured;
   $('access').hidden = !state.configured;
-  $('directory').textContent = state.configured ? '媒体目录 ' + state.directory : '';
+  $('directory').textContent = state.configured ? state.directory : '—';
   $('address').textContent = state.address || '（请通过小米客户端打开插件以获取地址）';
   $('wizardHint').hidden = state.wizardCompleted !== false;
   $('toggleService').textContent = state.running ? '停止服务' : '启动服务';

@@ -1,15 +1,354 @@
-#emby-app { color:#26313d;background:#f6f7f9;min-height:100%;font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;letter-spacing:0; }
-#emby-app *,#emby-app *::before,#emby-app *::after{box-sizing:border-box;letter-spacing:0}
-html,body{margin:0;width:100%;min-width:0}#emby-app [hidden]{display:none!important}
-#emby-app header{height:88px;background:#fff;border-bottom:1px solid #e3e7ed;display:flex;align-items:center;justify-content:space-between;padding:0 28px}
-#emby-app .brand{display:flex;align-items:center;gap:12px}#emby-app .brand>img{width:48px;height:48px;object-fit:contain;border-radius:10px}#emby-app strong{font-weight:650}#emby-app .brand strong{font-size:22px}#emby-app small{display:block;color:#728091}
-#emby-app main{max-width:1200px;margin:0 auto;padding:28px;width:100%;min-width:0}#emby-app .heading{display:flex;justify-content:space-between;align-items:center;gap:16px}#emby-app h1{font-size:28px;margin:0 0 22px}#emby-app h2{font-size:20px;margin:0 0 20px}#emby-app p{overflow-wrap:anywhere}
-#emby-app section{padding:24px 0;border-bottom:1px solid #e3e7ed}#emby-app label{display:block;margin-bottom:16px}#emby-app form{max-width:640px}#emby-app input:not([type=checkbox]){width:100%;min-width:0;border:1px solid #ccd5df;border-radius:6px;padding:10px 12px;color:inherit;background:#fff;font:inherit;margin-top:6px}
-#emby-app input:focus,#emby-app button:focus-visible{outline:2px solid #168cbd;outline-offset:2px}#emby-app .field-row{display:flex;align-items:center;gap:12px}#emby-app .field-row input{flex:1}#emby-app code{overflow-wrap:anywhere;min-width:0;background:#eceff3;border-radius:4px;padding:2px 6px}#emby-app .check{display:flex;gap:10px;align-items:flex-start}#emby-app .check input{margin-top:5px}
-#emby-app button{border:1px solid #ccd5df;background:#fff;color:#344556;border-radius:6px;min-height:42px;padding:9px 16px;font:inherit;display:inline-flex;align-items:center;justify-content:center;gap:8px;cursor:pointer;flex-shrink:0}#emby-app button.primary{background:#1878bb;border-color:#1878bb;color:white}#emby-app button.icon{border-color:transparent;background:transparent}#emby-app button:hover{background:#e9f0f6;color:#203f59}#emby-app button.primary:hover{background:#1469a6;color:#fff}#emby-app button:disabled{opacity:.45;cursor:default}
-#emby-app .muted{color:#788696;font-size:13px}#emby-app #error{background:#fff0eb;color:#974532;padding:14px;border-left:3px solid #dc8059}#emby-app .service-actions{display:flex;gap:16px;justify-content:space-between;align-items:center;padding:20px 0}#emby-app #directory{color:#6b7a8a;overflow-wrap:anywhere;min-width:0}
-#emby-app .address{display:flex;align-items:center;gap:10px;flex-wrap:wrap}#emby-app ul{margin:0;padding-left:20px}#emby-app li{margin-bottom:10px;color:#42525f}
-#emby-app footer{padding:30px 0;text-align:center;font-size:12px;color:#8b96a2}
-#emby-app dialog{position:fixed;margin:auto;border:1px solid #d8e0e8;border-radius:8px;padding:24px;background:white;color:#26313d;max-height:85vh;width:min(620px,calc(100% - 32px));max-width:calc(100% - 32px);overflow:auto;box-shadow:0 18px 70px #15233330}#emby-app dialog::backdrop{background:#1d293d66}#emby-app .dialog-head{display:flex;gap:12px;align-items:flex-start;justify-content:space-between}#emby-app .dialog-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:24px}#emby-app #folders{min-height:150px;max-height:35vh;overflow:auto;margin-top:16px}#emby-app #folders button{display:flex;width:100%;border:0;justify-content:flex-start;min-height:48px;white-space:normal;overflow-wrap:anywhere;text-align:left}
-#emby-app #toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);max-width:calc(100% - 32px);background:#253443;color:white;padding:12px 18px;border-radius:6px;z-index:2147483647;overflow-wrap:anywhere;pointer-events:none}
-@media(max-width:600px){#emby-app main{padding:20px 16px}#emby-app header{padding:0 16px;height:76px}#emby-app .brand strong{font-size:20px}#emby-app h1{font-size:24px}#emby-app .heading{align-items:baseline}#emby-app #serviceState{font-size:12px}#emby-app .service-actions{flex-wrap:wrap}#emby-app dialog{padding:20px}}
+/* Emby 插件页样式。移动优先：手机上是单列卡片，宽屏才把卡片并排。 */
+
+:root {
+  --ink: #1d2939;
+  --muted: #6f7c8c;
+  --line: #e4e8ee;
+  --card: #ffffff;
+  --bg: #f5f7f9;
+  --blue: #1878bb;
+  --blue-dark: #1469a6;
+  --green: #1f9d63;
+  --red: #b6382f;
+  --radius: 12px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  min-height: 100%;
+  background: var(--bg);
+}
+
+#emby-app {
+  min-height: 100%;
+  color: var(--ink);
+  font: 15px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+#emby-app [hidden] { display: none !important; }
+
+/* ---------- 顶栏 ---------- */
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: grid;
+  grid-template-columns: 40px 1fr 40px;
+  align-items: center;
+  gap: 10px;
+  min-height: 60px;
+  padding: 8px max(16px, env(safe-area-inset-right)) 8px max(16px, env(safe-area-inset-left));
+  border-bottom: 1px solid var(--line);
+  background: rgba(255, 255, 255, .94);
+  backdrop-filter: blur(18px);
+}
+
+.app-icon {
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
+  border-radius: 8px;
+}
+
+.topbar .brand { min-width: 0; }
+.topbar .brand strong { display: block; font-size: 16px; font-weight: 650; }
+.topbar .brand small { display: block; color: var(--muted); font-size: 11px; }
+
+.icon-button {
+  width: 40px;
+  height: 40px;
+  border: 0;
+  padding: 0;
+  color: var(--ink);
+  background: transparent;
+  cursor: pointer;
+  font-size: 22px;
+  line-height: 1;
+  border-radius: 10px;
+}
+.icon-button:active { background: #eef2f6; }
+
+/* ---------- 布局 ---------- */
+
+main {
+  width: min(680px, calc(100% - 28px));
+  margin: 0 auto;
+  padding: 14px 0 40px;
+}
+
+.card {
+  margin-bottom: 10px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--card);
+}
+
+h2 {
+  margin: 0 0 12px;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.muted { color: var(--muted); font-size: 13px; }
+
+code {
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: #eef1f5;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+}
+
+/* ---------- 状态卡 ---------- */
+
+.status-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.status-dot {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #c3ccd8;
+}
+.status-dot.on { background: var(--green); box-shadow: 0 0 0 4px rgba(31, 157, 99, .15); }
+.status-dot.off { background: #b9c2cf; box-shadow: 0 0 0 4px rgba(185, 194, 207, .18); }
+
+.status-copy { min-width: 0; }
+.status-copy strong { display: block; font-size: 15.5px; font-weight: 650; }
+.status-copy small { display: block; color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
+
+/* ---------- 提示与表单 ---------- */
+
+.alert {
+  margin: 0 0 10px;
+  padding: 12px 14px;
+  border-left: 3px solid #dc8059;
+  border-radius: 8px;
+  background: #fff3ef;
+  color: #8d3f2c;
+  font-size: 13.5px;
+  overflow-wrap: anywhere;
+}
+
+.field { margin-bottom: 12px; }
+.field-label { display: block; margin-bottom: 6px; font-size: 13.5px; font-weight: 600; }
+
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.field-row input { flex: 1; min-width: 0; }
+
+input:not([type=checkbox]) {
+  width: 100%;
+  height: 44px;
+  padding: 0 12px;
+  border: 1px solid #ccd5df;
+  border-radius: 9px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+}
+input:focus-visible,
+button:focus-visible { outline: 2px solid rgba(24, 120, 187, .45); outline-offset: 1px; }
+
+.btn {
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid #ccd5df;
+  border-radius: 9px;
+  background: #fff;
+  color: #34465a;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.btn:active { background: #eef2f6; }
+.btn.primary { border-color: var(--blue); background: var(--blue); color: #fff; }
+.btn.primary:active { background: var(--blue-dark); }
+.btn.small { min-height: 36px; padding: 0 14px; font-size: 13.5px; }
+.btn.block { width: 100%; }
+.btn:disabled { opacity: .5; cursor: default; }
+
+.check {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  margin: 12px 0 14px;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+.check input { margin-top: 3px; flex: 0 0 auto; accent-color: var(--blue); }
+
+/* ---------- 折叠块 ---------- */
+
+.fold {
+  margin: 12px 0 0;
+  border-radius: 10px;
+  background: #f7f9fb;
+}
+.fold > summary {
+  padding: 11px 13px;
+  color: #43536a;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+.fold > summary::-webkit-details-marker { display: none; }
+.fold > summary::before {
+  content: "▸";
+  display: inline-block;
+  width: 14px;
+  color: var(--muted);
+  transition: transform .15s ease;
+}
+.fold[open] > summary::before { transform: rotate(90deg); }
+.fold[open] > summary { border-bottom: 1px solid var(--line); }
+.fold p, .fold ul { margin: 0; padding: 12px 13px; color: #4a5a6d; font-size: 13px; line-height: 1.6; }
+.fold ul { padding-left: 30px; }
+.fold li + li { margin-top: 8px; }
+
+/* 「说明与限制」本身是一张卡，折叠时不占多少空间 */
+.fold-card { padding: 0; overflow: hidden; }
+.fold-card > summary { padding: 14px 16px; font-size: 14px; }
+
+/* ---------- 入口与服务 ---------- */
+
+.address-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.address-row code { flex: 1; min-width: 0; padding: 10px 12px; font-size: 14px; }
+
+.service-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.service-copy { min-width: 0; }
+.service-copy span { display: block; font-size: 12px; }
+.service-copy strong { display: block; font-size: 13.5px; font-weight: 600; overflow-wrap: anywhere; }
+
+footer {
+  padding: 22px 0 4px;
+  color: #97a1b0;
+  font-size: 12px;
+  text-align: center;
+}
+
+/* ---------- 目录选择对话框 ---------- */
+
+dialog {
+  position: fixed;
+  margin: auto;
+  width: min(560px, calc(100% - 24px));
+  max-width: calc(100% - 24px);
+  max-height: 86vh;
+  padding: 18px;
+  border: 1px solid #d8e0e8;
+  border-radius: 14px;
+  background: #fff;
+  color: var(--ink);
+  overflow: auto;
+  box-shadow: 0 18px 60px rgba(21, 35, 51, .22);
+}
+dialog::backdrop { background: rgba(29, 41, 61, .45); }
+
+.dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.dialog-head h2 { margin: 0; font-size: 16px; }
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+#folders {
+  min-height: 120px;
+  max-height: 40vh;
+  margin-top: 12px;
+  overflow: auto;
+}
+#folders button {
+  display: block;
+  width: 100%;
+  min-height: 46px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+#folders button:active { background: #eef2f6; }
+
+/* ---------- Toast ---------- */
+
+#toast {
+  position: fixed;
+  left: 50%;
+  bottom: max(20px, env(safe-area-inset-bottom));
+  z-index: 2147483647;
+  max-width: calc(100% - 32px);
+  padding: 11px 18px;
+  border-radius: 10px;
+  background: #253443;
+  color: #fff;
+  font-size: 13.5px;
+  overflow-wrap: anywhere;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+/* ---------- 宽屏 ---------- */
+
+@media (min-width: 720px) {
+  main { padding-top: 22px; }
+  .card { padding: 20px; }
+  .topbar { min-height: 68px; }
+  .topbar .brand strong { font-size: 17px; }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #e6ebf1;
+    --muted: #9aa6b4;
+    --line: #2a3442;
+    --card: #1b2330;
+    --bg: #131a24;
+  }
+  code { background: #232d3b; }
+  input:not([type=checkbox]) { background: #1b2330; border-color: #333f4f; }
+  .btn { background: #1b2330; border-color: #333f4f; color: #cfd8e3; }
+  .btn:active { background: #232d3b; }
+  .fold { background: #161e29; }
+  .alert { background: #2a1f1c; color: #e8b4a3; }
+  .topbar { background: rgba(27, 35, 48, .94); }
+  dialog { background: #1b2330; border-color: #2a3442; }
+  #toast { background: #2b3a4d; }
+}

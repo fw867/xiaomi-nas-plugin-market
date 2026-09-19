@@ -3,69 +3,110 @@
 
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
     <meta name="emby-session" content="__SESSION_TOKEN__">
     <meta name="csrf-token" content="__CSRF_TOKEN__">
     <title>Emby 媒体服务器</title>
-    <link rel="stylesheet" href="styles.css?v=0.1.0">
+    <link rel="stylesheet" href="styles.css?v=0.2.0">
 </head>
 
 <body>
     <div id="emby-app">
-        <header>
-            <div class="brand"><img src="assets/emby.png" alt="Emby">
-                <div><strong>Emby 媒体服务器</strong><small>Emby Server</small></div>
-            </div><button id="refresh" title="刷新" aria-label="刷新">刷新</button>
-        </header>
-        <main>
-            <div class="heading">
-                <h1>媒体服务器</h1><span id="serviceState" role="status">正在连接</span>
+        <header class="topbar">
+            <img class="app-icon" src="assets/emby.png" alt="">
+            <div class="brand">
+                <strong>Emby 媒体服务器</strong>
+                <small>Emby Server</small>
             </div>
-            <p id="error" role="alert" hidden></p>
-            <section id="setup" hidden>
+            <button id="refresh" class="icon-button" title="刷新" aria-label="刷新">↻</button>
+        </header>
+
+        <main>
+            <section class="card status-card">
+                <span class="status-dot" id="statusDot" aria-hidden="true"></span>
+                <div class="status-copy">
+                    <strong id="serviceState" role="status">正在连接</strong>
+                    <small id="serverInfo"></small>
+                </div>
+            </section>
+
+            <p id="error" class="alert" role="alert" hidden></p>
+
+            <section id="setup" class="card" hidden>
                 <h2>初始化媒体服务器</h2>
-                <form id="setupForm"><label>媒体目录<div class="field-row"><input name="path" id="mediaPath" readonly
-                                placeholder="选择媒体目录"><button type="button" id="choose">选择目录</button></div></label>
-                    <p class="muted">该目录在容器内以读写方式挂载为 /mnt/media：Emby 会把元数据、字幕等写回该目录，也会以该目录属主身份修改其中的文件；添加媒体库时请选择其下的子目录。
-                    </p><label class="check"><input type="checkbox" required>我了解 Emby 是第三方软件，并同意从 Docker Hub
-                        拉取官方镜像在本机运行</label><button type="submit" class="primary">初始化并启动</button>
+                <form id="setupForm" autocomplete="off">
+                    <div class="field">
+                        <span class="field-label">媒体目录</span>
+                        <div class="field-row">
+                            <input name="path" id="mediaPath" readonly placeholder="选择媒体目录">
+                            <button type="button" id="choose">选择</button>
+                        </div>
+                    </div>
+                    <details class="fold">
+                        <summary>这个目录会怎么被使用</summary>
+                        <p>该目录在容器内以读写方式挂载为 <code>/mnt/media</code>：Emby 会把元数据、字幕等写回该目录，也会以该目录属主身份修改其中的文件；添加媒体库时请选择其下的子目录。</p>
+                    </details>
+                    <label class="check">
+                        <input type="checkbox" required>
+                        <span>我了解 Emby 是第三方软件，并同意从 Docker Hub 拉取官方镜像在本机运行</span>
+                    </label>
+                    <button type="submit" class="btn primary block">初始化并启动</button>
                 </form>
             </section>
-            <div class="service-actions" id="serviceActions" hidden><span id="directory"></span><button
-                    id="toggleService">启动服务</button></div>
-            <section id="access" hidden>
+
+            <section id="access" class="card" hidden>
                 <h2>Emby 入口</h2>
-                <p class="address">局域网地址 <code id="address">—</code> <button id="copyAddress" type="button">复制</button>
-                </p>
-                <p class="muted">请立即用浏览器打开该地址完成 Emby 初始化向导并设置管理员密码。在向导完成前，同网段设备可能抢先初始化此服务器。</p>
+                <div class="address-row">
+                    <code id="address">—</code>
+                    <button id="copyAddress" type="button" class="btn small">复制</button>
+                </div>
                 <p class="muted" id="wizardHint" hidden>Emby 仍处于初始化向导阶段，尚未设置管理员账号。</p>
-                <p class="muted" id="serverInfo" hidden></p>
+                <details class="fold">
+                    <summary>首次使用说明</summary>
+                    <p>请立即用浏览器打开上面的地址完成 Emby 初始化向导并设置管理员密码。在向导完成前，同网段设备可能抢先初始化此服务器。</p>
+                </details>
             </section>
-            <section id="notes">
-                <h2>说明与限制</h2>
+
+            <section class="card service-card" id="serviceActions" hidden>
+                <div class="service-copy">
+                    <span class="muted">媒体目录</span>
+                    <strong id="directory">—</strong>
+                </div>
+                <button id="toggleService" class="btn">启动服务</button>
+            </section>
+
+            <details class="card fold fold-card" id="notes">
+                <summary>说明与限制</summary>
                 <ul>
-                    <li>容器 <code>xiaomi-plugin-emby</code> 仅挂载插件私有配置目录与所选媒体目录，不挂载 Docker socket，不使用 privileged 或 host
-                        网络。</li>
+                    <li>容器 <code>xiaomi-plugin-emby</code> 仅挂载插件私有配置目录与所选媒体目录，不挂载 Docker socket，不使用 privileged 或 host 网络。</li>
                     <li>所选媒体目录为读写挂载，Emby 可在其中新增、修改和删除文件（用于元数据与字幕），请确认该目录已有备份。</li>
-                    <li>未映射 <code>/dev/dri</code>，不启用硬件转码；转码由 CPU 完成，可能较慢。</li>
+                    <li>本机没有可供 Emby 使用的硬件转码单元（GPU 是 Mali Valhall-JM，视频编解码由 Realtek VPU 提供、走 V4L2 M2M 接口，Emby 不支持），因此只能由客户端直接解码播放；转码会落到 CPU，较慢。</li>
                     <li>服务端口 8096 对整个局域网开放，Emby 客户端直接连接该端口。</li>
                     <li>停止或卸载插件只停止容器，Emby 配置与媒体文件都会保留。</li>
                 </ul>
-            </section>
+            </details>
+
             <footer>Emby 媒体服务器 · 0.1.0</footer>
         </main>
+
         <dialog id="browse">
             <div class="dialog-head">
-                <h2>选择媒体目录</h2><button data-close="browse" aria-label="关闭">关闭</button>
+                <h2>选择媒体目录</h2>
+                <button data-close="browse" aria-label="关闭">关闭</button>
             </div>
-            <div class="field-row"><button id="up" aria-label="上一级" title="上一级">上一级</button><code
-                    id="browsePath">用户存储根目录</code></div>
+            <div class="field-row">
+                <button id="up" aria-label="上一级" title="上一级">上一级</button>
+                <code id="browsePath">用户存储根目录</code>
+            </div>
             <div id="folders"></div>
-            <div class="dialog-actions"><button id="selectFolder" class="primary">选择此目录</button></div>
+            <div class="dialog-actions">
+                <button id="selectFolder" class="btn primary">选择此目录</button>
+            </div>
         </dialog>
+
         <div id="toast" role="status" hidden></div>
     </div>
-    <script src="app.js?v=0.1.0"></script>
+    <script src="app.js?v=0.2.0"></script>
 </body>
 
 </html>
