@@ -267,14 +267,20 @@ button:focus-visible { outline: 2px solid rgba(24, 120, 187, .45); outline-offse
   margin: 2px 0 10px;
 }
 
-/* 控制台底部：限速与退出并排、同高（文字不换行，否则高的那个会把另一个撑开） */
+/* 控制台底部：限速与退出并排。显式定高而不是依赖 align-items:stretch ——
+   实测在这个组合下两个按钮会被算出不同高度（46px vs 36px）。 */
 .console-foot {
   display: flex;
-  align-items: stretch;
+  align-items: center;
   gap: 8px;
   margin-top: 10px;
 }
-.console-foot .btn { flex: 1 1 0; min-width: 0; }
+.console-foot .btn {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 36px;
+  min-height: 36px;
+}
 
 /* ---------- 下载区 ---------- */
 
