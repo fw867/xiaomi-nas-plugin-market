@@ -97,6 +97,42 @@ class EngineTests(unittest.TestCase):
             docker.assert_called_once_with('stop', '--time', '30', NAME)
         self.assertFalse(json.loads(self.engine.cfgfile.read_text(encoding='utf-8'))['enabled'])
 
+    def test_start_pulls_and_runs_the_container(self):
+        """回归：容器还不存在时，点「启动」必须真的 pull 镜像再 run 容器。
+
+        安装插件本身不会部署 Docker（和 qB 下载一致），要等插件页完成初始化；
+        这条路径此前没有测试覆盖，出现过「装完没有任何 docker 操作」的疑问。
+        """
+        stat = (self.root / 'MiShare').stat()
+        self.engine.config = {'owner': 'owner-token', 'relative': 'MiShare',
+                              'media': str(self.root / 'MiShare'), 'uid': 1000, 'gid': 1000,
+                              'device': stat.st_dev, 'inode': stat.st_ino, 'enabled': True}
+        with patch.object(self.engine, 'docker', return_value='') as docker, \
+                patch('engine.emby_info', return_value={}):
+            self.engine.start()
+
+        calls = [call.args for call in docker.call_args_list]
+        self.assertEqual(('ps', '-a', '--filter', 'name=^/' + NAME + '$', '--format', '{{.Names}}'), calls[0])
+        self.assertEqual(('pull', IMAGE), calls[1])
+        run = calls[2]
+        self.assertEqual('run', run[0])
+        self.assertIn(IMAGE, run)
+        self.assertIn('0.0.0.0:' + str(PORT) + ':' + str(PORT), run)
+        self.assertIn('type=bind,src=' + str(self.root / 'MiShare') + ',dst=/mnt/media', run)
+        self.assertEqual(1800, docker.call_args_list[1].kwargs['timeout'])
+
+    def test_start_only_starts_an_existing_container(self):
+        """容器已存在时不能再 run 一次，只把它启动起来。"""
+        stat = (self.root / 'MiShare').stat()
+        self.engine.config = {'owner': 'owner-token', 'relative': 'MiShare',
+                              'media': str(self.root / 'MiShare'), 'uid': 1000, 'gid': 1000,
+                              'device': stat.st_dev, 'inode': stat.st_ino, 'enabled': True}
+        with patch.object(self.engine, 'owned', return_value={'State': {'Running': False}}), \
+                patch.object(self.engine, 'docker') as docker, \
+                patch('engine.emby_info', return_value={}):
+            self.engine.start()
+        docker.assert_called_once_with('start', NAME)
+
     def test_service_stop_preserves_enabled(self):
         self.engine.config = {'enabled': True}
         with patch.object(self.engine, 'owned', return_value=None):
@@ -220,6 +256,19 @@ class HTTPTests(unittest.TestCase):
             'X-Xiaomi-Client-Verify': 'SUCCESS',
             'X-Xiaomi-Client-DN': 'CN=nas.123456.test.2'})
         self.assertNotIn(b'name="emby-session" content=""', body)
+
+
+class UiTests(unittest.TestCase):
+    def test_ui_calls_the_api_with_relative_paths(self):
+        """插件页挂在 /plugin/<用户>/emby/ 下，接口必须用相对路径。
+
+        回归用例：写成 fetch('/api/status') 会打到站点根，nginx 没有对应 location，
+        返回 404，插件页只会显示「正在连接 / 请求失败（HTTP 404）」。
+        """
+        script = (Path(__file__).resolve().parents[1] / 'web' / 'app.js').read_text(encoding='utf-8')
+        self.assertNotIn("'/api", script)
+        self.assertNotIn('"/api', script)
+        self.assertIn("fetch('api' + path", script)
 
 
 if __name__ == '__main__':

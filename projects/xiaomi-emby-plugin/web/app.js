@@ -27,7 +27,9 @@ async function call(path, body) {
     headers['X-CSRF-Token'] = csrf;
     headers['Content-Type'] = 'application/json';
   }
-  const response = await fetch(path, {
+  // 必须用相对路径：插件页挂在 /plugin/<用户>/emby/ 下，
+  // 写成 /api/... 会打到站点根，被 nginx 判成 404。
+  const response = await fetch('api' + path, {
     method: body === undefined ? 'GET' : 'POST',
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -68,7 +70,7 @@ function render(state) {
 
 async function refresh() {
   try {
-    const state = await call('/api/status');
+    const state = await call('/status');
     current = state;
     render(state);
   } catch (error) {
@@ -90,7 +92,7 @@ async function act(path, body, message) {
 async function loadFolders() {
   let data;
   try {
-    data = await call('/api/browse?path=' + encodeURIComponent(browsePath));
+    data = await call('/browse?path=' + encodeURIComponent(browsePath));
   } catch (error) {
     showError(error.message);
     return;
@@ -120,12 +122,12 @@ $('setupForm').addEventListener('submit', (event) => {
     showError('请选择媒体目录');
     return;
   }
-  act('/api/setup', { path: mediaSelection }, '正在初始化并启动，首次需要拉取镜像');
+  act('/setup', { path: mediaSelection }, '正在初始化并启动，首次需要拉取镜像');
 });
 
 $('toggleService').addEventListener('click', () => {
   const action = current && current.running ? 'stop' : 'start';
-  act('/api/service/' + action, {}, action === 'start' ? '正在启动服务' : '正在停止服务');
+  act('/service/' + action, {}, action === 'start' ? '正在启动服务' : '正在停止服务');
 });
 
 $('choose').addEventListener('click', () => {
