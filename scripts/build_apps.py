@@ -220,9 +220,9 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
     {
         "id": "qbittorrent",
         "name": "qB 下载",
-        "version": "0.1.0-rc1",
+        "version": "0.1.2",
         "summary": "磁力与种子下载、暂停继续和限速；首次启动需拉取独立 Docker 镜像",
-        "description": "磁力/种子下载、进度、暂停继续、限速。开发候选版，需要 Docker。",
+        "description": "磁力/种子下载、进度、暂停继续、限速。需要 Docker。",
         "project": "xiaomi-qbittorrent-plugin",
         "pluginId": 11004,
         "port": 18122,
@@ -246,7 +246,7 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
         "tags": ["download"],
         "author": "community",
         "registry": {
-            "icon": "/icon/qbittorrent.icon?v=0.1.0-rc1",
+            "icon": "/icon/qbittorrent.icon?v=0.1.2",
             "frontend": {
                 "title": "qB 下载",
                 "desc": "下载任务管理",
@@ -665,13 +665,14 @@ def main() -> int:
             old_zip.unlink()
             print(f"清理旧包: {old_zip.name}")
 
-    # 使用 --only 时保留未重建应用的既有条目，避免清单被清空
-    rebuilt_ids = {entry["id"] for entry in apps}
+    # 使用 --only 时保留未重建应用的既有条目，避免清单被清空。
+    # 顺序按 PACKAGE_SPECS 而不是 id 排序：全量构建就是这个顺序，两者不一致
+    # 会让清单在每次构建之间来回重排。
     if args.only:
-        for app in load_existing_apps():
-            if app.get("id") not in rebuilt_ids:
-                apps.append(app)
-        apps.sort(key=lambda entry: entry["id"])
+        rebuilt = {entry["id"]: entry for entry in apps}
+        published = {app["id"]: app for app in load_existing_apps()}
+        apps = [rebuilt.get(spec["id"]) or published.get(spec["id"]) for spec in PACKAGE_SPECS]
+        apps = [entry for entry in apps if entry]
 
     repo = detect_repo_slug()
     branch = "main"
@@ -688,7 +689,10 @@ def main() -> int:
         },
         "apps": apps,
     }
-    APPS_JSON.write_text(json.dumps(apps_doc, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    # 显式写 LF：.gitattributes 用 `* -text` 关掉了行尾归一化，Windows 上默认
+    # 写出的 CRLF 会让整份清单在 diff 里全量变化，也和 CI/Linux 的产物不一致。
+    with APPS_JSON.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(apps_doc, ensure_ascii=False, indent=2) + "\n")
     print(f"\nWrote {APPS_JSON.relative_to(ROOT)} with {len(apps)} apps")
     if skipped_ids:
         print(f"Skipped: {', '.join(skipped_ids)}")

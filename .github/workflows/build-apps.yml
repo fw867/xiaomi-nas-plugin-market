@@ -92,7 +92,7 @@ jobs:
           XIAOMI_STORE_BRANCH: ${{ github.ref_name }}
         run: |
           ARGS=""
-          # push 触发时保留候选版：webdav / qB 是 rc 版本，但一直随仓库发布
+          # push 触发时保留候选版：webdav 仍是 rc 版本，但一直随仓库发布
           if [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.include_candidates }}" = "true" ]; then
             ARGS="$ARGS --include-candidates"
           fi

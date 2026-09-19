@@ -89,14 +89,14 @@
     {
       "id": "qbittorrent",
       "name": "qB 下载",
-      "version": "0.1.2-rc1",
+      "version": "0.1.2",
       "summary": "磁力与种子下载、暂停继续和限速；首次启动需拉取独立 Docker 镜像",
-      "description": "磁力/种子下载、进度、暂停继续、限速。开发候选版，需要 Docker。",
-      "bundle": "apps/qbittorrent-0.1.2-rc1.zip",
-      "sha256": "6d39dac3a157e5aadd1b3249612ce84e277c875f6dc35fb2a148f3f7ce085432",
-      "size": 321010,
+      "description": "磁力/种子下载、进度、暂停继续、限速。需要 Docker。",
+      "bundle": "apps/qbittorrent-0.1.2.zip",
+      "sha256": "cc2b5321ce6ffbbd8adbb39d5b5edb2dc8b1aa3316de4c80202de95ce4baa3a9",
+      "size": 329328,
       "icon": "apps/icons/qbittorrent.png",
-      "channel": "candidate",
+      "channel": "stable",
       "tags": [
         "download"
       ],

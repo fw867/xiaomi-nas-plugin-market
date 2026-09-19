@@ -131,8 +131,8 @@ class EngineTests(unittest.TestCase):
     def test_installed_version_from_release_directory(self):
         """页脚要显示实际装上的包版本，不能再是源码里写死的常量。
 
-        回归用例：发布目录是 releases/<版本>-<时间戳>-<pid>，页脚却一直显示
-        代码里的 VERSION，装了 0.1.2-rc1 的包页面仍写 0.1.0-rc1。
+        回归用例：发布目录是 releases/<版本>-<时间戳>-<pid>，页脚一度只显示
+        代码里写死的 VERSION，跟实际装上的包版本毫无关系。
         """
         with patch('engine.__file__',
                    '/data/plugin/qbittorrent/releases/0.1.2-rc1-1789828016-8538/engine.py'):

@@ -16,7 +16,7 @@ from urllib.parse import urlencode, urlsplit, parse_qs
 
 # 开发环境（源码树里直接跑）的回退值。页面上显示的是插件包的真实版本，
 # 由 installed_version() 从自身所在的发布目录名里取。
-VERSION = '0.1.0-rc1'
+VERSION = '0.1.2'
 IMAGE = 'ghcr.io/linuxserver/qbittorrent@sha256:a00b6a597a3832a1814cde0ef60abc55c94644f3f80902c3432f6af6de8d4a96'
 NAME = 'xiaomi-plugin-qbittorrent'
 LABEL = 'io.xiaomi-plugin.qb.owner'

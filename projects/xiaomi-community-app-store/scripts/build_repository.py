@@ -23,7 +23,7 @@ CATALOG = PROJECT / "catalog"
 
 PACKAGE_SPECS: list[dict[str, Any]] = [
     {
-        "id": "qbittorrent", "name": "qB 下载", "version": "0.1.0-rc1",
+        "id": "qbittorrent", "name": "qB 下载", "version": "0.1.2",
         "summary": "磁力与种子下载、暂停继续和限速；首次启动需拉取独立 Docker 镜像",
         "project": WORK / "xiaomi-qbittorrent-plugin", "pluginId": 11004, "port": 18122,
         "releaseRoot": "/data/plugin/qbittorrent", "uiKey": "qbittorrent",
@@ -33,7 +33,7 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
         "service": "xiaomi-qbittorrent.service", "nginxSource": "deploy/xiaomi-qbittorrent.nginx.conf",
         "nginx": "xiaomi-qbittorrent.conf", "healthPath": "/healthz",
         "registry": {
-            "icon": "/icon/qbittorrent.icon?v=0.1.0-rc1",
+            "icon": "/icon/qbittorrent.icon?v=0.1.2",
             "frontend": {"title": "qB 下载", "desc": "下载任务管理", "type": "url",
                 "permission": ["admin"], "dev_type": [1, 2, 3, 4],
                 "url": [{"dev_type": [1], "url": "/index.html#/qbDownloads_app"},
