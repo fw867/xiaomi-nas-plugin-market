@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "name": "小米智能存储应用商店",
-  "generatedAt": 1789832857,
+  "generatedAt": 1789834243,
   "repository": "fw867/xiaomi-nas-plugin-market",
   "branch": "main",
   "store": {
@@ -89,12 +89,12 @@
     {
       "id": "qbittorrent",
       "name": "qB 下载",
-      "version": "0.1.4",
+      "version": "0.1.5",
       "summary": "磁力与种子下载、暂停继续和限速；首次启动需拉取独立 Docker 镜像",
       "description": "磁力/种子下载、进度、暂停继续、限速。需要 Docker。",
-      "bundle": "apps/qbittorrent-0.1.4.zip",
-      "sha256": "d3eeaf056363e4b1b52ed6880babe31f2194640ed304e64a3fc13b3c6e8763ab",
-      "size": 330180,
+      "bundle": "apps/qbittorrent-0.1.5.zip",
+      "sha256": "c02583a45c91f87ccc8d3ec514da60e2b1a0be6ecbcf3e05850f405c153cc0ec",
+      "size": 334937,
       "icon": "apps/icons/qbittorrent.png",
       "channel": "stable",
       "tags": [
