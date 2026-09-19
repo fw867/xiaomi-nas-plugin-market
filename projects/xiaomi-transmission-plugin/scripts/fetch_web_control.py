@@ -41,6 +41,47 @@ COMMIT = "c26a0761e3a8fe3cff2480735ec363dc253c5105"
 ARCHIVE_URL = f"https://github.com/{REPOSITORY}/archive/refs/tags/{REF}.tar.gz"
 USER_AGENT = "xiaomi-transmission-plugin-vendor/1.0"
 
+# 解包后要在上游产物上做的替换：{相对路径: [(原文, 替换后), ...]}
+#
+# 唯一的一处：TWC 对「已加载过」的请求改用 ids:"recently-active" 做增量拉取，
+# 这个模式返回的是「自上次请求以来有变化的种子」。transmission 4.x 下，
+# 做种中且静止的任务永远没有变化，于是首次之后列表就再也拿不到它们，
+# 界面表现为「页面能打开但看不到做种/下载列表」。
+#
+# 实测（NAS，transmission 4.0.6）：带 ids:"recently-active" 返回
+# {"arguments":{"removed":[],"torrents":[]},"result":"success"}（空）；
+# 去掉该参数则正常返回全部种子。所以这里改成始终取全量——局域网内的
+# 流量代价可以忽略。两个文件都要改，页面实际加载的是 min 版。
+PATCHES: dict[str, list[tuple[str, str]]] = {
+    "tr-web-control/script/transmission.torrents.js": [
+        (
+            "\t\tthis.isRecentlyActive = false;\n"
+            "\t\t// If it has been acquired\n"
+            "\t\tif (this.all && ids == undefined) {\n"
+            "\t\t\targs[\"ids\"] = \"recently-active\";\n"
+            "\t\t\tthis.isRecentlyActive = true;\n"
+            "\t\t} else if (ids) {\n"
+            "\t\t\targs[\"ids\"] = ids;\n"
+            "\t\t}\n",
+            "\t\tthis.isRecentlyActive = false;\n"
+            "\t\t// [xiaomi-nas-plugin-market patch] 上游在这里对「已加载过」的请求改用\n"
+            "\t\t// ids:\"recently-active\" 增量拉取，但 transmission 4.x 下自上次请求\n"
+            "\t\t// 以来没有变化的种子不会出现在结果里，做种中且静止的任务因此永远拿\n"
+            "\t\t// 不到，界面表现为列表空白。改为始终取全量。\n"
+            "\t\tif (ids) {\n"
+            "\t\t\targs[\"ids\"] = ids;\n"
+            "\t\t}\n",
+        ),
+    ],
+    "tr-web-control/script/min/transmission.torrents.min.js": [
+        (
+            "if(this.all&&d==undefined){c.ids=\"recently-active\";"
+            "this.isRecentlyActive=true}else if(d)c.ids=d;",
+            "if(d)c.ids=d;",
+        ),
+    ],
+}
+
 
 def log(message: str) -> None:
     print(message, flush=True)
@@ -59,6 +100,28 @@ def download(url: str) -> bytes:
             return response.read()
     except urllib.error.URLError as error:
         raise SystemExit(f"无法下载 {url}：{error}") from error
+
+
+def apply_patches(relative: str, content: bytes) -> bytes:
+    """对上游产物做必要的替换。
+
+    每个补丁都要求「原文恰好出现一次」——上游换了版本导致定位不到时直接报错，
+    而不是悄悄跳过（跳过会得到一份看起来正常、实际没打补丁的产物）。
+    """
+    replacements = PATCHES.get(relative)
+    if not replacements:
+        return content
+    text = content.decode("utf-8")
+    for index, (before, after) in enumerate(replacements, start=1):
+        occurrences = text.count(before)
+        if occurrences != 1:
+            raise SystemExit(
+                f"{relative} 的第 {index} 处补丁定位失败：原文出现 {occurrences} 次"
+                "（上游结构可能已变，请核对 PATCHES）"
+            )
+        text = text.replace(before, after)
+    log(f"  已打补丁：{relative}（{len(replacements)} 处）")
+    return text.encode("utf-8")
 
 
 def source_root(archive: tarfile.TarFile) -> str:
@@ -103,6 +166,7 @@ def command_fetch(arguments: argparse.Namespace) -> int:
             if stream is None:
                 continue
             content = stream.read()
+            content = apply_patches(relative, content)
             destination.write_bytes(content)
             files.append(
                 {

@@ -45,11 +45,11 @@ transmission.torrents = {
 
 
 		this.isRecentlyActive = false;
-		// If it has been acquired
-		if (this.all && ids == undefined) {
-			args["ids"] = "recently-active";
-			this.isRecentlyActive = true;
-		} else if (ids) {
+		// [xiaomi-nas-plugin-market patch] 上游在这里对「已加载过」的请求改用
+		// ids:"recently-active" 增量拉取，但 transmission 4.x 下自上次请求
+		// 以来没有变化的种子不会出现在结果里，做种中且静止的任务因此永远拿
+		// 不到，界面表现为列表空白。改为始终取全量。
+		if (ids) {
 			args["ids"] = ids;
 		}
 		if (!this.all) {

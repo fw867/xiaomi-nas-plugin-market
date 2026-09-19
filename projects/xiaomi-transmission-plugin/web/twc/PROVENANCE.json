@@ -2272,8 +2272,8 @@
     },
     {
       "path": "web/twc/tr-web-control/script/min/transmission.torrents.min.js",
-      "size": 7017,
-      "sha256": "a57df9e8721d2ea6a9132830b4deeeacfa2861ea90d0988be74e4efe4d487012"
+      "size": 6934,
+      "sha256": "6a810c8b410c1f49c7fd21169e91c22c40b8fde1a67bd8ac603c34edcee9969f"
     },
     {
       "path": "web/twc/tr-web-control/script/other/clipboard.min.js",
@@ -2317,8 +2317,8 @@
     },
     {
       "path": "web/twc/tr-web-control/script/transmission.torrents.js",
-      "size": 13646,
-      "sha256": "87605f4d44c3b29532e4b363eb086d7ffd68581489d35ab1e61e1d40456f65c7"
+      "size": 13846,
+      "sha256": "e29bda45872ff70863336b2c33c423c767aad62d3154034a30e0d3ca1c99e22e"
     },
     {
       "path": "web/twc/tr-web-control/style/base.css",
