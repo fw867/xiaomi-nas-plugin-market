@@ -43,6 +43,24 @@ if [ -f "$RESTORE" ]; then
     fi
 fi
 
+# 修复 Docker 的 NAT 规则（幂等）。
+# /etc/iptables/iptables.rules 是个 0 字节空文件，而 iptables.service 在开机早期
+# 执行 `iptables-restore -w -- /etc/iptables/iptables.rules` —— 该命令默认清空所有链，
+# Docker 自己建的 MASQUERADE / DOCKER 链被一并抹掉；docker.service 晚两秒启动时
+# 因 docker0 已存在而没有重建，规则就此永久缺失，后果是所有容器都出不了网
+# （容器内域名解析失败、连不上任何外网地址），而**入站端口映射因为另有
+# docker-proxy 兜着、看起来仍然正常**，所以很容易被误判成「只有某个插件坏了」。
+# 这是全设备所有容器共用的依赖，因此放在这里统一维护。
+if command -v iptables >/dev/null 2>&1; then
+    if ! iptables -t nat -C POSTROUTING -s 172.17.0.0/16 ! -o docker0 -j MASQUERADE 2>/dev/null; then
+        if iptables -t nat -A POSTROUTING -s 172.17.0.0/16 ! -o docker0 -j MASQUERADE 2>/dev/null; then
+            log "restored docker bridge MASQUERADE rule"
+        else
+            log "failed to restore docker bridge MASQUERADE rule"
+        fi
+    fi
+fi
+
 # 收集运行时新增的服务（只查文件系统，不依赖 systemd 状态）
 services=""
 for unit in "$UNIT_DIR"/*.service; do
