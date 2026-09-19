@@ -71,6 +71,8 @@ main { width: min(620px, calc(100% - 40px)); margin: 0 auto; padding: 24px 0 60p
 .status-copy { display: grid; gap: 3px; min-width: 0; }
 .status-copy strong { font-size: 17px; }
 .status-copy small { color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+/* 版本 / PID / RPC 这类排障信息压到最小，不跟实时数据抢注意力 */
+.status-copy .status-meta { font-size: 11px; color: #97a1b0; overflow-wrap: anywhere; }
 
 .row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .row-copy { display: grid; gap: 4px; min-width: 0; }
@@ -105,26 +107,22 @@ main { width: min(620px, calc(100% - 40px)); margin: 0 auto; padding: 24px 0 60p
 /* flex 行里按钮不能被右侧长文案挤扁，否则「打开」两字会竖排 */
 .btn.link { height: 38px; padding: 0 20px; font-size: 14px; color: #fff; background: var(--blue); flex: 0 0 auto; }
 
-/* 设置分组：分组名显示在 tab 栏里，面板本身不再重复标题 */
+/* 设置分两个页签（常用 / 高级），等宽排开；高级页内部再用小标题分组 */
 .tabs {
   display: flex;
   gap: 2px;
   margin: 0 0 12px;
   border-bottom: 1px solid var(--line);
-  overflow-x: auto;
-  scrollbar-width: none;
 }
-.tabs::-webkit-scrollbar { display: none; }
 .tab {
   position: relative;
-  flex: 1 0 auto;
-  min-width: 72px;
+  flex: 1 1 0;
   border: 0;
   padding: 11px 10px 12px;
   color: var(--muted);
   background: transparent;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 650;
   white-space: nowrap;
 }
@@ -143,6 +141,17 @@ main { width: min(620px, calc(100% - 40px)); margin: 0 auto; padding: 24px 0 60p
 .group { display: none; margin-bottom: 14px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
 .group.active { display: block; }
 .group-body { padding: 6px 16px 10px; }
+
+/* 高级页里的分组标题 */
+.group-title {
+  margin: 0;
+  padding: 16px 0 2px;
+  border-top: 1px solid #f0f3f8;
+  color: #14213a;
+  font-size: 13px;
+  font-weight: 650;
+}
+.group-title:first-child { padding-top: 8px; border-top: 0; }
 
 /* 派生字段：只展示，不允许编辑 */
 .field.is-derived { opacity: .85; }
@@ -210,27 +219,9 @@ input:focus { outline: 2px solid rgba(40, 123, 224, .35); outline-offset: 0; bor
 .weekdays input { accent-color: var(--blue); }
 .weekdays label.checked { border-color: var(--blue); background: #eef5ff; }
 
-.note { margin: 18px 2px 0; color: var(--muted); font-size: 12.5px; line-height: 1.7; }
-.note-inline { margin: 0 2px 16px; }
-.note code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
-
-/* daemon 日志：起不来的原因只写在它自己的日志里，直接摊在界面上省得去 SSH 翻文件 */
-.log-card { padding: 14px 20px; }
-.log-card summary { cursor: pointer; font-size: 14.5px; font-weight: 600; }
-.log-card pre {
-  max-height: 260px;
-  margin: 10px 0 0;
-  padding: 12px;
-  overflow: auto;
-  border-radius: 8px;
-  background: #f6f8fb;
-  color: #33415c;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  line-height: 1.55;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
+/* 「常用」页顶部：开机自启开关。它不在 settings.json 里，单独占一行 */
+.autostart-row { padding: 14px 16px 2px; }
+.autostart-row .row-copy strong { font-size: 15px; }
 
 .toast {
   position: fixed;

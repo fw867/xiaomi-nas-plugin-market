@@ -1,6 +1,7 @@
 const statusDot = document.getElementById('statusDot');
 const statusText = document.getElementById('statusText');
 const statusHint = document.getElementById('statusHint');
+const statusMeta = document.getElementById('statusMeta');
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
 const restartBtn = document.getElementById('restartBtn');
@@ -8,19 +9,16 @@ const saveBtn = document.getElementById('saveBtn');
 const reloadBtn = document.getElementById('reloadBtn');
 const groupsBox = document.getElementById('groups');
 const form = document.getElementById('settingsForm');
-const note = document.getElementById('note');
 const toast = document.getElementById('toast');
 const webControlCard = document.getElementById('webControlCard');
 const webControlLink = document.getElementById('webControlLink');
 const missingCard = document.getElementById('missingCard');
 const missingHint = document.getElementById('missingHint');
-const autostartHint = document.getElementById('autostartHint');
-const logCard = document.getElementById('logCard');
-const logDetails = document.getElementById('logDetails');
-const logText = document.getElementById('logText');
 
 const WEEKDAY_LABELS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
 const WEEKDAY_BITS = [1, 2, 4, 8, 16, 32, 64];
+// 界面上只有两个页签；这个分组进「常用」，其余全部进「高级」
+const COMMON_GROUP = 'basic';
 
 let schema = null;
 let busy = false;
@@ -91,24 +89,27 @@ function renderStatus(data) {
   statusDot.className = `status-dot ${running ? 'on' : 'off'}`;
   statusText.textContent = running ? 'transmission-daemon 正在运行' : 'transmission-daemon 已停止';
 
-  const parts = [];
-  if (data.version) parts.push(`版本 ${data.version}`);
-  if (data.pid) parts.push(`PID ${data.pid}`);
+  // 第二行只放日常真正会看的：任务数与实时速度
+  const live = [];
+  if (data.session && data.session.torrentCount !== null && data.session.torrentCount !== undefined) {
+    live.push(`任务 ${data.session.torrentCount}（活动中 ${data.session.activeTorrentCount ?? 0}）`);
+    const down = Number(data.session.downloadSpeed || 0) / 1024;
+    const up = Number(data.session.uploadSpeed || 0) / 1024;
+    live.push(`↓ ${down.toFixed(1)} KB/s　↑ ${up.toFixed(1)} KB/s`);
+  }
+  statusHint.textContent = live.join('　·　') || '暂无下载任务';
+
+  // 版本 / PID / RPC 地址只在排障时有用，压成一行小字放第三行
+  const meta = [];
+  if (data.version) meta.push(`版本 ${data.version}`);
+  if (data.pid) meta.push(`PID ${data.pid}`);
   // 反映 daemon 实际绑定、插件实际连接的地址，别写死 127.0.0.1
   const bind = data.rpcBind || '127.0.0.1';
   const target = data.rpcTarget || `${bind}:${data.rpcPort}`;
-  if (bind === '127.0.0.1' || bind === '::1') {
-    parts.push(`RPC 仅本机 ${target}`);
-  } else {
-    parts.push(`RPC 对外监听 ${target}${data.rpcAuthRequired ? '（需登录）' : ''}`);
-  }
-  if (data.session && data.session.torrentCount !== null && data.session.torrentCount !== undefined) {
-    parts.push(`任务 ${data.session.torrentCount}（活动中 ${data.session.activeTorrentCount ?? 0}）`);
-    const down = Number(data.session.downloadSpeed || 0) / 1024;
-    const up = Number(data.session.uploadSpeed || 0) / 1024;
-    parts.push(`↓ ${down.toFixed(1)} KB/s ↑ ${up.toFixed(1)} KB/s`);
-  }
-  statusHint.textContent = parts.join('　·　');
+  meta.push(bind === '127.0.0.1' || bind === '::1'
+    ? `RPC 仅本机 ${target}`
+    : `RPC 对外监听 ${target}${data.rpcAuthRequired ? '（需登录）' : ''}`);
+  statusMeta.textContent = meta.join('　·　');
 
   startBtn.disabled = busy || running;
   restartBtn.disabled = busy || !running;
@@ -122,17 +123,50 @@ function renderStatus(data) {
   if (missing) {
     missingHint.textContent = '未找到运行文件，请先在仓库中执行 scripts/fetch_runtime.py 后重新打包安装。';
   }
-  autostartHint.textContent = data.autostart
-    ? '已开启开机自启：设备或插件服务重启后会重新拉起下载服务。'
-    : '开机自启未开启：下次开机后需要手动点「启动」。';
+  // 「开机自启」开关的状态跟着 status 走：它存在 plugin-state 里，不是 settings.json 的字段
+  if (autostartToggle) autostartToggle.checked = Boolean(data.autostart);
+}
 
-  // daemon 起不来的原因只写在它自己的日志里：停止状态下默认展开，省得用户去 SSH 翻。
-  const tail = (data.logTail || '').trim();
-  logCard.hidden = !tail;
-  if (tail) {
-    if (logText.textContent !== tail) logText.textContent = tail;
-    if (!running) logDetails.open = true;
-  }
+let autostartToggle = null;
+
+/* 「开机自启」不是 settings.json 的字段：它存在 plugin-state.json 里，由插件服务
+   启动时读取。所以单独做一行开关，放在「常用」页最上面，也不跟着表单提交。 */
+function autostartNode() {
+  const row = document.createElement('div');
+  row.className = 'row autostart-row';
+
+  const copy = document.createElement('div');
+  copy.className = 'row-copy';
+  const title = document.createElement('strong');
+  title.textContent = '开机自启';
+  const hint = document.createElement('small');
+  hint.textContent = '开启后，设备或插件服务重启时会自动拉起下载服务。';
+  copy.append(title, hint);
+
+  const toggle = document.createElement('label');
+  toggle.className = 'switch';
+  const input = document.createElement('input');
+  input.type = 'checkbox';
+  input.id = 'autostartToggle';
+  input.addEventListener('change', async () => {
+    input.disabled = true;
+    try {
+      renderStatus(await request('/autostart', { enabled: input.checked }));
+      showToast(input.checked ? '已开启开机自启' : '已关闭开机自启');
+    } catch (error) {
+      input.checked = !input.checked;
+      showToast(error.message, true);
+    } finally {
+      input.disabled = false;
+    }
+  });
+  const slider = document.createElement('span');
+  slider.className = 'slider';
+  toggle.append(input, slider);
+  autostartToggle = input;
+
+  row.append(copy, toggle);
+  return row;
 }
 
 function fieldNode(field) {
@@ -282,51 +316,67 @@ function renderSettings(data) {
     byGroup.get(field.group).push(field);
   }
   const visible = data.groups.filter((group) => (byGroup.get(group.id) || []).length);
-  if (!visible.some((group) => group.id === activeGroup)) {
-    activeGroup = visible.length ? visible[0].id : null;
+
+  // 只留两个页签：常用（basic）直接可见，其余全部收进「高级」。
+  // 字段归属仍然由后端的 group 决定，这里只做归并。
+  const panes = [
+    { id: 'common', label: '常用', groups: visible.filter((group) => group.id === COMMON_GROUP) },
+    { id: 'advanced', label: '高级', groups: visible.filter((group) => group.id !== COMMON_GROUP) },
+  ].filter((pane) => pane.groups.length);
+
+  if (!panes.some((pane) => pane.id === activeGroup)) {
+    activeGroup = panes.length ? panes[0].id : null;
   }
 
-  // 先把所有分组的控件都建出来：切 tab 只是显示/隐藏，
-  // 这样来回切换不会丢掉已经填了一半的输入。
-  const panes = new Map();
-  for (const group of visible) {
-    const pane = document.createElement('section');
-    pane.className = 'group';
+  // 先把所有页签的面板都建出来：切换只是显示/隐藏，
+  // 这样来回切不会丢掉已经填了一半的输入。
+  const built = new Map();
+  for (const pane of panes) {
+    const section = document.createElement('section');
+    section.className = 'group';
     // 用 fieldset/legend 会在手机上有默认边框，这里用普通容器
     const body = document.createElement('div');
     body.className = 'group-body';
-    for (const field of byGroup.get(group.id)) {
-      body.append(fieldNode(field));
-      setControlValue(controls.get(field.id), field.value);
+    // 「常用」页最上面是开机自启开关；它不在 form 里，不会跟着「保存」提交
+    if (pane.id === 'common') body.append(autostartNode());
+    for (const group of pane.groups) {
+      // 高级页里合了好几组，用标题分隔；只有一组时不重复标题
+      if (pane.groups.length > 1) {
+        const title = document.createElement('h3');
+        title.className = 'group-title';
+        title.textContent = group.label;
+        body.append(title);
+      }
+      for (const field of byGroup.get(group.id)) {
+        body.append(fieldNode(field));
+        setControlValue(controls.get(field.id), field.value);
+      }
     }
-    pane.append(body);
-    panes.set(group.id, pane);
+    section.append(body);
+    built.set(pane.id, section);
   }
 
   const nav = document.createElement('nav');
   nav.className = 'tabs';
   nav.setAttribute('aria-label', '设置分组');
-  for (const group of visible) {
+  for (const pane of panes) {
     const tab = document.createElement('button');
     tab.type = 'button';
-    tab.className = `tab${group.id === activeGroup ? ' active' : ''}`;
-    tab.textContent = group.label;
+    tab.className = `tab${pane.id === activeGroup ? ' active' : ''}`;
+    tab.textContent = pane.label;
     tab.addEventListener('click', () => {
-      activeGroup = group.id;
-      for (const [id, pane] of panes) pane.classList.toggle('active', id === activeGroup);
+      activeGroup = pane.id;
+      for (const [id, section] of built) section.classList.toggle('active', id === activeGroup);
       for (const node of nav.children) node.classList.toggle('active', node === tab);
+      // 面板高度差别大，切完把视线带回页签处
+      nav.scrollIntoView({ block: 'start', behavior: 'smooth' });
     });
     nav.append(tab);
   }
-  for (const [id, pane] of panes) pane.classList.toggle('active', id === activeGroup);
+  for (const [id, section] of built) section.classList.toggle('active', id === activeGroup);
 
   groupsBox.append(nav);
-  for (const group of visible) groupsBox.append(panes.get(group.id));
-  note.innerHTML =
-    `设置写入 <code>${data.settingsPath}</code>（当前键名风格：${data.settingsKeyStyle}）。` +
-    '保存时会先停止 transmission-daemon、写入文件、再重新启动，改动立即生效。<br />' +
-    '时段开始/结束按设备本地时间，以零点起的分钟数存储；生效星期按 7 位位图存储' +
-    '（周日 1、周一 2、周二 4、周三 8、周四 16、周五 32、周六 64）。';
+  for (const pane of panes) groupsBox.append(built.get(pane.id));
 }
 
 async function request(path, body) {

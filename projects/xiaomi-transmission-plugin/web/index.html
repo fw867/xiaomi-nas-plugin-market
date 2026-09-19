@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
     <title>Transmission 下载</title>
-    <link rel="stylesheet" href="styles.css?v=3" />
+    <link rel="stylesheet" href="styles.css?v=5" />
   </head>
   <body>
     <header class="topbar">
@@ -19,6 +19,7 @@
         <div class="status-copy">
           <strong id="statusText">读取中…</strong>
           <small id="statusHint">正在查询 transmission-daemon 状态</small>
+          <small class="status-meta" id="statusMeta"></small>
         </div>
       </section>
 
@@ -27,8 +28,6 @@
         <button class="btn ghost" id="restartBtn">重启</button>
         <button class="btn danger" id="stopBtn">停止</button>
       </section>
-
-      <p class="note note-inline" id="autostartHint"></p>
 
       <section class="card web-control" id="webControlCard" hidden>
         <div class="row">
@@ -54,18 +53,9 @@
           <button class="btn ghost" id="reloadBtn" type="button">放弃修改</button>
         </section>
       </form>
-
-      <section class="card log-card" id="logCard" hidden>
-        <details id="logDetails">
-          <summary>daemon 日志（最近 40 行）</summary>
-          <pre id="logText"></pre>
-        </details>
-      </section>
-
-      <p class="note" id="note"></p>
     </main>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="app.js?v=2" defer></script>
+    <script src="app.js?v=4" defer></script>
   </body>
 </html>

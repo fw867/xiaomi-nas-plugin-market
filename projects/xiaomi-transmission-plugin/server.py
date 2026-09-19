@@ -160,13 +160,14 @@ FIELDS: list[dict] = [
         "种子文件的保存位置，必须是绝对路径。目录不存在时会自动创建。",
         unit="", default=DEFAULT_DOWNLOAD_DIR,
     ),
+    # 监视目录归「监视目录」组，进高级页；常用页只留下载目录一项。
     _field(
-        "watch-dir-enabled", "启用监视目录", "bool", "basic",
+        "watch-dir-enabled", "启用监视目录", "bool", "watch",
         "开启后，放进监视目录的 .torrent 文件会被自动添加为下载任务。",
         default=False,
     ),
     _field(
-        "watch-dir", "监视目录", "path", "basic",
+        "watch-dir", "监视目录", "path", "watch",
         "扫描 .torrent 文件的目录，必须是绝对路径。开启监视目录时必须填写。",
         unit="", default="", allow_empty=True,
     ),
@@ -321,6 +322,7 @@ GROUP_LABELS = {
     "schedule": "时段限速",
     "network": "网络",
     "auth": "远程访问",
+    "watch": "监视目录",
 }
 
 GROUPS = [{"id": gid, "label": label} for gid, label in GROUP_LABELS.items()]
@@ -1437,6 +1439,21 @@ class Handler(BaseHTTPRequestHandler):
                 if not ok:
                     self._json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": error})
                     return
+                self._json(HTTPStatus.OK, status_payload())
+                return
+
+            if path == "/api/autostart":
+                # 「开机自启」就是 plugin-state 里的 enabled：插件服务启动时
+                # 是否把 daemon 拉起来。start/stop 会同步它，所以点「停止」后
+                # 开关也会跟着关掉——这符合「不打算再跑就不用开机自启」的直觉。
+                enabled = body.get("enabled")
+                if not isinstance(enabled, bool):
+                    self._json(
+                        HTTPStatus.BAD_REQUEST,
+                        {"ok": False, "error": "enabled 必须是开关（true/false）"},
+                    )
+                    return
+                set_enabled(enabled)
                 self._json(HTTPStatus.OK, status_payload())
                 return
 

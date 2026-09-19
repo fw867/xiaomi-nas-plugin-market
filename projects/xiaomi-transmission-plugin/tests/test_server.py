@@ -852,7 +852,13 @@ class TransmissionTests(unittest.TestCase):
         self.assertEqual("watch-dir-enabled", ids[ids.index("download-dir") + 1])
         self.assertEqual("watch-dir", ids[ids.index("download-dir") + 2])
         for name in ("watch-dir-enabled", "watch-dir"):
-            self.assertEqual("basic", module.FIELDS_BY_ID[name]["group"])
+            self.assertEqual("watch", module.FIELDS_BY_ID[name]["group"])
+
+    def test_common_group_holds_only_the_download_dir(self) -> None:
+        """常用页签只放「下载目录」，其余设置一律收进高级页。"""
+        module = self.module
+        common = [field["id"] for field in module.FIELDS if field["group"] == "basic"]
+        self.assertEqual(["download-dir"], common)
 
     def test_watch_dir_accepts_empty_value(self) -> None:
         """监视目录是可选路径，留空表示不使用，不能被路径校验拦下。"""
@@ -1451,6 +1457,29 @@ class TransmissionTests(unittest.TestCase):
             status, data, _ = self._request(port, "POST", "/api/action", {"action": "start"})
         self.assertEqual(400, status)
         self.assertIn("缺少运行文件", json.loads(data)["error"])
+
+    def test_autostart_toggle_sets_and_clears_flag(self) -> None:
+        """界面上的「开机自启」开关直接读写 plugin-state 里的 enabled。"""
+        port = self._serve()
+        module = self.module
+        with mock.patch.object(module, "daemon_running", return_value=False), \
+                mock.patch.object(module, "daemon_version", return_value="4.0.6"), \
+                mock.patch.object(module, "session_stats", return_value=None):
+            status, data, _ = self._request(port, "POST", "/api/autostart", {"enabled": True})
+            self.assertEqual(200, status, data)
+            self.assertTrue(module.should_autostart())
+            self.assertTrue(json.loads(data)["autostart"])
+
+            status, data, _ = self._request(port, "POST", "/api/autostart", {"enabled": False})
+            self.assertEqual(200, status, data)
+            self.assertFalse(module.should_autostart())
+            self.assertFalse(json.loads(data)["autostart"])
+
+    def test_autostart_toggle_requires_boolean(self) -> None:
+        port = self._serve()
+        status, data, _ = self._request(port, "POST", "/api/autostart", {"enabled": "yes"})
+        self.assertEqual(400, status)
+        self.assertFalse(json.loads(data)["ok"])
 
     def test_index_and_web_control_are_served(self) -> None:
         port = self._serve()
