@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "name": "小米智能存储应用商店",
-  "generatedAt": 1789829699,
+  "generatedAt": 1789832857,
   "repository": "fw867/xiaomi-nas-plugin-market",
   "branch": "main",
   "store": {
@@ -89,12 +89,12 @@
     {
       "id": "qbittorrent",
       "name": "qB 下载",
-      "version": "0.1.3",
+      "version": "0.1.4",
       "summary": "磁力与种子下载、暂停继续和限速；首次启动需拉取独立 Docker 镜像",
       "description": "磁力/种子下载、进度、暂停继续、限速。需要 Docker。",
-      "bundle": "apps/qbittorrent-0.1.3.zip",
-      "sha256": "aef83cd0b84e6c1be5ff5683e55c9f8c9b39a2075d4d66e373c92a1ca603a1e0",
-      "size": 329299,
+      "bundle": "apps/qbittorrent-0.1.4.zip",
+      "sha256": "d3eeaf056363e4b1b52ed6880babe31f2194640ed304e64a3fc13b3c6e8763ab",
+      "size": 330180,
       "icon": "apps/icons/qbittorrent.png",
       "channel": "stable",
       "tags": [
@@ -144,12 +144,12 @@
     {
       "id": "emby",
       "name": "Emby 媒体服务器",
-      "version": "0.1.7",
+      "version": "0.1.8",
       "summary": "在 NAS 上运行 Emby，向局域网设备串流个人影音",
       "description": "官方 Emby 镜像的受限容器；媒体目录读写挂载以便写回元数据，配置保存在插件私有目录，Emby 默认端口 8096 对局域网开放。",
-      "bundle": "apps/emby-0.1.7.zip",
-      "sha256": "0dbfb47d99a40ebc009cecf36b6faad031ad039df489f9add30b6b489139ea1c",
-      "size": 362726,
+      "bundle": "apps/emby-0.1.8.zip",
+      "sha256": "1e4c446256e737896625e9163a42772b895ed0a367e782c295b44fca65f2faa2",
+      "size": 362902,
       "icon": "apps/icons/emby.png",
       "channel": "stable",
       "tags": [
