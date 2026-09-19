@@ -5,7 +5,6 @@ const csrf = document.querySelector('meta[name="csrf-token"]').content;
 let current = null;
 let mediaSelection = null;
 let configSelection = '';
-let browseTarget = 'media';
 let browsePath = '';
 let toastTimer = null;
 
@@ -139,17 +138,42 @@ $('toggleService').addEventListener('click', () => {
   act('/service/' + action, {}, action === 'start' ? '正在启动服务' : '正在停止服务');
 });
 
-// 媒体目录和配置目录共用同一个目录选择框，靠 browseTarget 区分落点。
-function openBrowser(target, startPath) {
-  browseTarget = target;
+// 媒体目录、初始化时的配置目录、以及给已运行实例换配置目录，共用这个选择框。
+let browseOnPick = null;
+function openBrowser(title, startPath, onPick) {
+  browseOnPick = onPick;
   browsePath = startPath || '';
-  $('browseTitle').textContent = target === 'config' ? '选择配置目录' : '选择媒体目录';
+  $('browseTitle').textContent = title;
   $('browse').showModal();
   loadFolders();
 }
 
-$('choose').addEventListener('click', () => openBrowser('media', mediaSelection));
-$('chooseConfig').addEventListener('click', () => openBrowser('config', configSelection));
+async function relocateConfig(path) {
+  const confirmed = confirm(
+    '把 Emby 的配置目录迁到「' + path + '」？\n\n' +
+    '插件会先停容器，把现有配置复制到新目录，核对文件数无误后删除旧目录，再重建容器。' +
+    '过程中 Emby 会短暂中断，媒体文件不受影响。');
+  if (!confirmed) return;
+  await act('/service/relocate', { configPath: path }, '正在迁移配置目录，请稍候');
+}
+
+$('choose').addEventListener('click', () => openBrowser('选择媒体目录', mediaSelection, (path) => {
+  mediaSelection = path;
+  $('mediaPath').value = path || '用户存储根目录';
+}));
+
+$('chooseConfig').addEventListener('click', () => openBrowser('选择配置目录', configSelection, (path) => {
+  configSelection = path;
+  $('configPath').value = path;
+}));
+
+$('moveConfig').addEventListener('click', () => openBrowser('选择新的配置目录', '', (path) => {
+  if (!path) {
+    showError('请选择存储里的一个目录（不能是存储根目录本身）');
+    return;
+  }
+  relocateConfig(path);
+}));
 
 $('clearConfig').addEventListener('click', () => {
   configSelection = '';
@@ -162,14 +186,11 @@ $('up').addEventListener('click', () => {
 });
 
 $('selectFolder').addEventListener('click', () => {
-  if (browseTarget === 'config') {
-    configSelection = browsePath;
-    $('configPath').value = browsePath;
-  } else {
-    mediaSelection = browsePath;
-    $('mediaPath').value = browsePath || '用户存储根目录';
-  }
+  const picked = browsePath;
+  const onPick = browseOnPick;
+  browseOnPick = null;
   $('browse').close();
+  if (onPick) onPick(picked);
 });
 
 $('copyAddress').addEventListener('click', async () => {

@@ -11,6 +11,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import socket
 import threading
 import time
@@ -350,10 +351,67 @@ class Engine:
             self.config['enabled'] = False
             atomic_json(self.cfgfile, self.config)
 
+    def remove(self):
+        """删掉本插件自己的容器。
+
+        挂载这类参数只在创建时确定，改了就必须重建，而 start() 遇到已存在的
+        容器只会把它启动起来。只删带本插件所有权标签的容器。
+        """
+        if self.dev:
+            raise Error('预览模式不会操作 Docker')
+        if self.owned() is None:
+            return
+        self._call('DELETE', '/containers/' + NAME, ok=(200, 204))
+
+    @staticmethod
+    def _count_files(folder):
+        return sum(1 for path in Path(folder).rglob('*') if path.is_file())
+
+    def relocate_config(self, relative):
+        """把配置目录迁到存储中的新位置（已初始化的实例换位置只能走这里）。
+
+        顺序很关键：先停容器（Emby 的数据库不能带着运行状态直接拷），复制后
+        核对文件数，一致才删旧目录。任何一步不满足都抛错并保留原配置，
+        不会出现「两处各留一半」的状态。调用方负责在成功后重建容器。
+        """
+        if not self.config:
+            raise Error('请先初始化')
+        if not isinstance(relative, str) or not relative or len(relative) > 1024:
+            raise Error('请选择新的配置目录')
+        target = confined(self.root, relative)
+        if ',' in str(target):
+            raise Error('Docker 挂载目录不能包含逗号')
+        media = Path(self.config['media'])
+        if target == media or target in media.parents or media in target.parents:
+            raise Error('配置目录与媒体目录不能相同或互相包含')
+        if not target.stat().st_uid or not target.stat().st_gid:
+            raise Error('配置目录须由非 root 的 NAS 用户拥有')
+        current = Path(self.config['config'])
+        if str(target) == str(current):
+            raise Error('新目录与当前配置目录相同')
+        if any(target.iterdir()):
+            raise Error('新配置目录须为空，以免与已有文件混在一起')
+
+        if current.is_dir():
+            self.stop(remember=False)
+            shutil.copytree(current, target, symlinks=True, dirs_exist_ok=True)
+            if self._count_files(current) != self._count_files(target):
+                raise Error('复制后文件数量不一致，已保留原配置目录，未改动任何设置')
+        stat = target.stat()
+        self.config['config'] = str(target)
+        self.config['config_relative'] = relative
+        self.config['config_device'] = stat.st_dev
+        self.config['config_inode'] = stat.st_ino
+        atomic_json(self.cfgfile, self.config)
+        # 挂载变了，旧容器必须删掉，交给 start() 按新配置重建
+        self.remove()
+        if current.is_dir():
+            shutil.rmtree(current, ignore_errors=True)
+
     def launch(self, action, data):
         if self.dev:
             raise Error('预览模式不会启动服务或修改 NAS')
-        if action not in ('setup', 'start', 'stop'):
+        if action not in ('setup', 'start', 'stop', 'relocate'):
             raise Error('未知服务操作')
         if not self.lock.acquire(False):
             raise Error('服务操作正在进行，请稍候')
@@ -363,9 +421,11 @@ class Engine:
             try:
                 if action == 'setup':
                     self.setup(data.get('path', ''), data.get('configPath', ''))
-                if action in ('setup', 'start'):
+                elif action == 'relocate':
+                    self.relocate_config(data.get('configPath', ''))
+                if action in ('setup', 'start', 'relocate'):
                     self.start()
-                else:
+                elif action == 'stop':
                     self.stop()
             except Error as exc:
                 self.error = str(exc)

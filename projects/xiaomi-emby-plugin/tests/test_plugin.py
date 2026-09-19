@@ -236,6 +236,62 @@ class EngineTests(unittest.TestCase):
         with self.assertRaises(Error):
             self.engine.setup('MiShare', 'MiShare/cfg')
 
+    def _configured_engine(self, config_relative):
+        folder = self.root / config_relative
+        folder.mkdir(parents=True, exist_ok=True)
+        stat = folder.stat()
+        media = self.root / 'MiShare'
+        mstat = media.stat()
+        self.engine.config = {'owner': 'o', 'relative': 'MiShare', 'media': str(media),
+                              'uid': 1000, 'gid': 1000, 'device': mstat.st_dev, 'inode': mstat.st_ino,
+                              'config': str(folder), 'config_relative': config_relative,
+                              'config_device': stat.st_dev, 'config_inode': stat.st_ino, 'enabled': True}
+        return folder
+
+    def test_relocate_config_migrates_and_clears_old(self):
+        """已运行的实例换配置目录时，必须先停容器、复制、核对，再删旧目录。"""
+        if not self.root.stat().st_uid or not self.root.stat().st_gid:
+            self.skipTest('requires non-root test directory owner')
+        old = self._configured_engine('OldConfig')
+        (old / 'data').mkdir()
+        (old / 'data' / 'library.db').write_text('x')
+        new = self.root / 'NewConfig'
+        new.mkdir()
+
+        with patch.object(self.engine, 'stop') as stop, patch.object(self.engine, 'remove') as remove:
+            self.engine.relocate_config('NewConfig')
+
+        # 先停容器再复制，最后删掉旧容器以便按新挂载重建
+        stop.assert_called_once()
+        remove.assert_called_once()
+        self.assertEqual(self.engine.config['config'], str(new))
+        self.assertEqual(self.engine.config['config_relative'], 'NewConfig')
+        self.assertEqual((new / 'data' / 'library.db').read_text(), 'x')
+        self.assertFalse(old.exists(), '核对一致后应删除旧目录')
+
+    def test_relocate_refuses_non_empty_target(self):
+        """新目录非空时直接拒绝，防止和已有文件混在一起。"""
+        if not self.root.stat().st_uid or not self.root.stat().st_gid:
+            self.skipTest('requires non-root test directory owner')
+        self._configured_engine('OldConfig')
+        new = self.root / 'NewConfig'
+        new.mkdir()
+        (new / 'keep.txt').write_text('keep')
+        with patch.object(self.engine, 'stop'), patch.object(self.engine, 'remove'):
+            with self.assertRaises(Error):
+                self.engine.relocate_config('NewConfig')
+        self.assertTrue((new / 'keep.txt').exists())
+        self.assertEqual(self.engine.config['config_relative'], 'OldConfig', '失败的迁移不应改动记录')
+
+    def test_relocate_refuses_media_overlap(self):
+        if not self.root.stat().st_uid or not self.root.stat().st_gid:
+            self.skipTest('requires non-root test directory owner')
+        self._configured_engine('OldConfig')
+        (self.root / 'MiShare' / 'cfg').mkdir()
+        with patch.object(self.engine, 'stop'), patch.object(self.engine, 'remove'):
+            with self.assertRaises(Error):
+                self.engine.relocate_config('MiShare/cfg')
+
     @unittest.skipUnless(os.name == 'posix', 'requires POSIX ownership semantics')
     def test_setup_keeps_media_owner_and_marks_enabled(self):
         before = (self.root / 'MiShare').stat()
