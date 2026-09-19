@@ -24,6 +24,16 @@
     if (!current.running) return '已停止';
     return current.ready ? '服务运行中' : '容器已启动，等待 qBittorrent 就绪';
   }
+  // 状态页与控制台是两个视图；用 hash 记住位置，刷新后仍停在控制台。
+  function showConsole(on) {
+    $('#statusView').hidden = on;
+    $('#consoleView').hidden = !on;
+    if (on) {
+      if (location.hash !== '#console') location.hash = 'console';
+    } else if (location.hash === '#console') {
+      history.replaceState(null, '', location.pathname + location.search);
+    }
+  }
   function render(current) {
     $('#serviceState').textContent = stateLabel(current);
     // 圆点和文案同源，避免出现「绿点 + 未就绪」这种自相矛盾的画面
@@ -34,13 +44,20 @@
     if (current.preview) info.push('预览模式，不会操作 Docker');
     $('#serviceInfo').textContent = info.join(' · ');
     $('#serviceInfo').hidden = !info.length;
+
     $('#setup').hidden = current.configured || current.busy;
-    $('#login').hidden = !current.running || current.loggedIn || current.busy;
-    $('#downloads').hidden = !current.running || !current.loggedIn;
     $('#serviceActions').hidden = !current.configured;
+    // 入口地址与控制台按钮只在服务真正跑起来之后才有意义
+    const live = current.configured && current.running;
+    $('#access').hidden = !live;
+    $('#consoleEntry').hidden = !live;
+    $('#address').textContent = current.address || '（请从设备所有者的小米客户端打开插件以获取地址）';
     $('#toggleService').disabled = current.busy;
     $('#toggleService').textContent = current.running ? '停止服务' : '启动服务';
     $('#directory').textContent = current.directory ? '/' + current.directory : '—';
+
+    $('#login').hidden = current.loggedIn || current.busy;
+    $('#consoleBody').hidden = !current.loggedIn;
     if (!current.busy) showError(current.error);
   }
   function renderTasks() {
@@ -93,6 +110,14 @@
   });
   $('#refresh').onclick = () => busy($('#refresh'),refresh);
   $('#search').oninput = renderTasks; $('#filter').onchange = renderTasks;
+  $('#openConsole').onclick = () => { showConsole(true); busy($('#openConsole'), refresh); };
+  $('#backToStatus').onclick = () => showConsole(false);
+  $('#copyAddress').onclick = () => busy($('#copyAddress'), async () => {
+    const text = $('#address').textContent;
+    try { await navigator.clipboard.writeText(text); toast('已复制地址'); }
+    catch (e) { toast('复制失败，请手动记录：' + text); }
+  });
+  window.addEventListener('hashchange', () => showConsole(location.hash === '#console'));
   $('#choose').onclick = () => {$('#browse').showModal();browse($('#downloadPath').value);};
   $('#up').onclick = () => browse(browsePath.split('/').slice(0,-1).join('/'));
   $('#selectFolder').onclick = () => {$('#downloadPath').value = browsePath; $('#browse').close();};
@@ -110,5 +135,6 @@
   $('#limitForm').onsubmit = e=>{e.preventDefault();busy(e.target.querySelector('[type=submit]'),async()=>{const f=e.target.elements;await api('limits',{download:Number(f.download.value),upload:Number(f.upload.value),active:Number(f.active.value)});$('#limitDialog').close();toast('已保存');});};
   $('#confirmRemove').onclick=()=>busy($('#confirmRemove'),async()=>{await api('remove',{hash:removeHash});$('#removeDialog').close();await refresh();});
   $('#logout').onclick=()=>busy($('#logout'),async()=>{await api('logout',{});await refresh();});
+  if (location.hash === '#console') showConsole(true);
   async function tick(){if(!root.isConnected)return;if(!document.hidden)await refresh();setTimeout(tick,3000);}tick();
 })();

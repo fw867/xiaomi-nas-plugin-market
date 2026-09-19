@@ -21,6 +21,9 @@ IMAGE = 'ghcr.io/linuxserver/qbittorrent@sha256:a00b6a597a3832a1814cde0ef60abc55
 NAME = 'xiaomi-plugin-qbittorrent'
 LABEL = 'io.xiaomi-plugin.qb.owner'
 PORT = 18123
+# qB 的 WebUI 会话有效期（秒）。插件把登录后的会话持久化到磁盘，下次打开
+# 下载列表直接复用，所以放宽到 30 天，避免频繁要求重新登录。
+SESSION_TIMEOUT = 30 * 24 * 3600
 # 设备上只有 dockerd，没有 docker 命令行（/usr/bin/docker 不存在），
 # 所以不能 subprocess 调 CLI，一律走 socket 上的 Engine API。
 DOCKER_SOCKET = os.environ.get('DOCKER_SOCKET', '/var/run/docker.sock')
@@ -294,7 +297,8 @@ class Engine:
                 '[Preferences]\nWebUI\\Address=*\nWebUI\\Port=18123\nWebUI\\Username=admin\n'
                 'WebUI\\Password_PBKDF2="@ByteArray(' + hashed + ')"\n'
                 'WebUI\\LocalHostAuth=true\nWebUI\\AuthSubnetWhitelistEnabled=false\n'
-                'WebUI\\CSRFProtection=true\nWebUI\\HostHeaderValidation=true\nWebUI\\UseUPnP=false\n')
+                'WebUI\\CSRFProtection=true\nWebUI\\HostHeaderValidation=true\nWebUI\\UseUPnP=false\n'
+                'WebUI\\SessionTimeout=' + str(SESSION_TIMEOUT) + '\n')
         confpath = cfgdir / 'qBittorrent.conf'
         with confpath.open('x') as stream:
             os.chmod(confpath, 0o600)

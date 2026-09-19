@@ -21,13 +21,21 @@
             <button id="refresh" class="icon-button" title="刷新" aria-label="刷新"><img data-icon="reload" alt=""></button>
         </header>
 
-        <main>
+        <main id="statusView">
             <section class="card status-card">
                 <span class="status-dot" id="statusDot" aria-hidden="true"></span>
                 <div class="status-copy">
                     <strong id="serviceState" role="status">正在连接</strong>
                     <small id="serviceInfo"></small>
                 </div>
+            </section>
+
+            <section class="card service-card" id="serviceActions" hidden>
+                <div class="service-copy">
+                    <span class="muted">下载目录</span>
+                    <strong id="directory">—</strong>
+                </div>
+                <button id="toggleService" class="btn">启动服务</button>
             </section>
 
             <p id="error" class="alert" role="alert" hidden></p>
@@ -38,7 +46,7 @@
                     <div class="field">
                         <span class="field-label">下载目录</span>
                         <div class="field-row">
-                            <input name="path" id="downloadPath" readonly required placeholder="选择父目录">
+                            <input name="path" id="downloadPath" readonly required placeholder="选择目录">
                             <button type="button" id="choose" class="btn">选择</button>
                         </div>
                     </div>
@@ -58,48 +66,18 @@
                 </form>
             </section>
 
-            <section id="login" class="card" hidden>
-                <h2>登录 qBittorrent</h2>
-                <form id="loginForm" autocomplete="off">
-                    <div class="field">
-                        <span class="field-label">admin 密码</span>
-                        <input name="password" type="password" maxlength="200" autocomplete="current-password" required>
-                    </div>
-                    <button type="submit" class="btn primary block">登录</button>
-                </form>
+            <section class="card" id="access" hidden>
+                <h2>qBittorrent 入口</h2>
+                <div class="address-row">
+                    <code id="address">—</code>
+                    <button id="copyAddress" type="button" class="btn small">复制</button>
+                </div>
+                <p class="muted">局域网里的电脑或手机可以直接打开这个地址，用 qBittorrent 的完整界面，用户名 <code>admin</code>。</p>
             </section>
 
-            <section id="serviceActions" class="card service-card" hidden>
-                <div class="service-copy">
-                    <span class="muted">下载目录</span>
-                    <strong id="directory">—</strong>
-                </div>
-                <button id="toggleService" class="btn">启动服务</button>
-            </section>
-
-            <section id="downloads" hidden>
-                <div class="card stats">
-                    <div><small>下载速度</small><strong id="downSpeed">—</strong></div>
-                    <div><small>上传速度</small><strong id="upSpeed">—</strong></div>
-                    <div><small>本次已下载</small><strong id="downloaded">—</strong></div>
-                </div>
-                <div class="card">
-                    <div class="toolbar">
-                        <input id="search" type="search" placeholder="搜索任务" aria-label="搜索任务">
-                        <select id="filter" aria-label="任务状态">
-                            <option value="all">全部任务</option>
-                            <option value="downloading">下载中</option>
-                            <option value="completed">已完成</option>
-                            <option value="stopped">已停止</option>
-                        </select>
-                        <button id="add" class="btn primary"><img data-icon="plus" alt="">添加任务</button>
-                        <button id="limits" class="btn">限速</button>
-                    </div>
-                    <p class="muted" id="count"></p>
-                    <div id="tasks" class="tasks"></div>
-                    <p id="empty" hidden>暂无下载任务</p>
-                </div>
-                <button id="logout" class="btn block">退出 qB 登录</button>
+            <section class="card" id="consoleEntry" hidden>
+                <button id="openConsole" type="button" class="btn primary block">qB Web 控制台</button>
+                <p class="muted">查看下载进度、添加磁力或种子、调整限速。</p>
             </section>
 
             <details class="card fold fold-card" id="notes">
@@ -114,6 +92,51 @@
             </details>
 
             <footer>qB 下载 · __PLUGIN_VERSION__</footer>
+        </main>
+
+        <main id="consoleView" hidden>
+            <div class="console-head">
+                <button id="backToStatus" type="button" class="btn small">← 返回</button>
+                <span class="muted" id="count"></span>
+            </div>
+
+            <section id="login" class="card" hidden>
+                <h2>登录 qBittorrent</h2>
+                <form id="loginForm" autocomplete="off">
+                    <div class="field">
+                        <span class="field-label">admin 密码</span>
+                        <input name="password" type="password" maxlength="200" autocomplete="current-password" required>
+                    </div>
+                    <p class="muted">只有在会话失效时才需要重新输入，平时会一直记住。</p>
+                    <button type="submit" class="btn primary block">登录</button>
+                </form>
+            </section>
+
+            <div id="consoleBody" hidden>
+                <section class="card stats">
+                    <div><small>下载速度</small><strong id="downSpeed">—</strong></div>
+                    <div><small>上传速度</small><strong id="upSpeed">—</strong></div>
+                    <div><small>本次已下载</small><strong id="downloaded">—</strong></div>
+                </section>
+
+                <section class="card">
+                    <div class="toolbar">
+                        <input id="search" type="search" placeholder="搜索任务" aria-label="搜索任务">
+                        <select id="filter" aria-label="任务状态">
+                            <option value="all">全部</option>
+                            <option value="downloading">下载中</option>
+                            <option value="completed">已完成</option>
+                            <option value="stopped">已停止</option>
+                        </select>
+                        <button id="add" class="btn small" title="添加任务" aria-label="添加任务"><img data-icon="plus" alt="">添加</button>
+                        <button id="limits" class="btn small">限速</button>
+                    </div>
+                    <div id="tasks" class="tasks"></div>
+                    <p id="empty" hidden>暂无下载任务</p>
+                </section>
+
+                <button id="logout" class="btn block">退出 qB 登录</button>
+            </div>
         </main>
 
         <dialog id="browse">
@@ -145,7 +168,7 @@
                     <span class="field-label">或选择种子文件</span>
                     <input type="file" name="torrent" accept=".torrent,application/x-bittorrent">
                 </div>
-                <p class="muted">保存到专用下载目录；种子文件最大 2 MiB。</p>
+                <p class="muted">保存到下载目录；种子文件最大 2 MiB。</p>
                 <button type="submit" class="btn primary block">开始下载</button>
             </form>
         </dialog>

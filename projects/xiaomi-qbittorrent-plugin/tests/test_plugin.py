@@ -339,10 +339,37 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(code, 400)
 
     def test_login_password_not_stored(self):
+        """只保存 qB 发回的会话 cookie，密码本身不落盘。"""
         with patch('server.qb_request', return_value=(200, b'Ok.', 'SID=' + 'a'*32 + '; HttpOnly')):
             code, _ = self.request('POST', '/api/login', {'password':'secret123'}, self.auth())
         self.assertEqual(code, 200)
-        self.assertNotIn('secret123', repr(self.server.logins))
+        self.assertNotIn('secret123', self.server.qb_session_file.read_text(encoding='utf-8'))
+
+    def test_login_persists_qb_session(self):
+        """登录成功后会话落盘：下次进下载列表不必重输密码。"""
+        header = 'QBT_SID_18123=' + 'b' * 32 + '; HttpOnly; path=/'
+        with patch('server.qb_request', return_value=(204, b'', header)):
+            code, _ = self.request('POST', '/api/login', {'password': 'secret123'}, self.auth())
+        self.assertEqual(code, 200)
+        self.assertEqual(self.server.qb_session(), 'QBT_SID_18123=' + 'b' * 32)
+        saved = json.loads(self.server.qb_session_file.read_text(encoding='utf-8'))
+        self.assertEqual(saved['cookie'], 'QBT_SID_18123=' + 'b' * 32)
+        self.assertGreater(saved['expiry'], 0)
+
+    def test_logout_clears_qb_session(self):
+        self.server.save_qb_session('SID=abc')
+        self.assertTrue(self.server.qb_session())
+        code, _ = self.request('POST', '/api/logout', {}, self.auth())
+        self.assertEqual(code, 200)
+        self.assertEqual(self.server.qb_session(), '')
+        self.assertFalse(self.server.qb_session_file.exists())
+
+    def test_status_reports_lan_address(self):
+        """状态卡显示的是局域网地址：客户端隧道里 Host 已被改写成 127.0.0.1。"""
+        with patch('server.lan_ip', return_value='192.168.1.15'):
+            code, body = self.request('GET', '/api/status', headers=self.auth())
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(body)['address'], 'http://192.168.1.15:' + str(PORT))
 
     def test_login_accepts_qb5_response(self):
         """qB 5.x 登录成功返回 204 + 空 body + QBT_SID_<端口> cookie。
@@ -354,21 +381,20 @@ class HTTPTests(unittest.TestCase):
         with patch('server.qb_request', return_value=(204, b'', header)):
             code, _ = self.request('POST', '/api/login', {'password': 'secret123'}, self.auth())
         self.assertEqual(code, 200)
-        self.assertIn(self.token, self.server.logins)
-        self.assertTrue(self.server.logins[self.token][0].startswith('QBT_SID_18123='))
+        self.assertTrue(self.server.qb_session().startswith('QBT_SID_18123='))
 
     def test_login_still_accepts_qb4_response(self):
         with patch('server.qb_request',
                    return_value=(200, b'Ok.', 'SID=' + 'c' * 32 + '; HttpOnly')):
             code, _ = self.request('POST', '/api/login', {'password': 'secret123'}, self.auth())
         self.assertEqual(code, 200)
-        self.assertEqual(self.server.logins[self.token][0], 'SID=' + 'c' * 32)
+        self.assertEqual(self.server.qb_session(), 'SID=' + 'c' * 32)
 
     def test_login_rejects_wrong_password(self):
         with patch('server.qb_request', return_value=(401, b'Unauthorized', '')):
             code, _ = self.request('POST', '/api/login', {'password': 'wrong'}, self.auth())
         self.assertEqual(code, 400)
-        self.assertNotIn(self.token, self.server.logins)
+        self.assertEqual(self.server.qb_session(), '')
 
     def test_add_response_recognises_both_formats(self):
         """qB 4.x 的 torrents/add 返回 "Ok."，5.x 返回 added_torrent_ids。"""
@@ -379,10 +405,11 @@ class HTTPTests(unittest.TestCase):
         self.assertFalse(accepted(b''))
 
     def test_expired_qb_cookie_cleared(self):
-        self.server.logins[self.token] = ('SID=test', 9999999999)
+        """qB 说会话失效（401/403）时，插件要把本地会话一并清掉。"""
+        self.server.save_qb_session('SID=stale')
         with patch('server.qb_request', return_value=(403, b'', '')):
             self.request('GET', '/api/torrents', headers=self.auth())
-        self.assertNotIn(self.token, self.server.logins)
+        self.assertEqual(self.server.qb_session(), '')
 
     def test_wrong_device_cert_gets_no_session(self):
         self.server.dev = False

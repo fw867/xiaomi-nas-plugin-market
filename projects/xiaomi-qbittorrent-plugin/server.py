@@ -11,6 +11,7 @@ import mimetypes
 import os
 import re
 import secrets
+import socket
 import tempfile
 import threading
 import time
@@ -19,10 +20,29 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-from engine import Engine, Error, PORT, qb_request, mutation, torrent_hash, installed_version
+from engine import (Engine, Error, PORT, SESSION_TIMEOUT, qb_request, mutation,
+                    torrent_hash, installed_version, atomic_json)
 
 WEB = Path(__file__).resolve().parent / 'web'
 TTL = 86400
+
+
+def lan_ip():
+    """取本机在局域网里的地址；取不到返回空串。
+
+    用「连一个外部地址但不真发包」的办法让内核挑默认出口对应的网卡地址，
+    比 gethostbyname(gethostname()) 可靠——后者在没有 hosts 记录时常常返回
+    127.0.1.1。UDP connect 不会产生任何流量。
+    """
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(('223.5.5.5', 53))
+        address = probe.getsockname()[0]
+        return address if address and not address.startswith('127.') else ''
+    except OSError:
+        return ''
+    finally:
+        probe.close()
 
 
 def accepted(body):
@@ -52,10 +72,46 @@ class Server(ThreadingHTTPServer):
                 os.chmod(keyfile, 0o600)
                 stream.write(secrets.token_bytes(32))
         self.key = keyfile.read_bytes()
-        self.logins = {}
-        self.login_lock = threading.Lock()
+        # qB 的登录会话是服务级共享的，并持久化到磁盘：这样从状态页进入下载
+        # 列表时不必每次重输密码，插件重启后也能续上。
+        self.qb_cookie = ''
+        self.qb_expiry = 0.0
+        self.qb_lock = threading.Lock()
+        self.qb_session_file = engine.data / 'qb-session.json'
+        self.load_qb_session()
         self.request_slots = threading.BoundedSemaphore(12)
         super().__init__(addr, Handler)
+
+    def load_qb_session(self):
+        try:
+            saved = json.loads(self.qb_session_file.read_text(encoding='utf-8'))
+            cookie = saved.get('cookie')
+            expiry = float(saved.get('expiry', 0))
+        except (OSError, ValueError, TypeError):
+            return
+        if isinstance(cookie, str) and cookie and expiry > time.time():
+            self.qb_cookie, self.qb_expiry = cookie, expiry
+
+    def save_qb_session(self, cookie):
+        expiry = time.time() + SESSION_TIMEOUT
+        with self.qb_lock:
+            self.qb_cookie, self.qb_expiry = cookie, expiry
+        try:
+            atomic_json(self.qb_session_file, {'cookie': cookie, 'expiry': expiry})
+        except OSError:
+            pass
+
+    def qb_session(self):
+        with self.qb_lock:
+            return self.qb_cookie if self.qb_cookie and self.qb_expiry > time.time() else ''
+
+    def clear_qb_session(self):
+        with self.qb_lock:
+            self.qb_cookie, self.qb_expiry = '', 0.0
+        try:
+            self.qb_session_file.unlink()
+        except OSError:
+            pass
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -116,20 +172,27 @@ class Handler(BaseHTTPRequestHandler):
             return token
         return None
 
-    def cookie(self, token):
-        with self.server.login_lock:
-            now = time.time()
-            self.server.logins = {k: v for k, v in self.server.logins.items() if v[1] > now}
-            return self.server.logins.get(token, ('', 0))[0]
+    def address(self):
+        """拼出局域网里能直接打开的 qB WebUI 地址。
 
-    def call_qb(self, token, route, params=None, **kwargs):
-        cookie = self.cookie(token)
+        不能靠请求的 Host：小米客户端是经客户端自己的隧道访问 NAS 的，到这里
+        时 Host 已被改写成 127.0.0.1，拼出来的地址在手机/电脑上打不开。本机
+        网卡地址取不到时才退回 Host。
+        """
+        host = lan_ip()
+        if not host:
+            host = re.sub(r':\d+$', '', self.headers.get('Host', '').strip())
+            if not re.fullmatch(r'[A-Za-z0-9.\-]{1,253}', host):
+                return ''
+        return 'http://' + host + ':' + str(PORT)
+
+    def call_qb(self, route, params=None, **kwargs):
+        cookie = self.server.qb_session()
         if not cookie:
             raise Error('请先登录 qBittorrent')
         code, body, _ = qb_request(route, params, cookie=cookie, **kwargs)
         if code in (401, 403):
-            with self.server.login_lock:
-                self.server.logins.pop(token, None)
+            self.server.clear_qb_session()
             raise Error('qBittorrent 登录已过期，请重新登录')
         # qB 5.x 的部分操作成功时返回 204 No Content，不再一律是 200。
         if code not in (200, 204):
@@ -164,18 +227,19 @@ class Handler(BaseHTTPRequestHandler):
             query = parse_qs(route.query)
             if route.path == '/api/status':
                 result = self.server.engine.snapshot()
-                result['loggedIn'] = bool(self.cookie(token))
+                result['loggedIn'] = bool(self.server.qb_session())
+                result['address'] = self.address()
             elif route.path == '/api/browse':
                 result = {'items': self.server.engine.browse(query.get('path', [''])[0])}
             elif route.path == '/api/torrents':
-                result = {'items': json.loads(self.call_qb(token, 'torrents/info?limit=500&sort=added_on&reverse=true')),
-                          'transfer': json.loads(self.call_qb(token, 'transfer/info'))}
+                result = {'items': json.loads(self.call_qb('torrents/info?limit=500&sort=added_on&reverse=true')),
+                          'transfer': json.loads(self.call_qb('transfer/info'))}
             elif route.path == '/api/detail':
                 key = torrent_hash(query.get('hash', [''])[0])
-                result = {'files': json.loads(self.call_qb(token, 'torrents/files?hash=' + key)),
-                          'properties': json.loads(self.call_qb(token, 'torrents/properties?hash=' + key))}
+                result = {'files': json.loads(self.call_qb('torrents/files?hash=' + key)),
+                          'properties': json.loads(self.call_qb('torrents/properties?hash=' + key))}
             elif route.path == '/api/limits':
-                prefs = json.loads(self.call_qb(token, 'app/preferences'))
+                prefs = json.loads(self.call_qb('app/preferences'))
                 result = {'download': prefs['dl_limit'] // 1024, 'upload': prefs['up_limit'] // 1024,
                           'active': prefs['max_active_downloads']}
             else:
@@ -219,14 +283,9 @@ class Handler(BaseHTTPRequestHandler):
                 sid = jar[name].value if name else ''
                 if code not in (200, 204) or not sid or not re.fullmatch(r'[A-Za-z0-9_-]{8,256}', sid):
                     raise Error('登录失败，密码错误或登录次数过多')
-                self.cookie(token)
-                with self.server.login_lock:
-                    if len(self.server.logins) >= 64 and token not in self.server.logins:
-                        raise Error('会话数量已达上限')
-                    self.server.logins[token] = (name + '=' + sid, time.time() + TTL)
+                self.server.save_qb_session(name + '=' + sid)
             elif action == 'logout':
-                with self.server.login_lock:
-                    self.server.logins.pop(token, None)
+                self.server.clear_qb_session()
             elif action == 'torrent':
                 value = data.get('content', '')
                 if not isinstance(value, str):
@@ -242,11 +301,11 @@ class Handler(BaseHTTPRequestHandler):
                 for key, value in [('savepath', '/downloads'), ('autoTMM', 'false'), ('stopped', 'false')]:
                     body += ('\r\n--' + boundary + '\r\nContent-Disposition: form-data; name="' + key + '"\r\n\r\n' + value).encode()
                 body += ('\r\n--' + boundary + '--\r\n').encode()
-                if not accepted(self.call_qb(token, 'torrents/add', raw=body, content_type='multipart/form-data; boundary=' + boundary)):
+                if not accepted(self.call_qb('torrents/add', raw=body, content_type='multipart/form-data; boundary=' + boundary)):
                     raise Error('种子未被接受，请检查文件内容')
             else:
                 target, params = mutation(action, data)
-                body = self.call_qb(token, target, params)
+                body = self.call_qb(target, params)
                 if action == 'magnet' and not accepted(body):
                     raise Error('磁力链接未被接受')
             self.send(200, {'ok': True})

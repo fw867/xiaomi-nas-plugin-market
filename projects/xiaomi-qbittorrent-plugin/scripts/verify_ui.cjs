@@ -18,7 +18,7 @@ const path = require('node:path');
         const req=route.request(),url=new URL(req.url()),op=url.pathname.replace('/api/','');
         const data=req.method()==='POST'?req.postDataJSON():undefined;calls.push({op,data});
         let body={ok:true};
-        if(op==='status') Object.assign(body,{configured,running,loggedIn,busy:false,error:'',directory:configured?'MiShare/qBDownloads':'',preview:true});
+        if(op==='status') Object.assign(body,{configured,running,loggedIn,busy:false,error:'',directory:configured?'MiShare':'',preview:true,address:(configured&&running)?'http://192.168.1.15:18123':'',ready:running});
         else if(op==='browse') body.items=url.searchParams.get('path')?[]:[{name:'MiShare',path:'MiShare'}];
         else if(op==='service/setup'){configured=true;running=true;}
         else if(op==='service/stop')running=false;
@@ -40,6 +40,7 @@ const path = require('node:path');
       await page.locator('#setupForm [name=password]').fill('Example123!');
       await page.locator('#setupForm [type=checkbox]').check();
       await page.locator('#setupForm [type=submit]').click();
+      await page.locator('#openConsole').click();
       await page.locator('#loginForm [name=password]').fill('Example123!');
       await page.locator('#loginForm [type=submit]').click();
       await page.locator('.task').waitFor();

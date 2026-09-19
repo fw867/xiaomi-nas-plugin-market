@@ -241,6 +241,25 @@ button:focus-visible { outline: 2px solid rgba(24, 120, 187, .45); outline-offse
 .service-copy span { display: block; font-size: 12px; }
 .service-copy strong { display: block; font-size: 13.5px; font-weight: 600; overflow-wrap: anywhere; }
 
+/* ---------- 入口地址与控制台 ---------- */
+
+.address-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.address-row code { flex: 1; min-width: 0; padding: 10px 12px; font-size: 13.5px; }
+
+/* 控制台视图顶部：返回按钮 + 任务计数 */
+.console-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 2px 0 10px;
+}
+
 /* ---------- 下载区 ---------- */
 
 .stats {
