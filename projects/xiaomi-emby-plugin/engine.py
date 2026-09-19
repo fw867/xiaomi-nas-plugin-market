@@ -11,9 +11,10 @@ import json
 import os
 import re
 import secrets
-import subprocess
+import socket
 import threading
 import time
+import urllib.parse
 from pathlib import Path
 
 VERSION = '0.1.0'
@@ -25,10 +26,43 @@ LABEL = 'io.xiaomi-plugin.emby.owner'
 # Emby 容器内外都用 8096（Emby 默认 Web/API 端口），并发布到 NAS 局域网，
 # 否则电视、手机等 Emby 客户端无法连接。
 PORT = 8096
+# 设备上只有 dockerd，没有 docker 命令行（/usr/bin/docker 不存在），
+# 所以不能 subprocess 调 CLI，一律走 socket 上的 Engine API。
+DOCKER_SOCKET = os.environ.get('DOCKER_SOCKET', '/var/run/docker.sock')
 
 
 class Error(RuntimeError):
     pass
+
+
+class _UnixHTTPConnection(http.client.HTTPConnection):
+    """让 http.client 通过 Unix socket 说话，用来直连 Docker Engine API。"""
+
+    def connect(self):
+        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.sock.settimeout(self.timeout)
+        self.sock.connect(DOCKER_SOCKET)
+
+
+def docker_api(method, path, body=None, timeout=30):
+    """调一次 Engine API，返回 (状态码, 响应体)。
+
+    只连本机 socket，不接受外部传入地址；路径由调用方用固定常量拼出。
+    """
+    payload = json.dumps(body).encode('utf-8') if body is not None else None
+    headers = {'Host': 'localhost'}
+    if payload is not None:
+        headers['Content-Type'] = 'application/json'
+        headers['Content-Length'] = str(len(payload))
+    connection = _UnixHTTPConnection('localhost', timeout=timeout)
+    try:
+        connection.request(method, path, body=payload, headers=headers)
+        response = connection.getresponse()
+        return response.status, response.read()
+    except (OSError, http.client.HTTPException) as exc:
+        raise Error('Docker 不可用或操作超时') from exc
+    finally:
+        connection.close()
 
 
 def confined(root, relative):
@@ -76,17 +110,38 @@ def emby_info():
         connection.close()
 
 
-def container_args(config, data):
-    """固定参数，不接受调用方传入镜像、端口、挂载或命令。"""
-    return ['run', '-d', '--name', NAME, '--label', LABEL + '=' + config['owner'],
-            '--restart', 'no', '--memory', '1024m', '--memory-swap', '1024m', '--cpus', '2',
-            '--pids-limit', '512', '--security-opt', 'no-new-privileges:true',
-            '--log-opt', 'max-size=5m', '--log-opt', 'max-file=2',
-            '-e', 'UID=' + str(config['uid']), '-e', 'GID=' + str(config['gid']),
-            '-e', 'GIDLIST=' + str(config['gid']), '-e', 'TZ=Asia/Shanghai',
-            '-p', '0.0.0.0:' + str(PORT) + ':' + str(PORT),
-            '--mount', 'type=bind,src=' + str(data / 'config') + ',dst=/config',
-            '--mount', 'type=bind,src=' + config['media'] + ',dst=/mnt/media', IMAGE]
+def container_config(config, data):
+    """固定的容器配置（Engine API 的 create body）。
+
+    固定参数，不接受调用方传入镜像、端口、挂载或命令。对应原来那串
+    `docker run -d ...`，只是换成 JSON 形式：
+    --memory/--memory-swap 用字节、--cpus 用纳核、--mount 用 Mounts。
+    """
+    return {
+        'Image': IMAGE,
+        'Env': [
+            'UID=' + str(config['uid']),
+            'GID=' + str(config['gid']),
+            'GIDLIST=' + str(config['gid']),
+            'TZ=Asia/Shanghai',
+        ],
+        'Labels': {LABEL: config['owner']},
+        'HostConfig': {
+            'RestartPolicy': {'Name': 'no'},
+            'Memory': 1024 * 1024 * 1024,
+            'MemorySwap': 1024 * 1024 * 1024,
+            'NanoCpus': 2 * 10 ** 9,
+            'PidsLimit': 512,
+            'SecurityOpt': ['no-new-privileges:true'],
+            'LogConfig': {'Type': 'json-file', 'Config': {'max-size': '5m', 'max-file': '2'}},
+            'PortBindings': {str(PORT) + '/tcp': [{'HostIp': '0.0.0.0', 'HostPort': str(PORT)}]},
+            # 媒体目录以读写方式挂载：Emby 要把元数据、字幕写回媒体文件夹。
+            'Mounts': [
+                {'Type': 'bind', 'Source': str(data / 'config'), 'Target': '/config'},
+                {'Type': 'bind', 'Source': config['media'], 'Target': '/mnt/media'},
+            ],
+        },
+    }
 
 
 class Engine:
@@ -100,22 +155,52 @@ class Engine:
         self.cfgfile = self.data / 'settings.json'
         self.config = json.loads(self.cfgfile.read_text(encoding='utf-8')) if self.cfgfile.exists() else None
 
-    def docker(self, *args, timeout=30):
+    def _call(self, method, path, body=None, timeout=30, ok=(200, 201, 204)):
+        """调一次 Engine API；非预期状态码统一报错。"""
         if self.dev:
             raise Error('预览模式不会操作 Docker')
-        try:
-            result = subprocess.run(['docker', *args], capture_output=True, text=True, timeout=timeout)
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise Error('Docker 不可用或操作超时') from exc
-        if result.returncode:
-            raise Error('Docker 操作失败，请检查镜像网络、端口 8096 和可用资源；未修改其他容器')
-        return result.stdout
+        status, data = docker_api(method, path, body, timeout)
+        if status not in ok:
+            raise Error('Docker 操作失败，请检查镜像网络、端口 ' + str(PORT) + ' 和可用资源；未修改其他容器')
+        return data
+
+    def inspect(self):
+        """容器详情；不存在时返回 None（容器不在 Docker 里不算错误）。"""
+        if self.dev:
+            raise Error('预览模式不会操作 Docker')
+        status, data = docker_api('GET', '/containers/' + NAME + '/json')
+        if status == 404:
+            return None
+        if status != 200:
+            raise Error('Docker 操作失败，请检查镜像网络、端口 ' + str(PORT) + ' 和可用资源；未修改其他容器')
+        item = json.loads(data)
+        return item if isinstance(item, dict) else None
+
+    def pull(self):
+        """拉取镜像。这个接口是流式的，要把整个流读完才知道成功与否。"""
+        image, _, digest = IMAGE.partition('@')
+        repository, _, tag = image.partition(':')
+        query = urllib.parse.urlencode({
+            'fromImage': repository + ('@' + digest if digest else ''),
+            'tag': tag or 'latest',
+        })
+        if self.dev:
+            raise Error('预览模式不会操作 Docker')
+        stream = self._call('POST', '/images/create?' + query, timeout=1800)
+        for line in stream.splitlines():
+            if not line.strip():
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(event, dict) and event.get('error'):
+                raise Error('Docker 操作失败，请检查镜像网络、端口 ' + str(PORT) + ' 和可用资源；未修改其他容器')
 
     def owned(self):
-        names = self.docker('ps', '-a', '--filter', 'name=^/' + NAME + '$', '--format', '{{.Names}}').splitlines()
-        if NAME not in names:
+        item = self.inspect()
+        if item is None:
             return None
-        item = json.loads(self.docker('inspect', NAME))[0]
         if not self.config or item.get('Config', {}).get('Labels', {}).get(LABEL) != self.config['owner']:
             raise Error('同名容器不属于本插件，拒绝接管')
         return item
@@ -162,8 +247,8 @@ class Engine:
         uid, gid = folder.stat().st_uid, folder.stat().st_gid
         if not uid or not gid:
             raise Error('所选目录须由非 root 的 NAS 用户拥有')
-        self.docker('info', '--format', '{{.Architecture}}')
-        if NAME in self.docker('ps', '-a', '--format', '{{.Names}}').splitlines():
+        self._call('GET', '/info')
+        if self.inspect() is not None:
             raise Error('同名容器已存在，拒绝覆盖')
         cfgdir = self.data / 'config'
         cfgdir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -188,11 +273,13 @@ class Engine:
         item = self.owned()
         if item:
             if not item.get('State', {}).get('Running'):
-                self.docker('start', NAME)
+                self._call('POST', '/containers/' + NAME + '/start')
         else:
-            self.docker('pull', IMAGE, timeout=1800)
+            self.pull()
             self.check_directory()
-            self.docker(*container_args(self.config, self.data), timeout=120)
+            self._call('POST', '/containers/create?name=' + NAME,
+                       body=container_config(self.config, self.data), timeout=120)
+            self._call('POST', '/containers/' + NAME + '/start')
         self.config['enabled'] = True
         atomic_json(self.cfgfile, self.config)
         # Emby 首次启动要初始化数据库，可能明显慢于 qB；超时只影响提示，容器仍在运行。
@@ -209,7 +296,8 @@ class Engine:
             return
         item = self.owned()
         if item and item.get('State', {}).get('Running'):
-            self.docker('stop', '--time', '30', NAME)
+            # 给容器 30 秒优雅退出；stop 本身会阻塞到容器停下，所以超时要放宽。
+            self._call('POST', '/containers/' + NAME + '/stop?t=30', timeout=90)
         if remember:
             self.config['enabled'] = False
             atomic_json(self.cfgfile, self.config)

@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from engine import Engine, Error, IMAGE, NAME, LABEL, PORT, confined, container_args
+from engine import Engine, Error, IMAGE, NAME, LABEL, PORT, confined, container_config
 from server import Server
 
 
@@ -44,19 +44,31 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(self.engine.browse(''), [{'name': 'MiShare', 'path': 'MiShare'}])
 
     def test_container_isolation(self):
-        args = container_args({'owner': 'test', 'uid': 1000, 'gid': 1000, 'media': '/test/media'},
-                              Path('/test/private'))
-        self.assertIn(IMAGE, args)
-        self.assertIn('0.0.0.0:' + str(PORT) + ':' + str(PORT), args)
-        self.assertNotIn('--privileged', args)
-        self.assertNotIn('--network', args)
-        self.assertFalse(any('docker.sock' in a for a in args))
-        self.assertFalse(any('/dev/dri' in a for a in args))
-        self.assertEqual(args.count('--mount'), 2)
-        self.assertIn('type=bind,src=/test/media,dst=/mnt/media', args)
-        # 媒体目录必须可写：Emby 需要把元数据和字幕写回媒体文件夹。
-        self.assertFalse(any('readonly' in a for a in args))
-        self.assertEqual(args[args.index('--restart') + 1], 'no')
+        cfg = container_config({'owner': 'test', 'uid': 1000, 'gid': 1000, 'media': '/test/media'},
+                               Path('/test/private'))
+        self.assertEqual(cfg['Image'], IMAGE)
+        self.assertEqual(cfg['Labels'], {LABEL: 'test'})
+        host = cfg['HostConfig']
+        self.assertEqual(host['PortBindings'],
+                         {str(PORT) + '/tcp': [{'HostIp': '0.0.0.0', 'HostPort': str(PORT)}]})
+        self.assertEqual(host['RestartPolicy'], {'Name': 'no'})
+        # 不能提权、不能改网络模式、不挂 docker socket 或设备
+        self.assertNotIn('Privileged', host)
+        self.assertNotIn('NetworkMode', host)
+        sources = [m['Source'] for m in host['Mounts']]
+        self.assertEqual(len(sources), 2)
+        self.assertIn('/test/media', sources)
+        self.assertIn(str(Path('/test/private') / 'config'), sources)
+        self.assertFalse(any('docker.sock' in s for s in sources))
+        self.assertFalse(any('/dev/dri' in s for s in sources))
+        # 媒体目录必须可写：Emby 需要把元数据和字幕写回媒体文件夹
+        self.assertFalse(any(m.get('ReadOnly') for m in host['Mounts']))
+        # 资源限制
+        self.assertEqual(host['Memory'], 1024 * 1024 * 1024)
+        self.assertEqual(host['MemorySwap'], 1024 * 1024 * 1024)
+        self.assertEqual(host['NanoCpus'], 2 * 10 ** 9)
+        self.assertEqual(host['PidsLimit'], 512)
+        self.assertEqual(host['SecurityOpt'], ['no-new-privileges:true'])
 
     def test_dev_cannot_start(self):
         self.engine.dev = True
@@ -83,55 +95,84 @@ class EngineTests(unittest.TestCase):
 
     def test_foreign_container_not_stopped(self):
         self.engine.config = {'owner': 'mine'}
-        with patch.object(self.engine, 'docker',
-                          side_effect=[NAME, json.dumps([{'Config': {'Labels': {LABEL: 'foreign'}}}])]) as docker:
+        foreign = json.dumps({'Config': {'Labels': {LABEL: 'foreign'}}}).encode('utf-8')
+        with patch('engine.docker_api', return_value=(200, foreign)) as api:
             with self.assertRaises(Error):
                 self.engine.stop()
-            self.assertEqual(docker.call_count, 2)
+        # 只读了一次容器详情就拒绝接管，没有发出任何写操作
+        self.assertEqual(api.call_count, 1)
+        self.assertEqual(api.call_args.args[0], 'GET')
+        self.assertIn('/containers/' + NAME + '/json', api.call_args.args[1])
 
     def test_stop_remembers_preference(self):
         self.engine.config = {'owner': 'mine', 'enabled': True}
         with patch.object(self.engine, 'owned', return_value={'State': {'Running': True}}), \
-                patch.object(self.engine, 'docker') as docker:
+                patch('engine.docker_api', return_value=(204, b'')) as api:
             self.engine.stop()
-            docker.assert_called_once_with('stop', '--time', '30', NAME)
+        self.assertEqual(api.call_count, 1)
+        self.assertEqual(api.call_args.args[0], 'POST')
+        self.assertEqual(api.call_args.args[1], '/containers/' + NAME + '/stop?t=30')
         self.assertFalse(json.loads(self.engine.cfgfile.read_text(encoding='utf-8'))['enabled'])
 
+    def _engine_config(self):
+        stat = (self.root / 'MiShare').stat()
+        return {'owner': 'owner-token', 'relative': 'MiShare',
+                'media': str(self.root / 'MiShare'), 'uid': 1000, 'gid': 1000,
+                'device': stat.st_dev, 'inode': stat.st_ino, 'enabled': True}
+
     def test_start_pulls_and_runs_the_container(self):
-        """回归：容器还不存在时，点「启动」必须真的 pull 镜像再 run 容器。
+        """回归：容器还不存在时，点「启动」必须真的 pull 镜像、再建并启动容器。
 
         安装插件本身不会部署 Docker（和 qB 下载一致），要等插件页完成初始化；
-        这条路径此前没有测试覆盖，出现过「装完没有任何 docker 操作」的疑问。
+        这条路径此前没有覆盖，出现过「装完没有任何 Docker 操作」的疑问。
         """
-        stat = (self.root / 'MiShare').stat()
-        self.engine.config = {'owner': 'owner-token', 'relative': 'MiShare',
-                              'media': str(self.root / 'MiShare'), 'uid': 1000, 'gid': 1000,
-                              'device': stat.st_dev, 'inode': stat.st_ino, 'enabled': True}
-        with patch.object(self.engine, 'docker', return_value='') as docker, \
+        self.engine.config = self._engine_config()
+        calls = []
+
+        def fake_api(method, path, body=None, timeout=30):
+            calls.append((method, path, body, timeout))
+            if path == '/containers/' + NAME + '/json':
+                return 404, b'{"message":"No such container"}'
+            if path.startswith('/images/create'):
+                return 200, b'{"status":"Downloaded newer image"}\n'
+            return 201, b'{}'
+
+        with patch('engine.docker_api', side_effect=fake_api), \
                 patch('engine.emby_info', return_value={}):
             self.engine.start()
 
-        calls = [call.args for call in docker.call_args_list]
-        self.assertEqual(('ps', '-a', '--filter', 'name=^/' + NAME + '$', '--format', '{{.Names}}'), calls[0])
-        self.assertEqual(('pull', IMAGE), calls[1])
-        run = calls[2]
-        self.assertEqual('run', run[0])
-        self.assertIn(IMAGE, run)
-        self.assertIn('0.0.0.0:' + str(PORT) + ':' + str(PORT), run)
-        self.assertIn('type=bind,src=' + str(self.root / 'MiShare') + ',dst=/mnt/media', run)
-        self.assertEqual(1800, docker.call_args_list[1].kwargs['timeout'])
+        # 顺序：查容器（404）→ pull → create → start
+        self.assertEqual(calls[0][0], 'GET')
+        self.assertEqual(calls[0][1], '/containers/' + NAME + '/json')
+
+        self.assertEqual(calls[1][0], 'POST')
+        self.assertEqual(calls[1][1].split('?')[0], '/images/create')
+        self.assertIn('fromImage', calls[1][1])
+        # 镜像很大，pull 的超时要放宽
+        self.assertEqual(calls[1][3], 1800)
+
+        self.assertEqual(calls[2][0], 'POST')
+        self.assertEqual(calls[2][1], '/containers/create?name=' + NAME)
+        cfg = calls[2][2]
+        self.assertEqual(cfg['Image'], IMAGE)
+        self.assertEqual(cfg['Labels'], {LABEL: 'owner-token'})
+        self.assertIn(str(self.root / 'MiShare'),
+                      [m['Source'] for m in cfg['HostConfig']['Mounts']])
+
+        self.assertEqual(calls[3][0], 'POST')
+        self.assertEqual(calls[3][1], '/containers/' + NAME + '/start')
+        self.assertEqual(len(calls), 4)
 
     def test_start_only_starts_an_existing_container(self):
-        """容器已存在时不能再 run 一次，只把它启动起来。"""
-        stat = (self.root / 'MiShare').stat()
-        self.engine.config = {'owner': 'owner-token', 'relative': 'MiShare',
-                              'media': str(self.root / 'MiShare'), 'uid': 1000, 'gid': 1000,
-                              'device': stat.st_dev, 'inode': stat.st_ino, 'enabled': True}
+        """容器已存在时不能再建一次，只把它启动起来。"""
+        self.engine.config = self._engine_config()
         with patch.object(self.engine, 'owned', return_value={'State': {'Running': False}}), \
-                patch.object(self.engine, 'docker') as docker, \
+                patch('engine.docker_api', return_value=(204, b'')) as api, \
                 patch('engine.emby_info', return_value={}):
             self.engine.start()
-        docker.assert_called_once_with('start', NAME)
+        self.assertEqual(api.call_count, 1)
+        self.assertEqual(api.call_args.args[0], 'POST')
+        self.assertEqual(api.call_args.args[1], '/containers/' + NAME + '/start')
 
     def test_service_stop_preserves_enabled(self):
         self.engine.config = {'enabled': True}
@@ -142,7 +183,14 @@ class EngineTests(unittest.TestCase):
     @unittest.skipUnless(os.name == 'posix', 'requires POSIX ownership semantics')
     def test_setup_keeps_media_owner_and_marks_enabled(self):
         before = (self.root / 'MiShare').stat()
-        with patch('engine.os.chown'), patch.object(self.engine, 'docker', return_value=''):
+
+        def fake_api(method, path, body=None, timeout=30):
+            if path == '/info':
+                return 200, b'{"Architecture":"aarch64"}'
+            # 同名容器不存在 → 可以继续初始化
+            return 404, b'{"message":"No such container"}'
+
+        with patch('engine.os.chown'), patch('engine.docker_api', side_effect=fake_api):
             self.engine.setup('MiShare')
         after = (self.root / 'MiShare').stat()
         self.assertEqual((before.st_uid, before.st_gid), (after.st_uid, after.st_gid))
@@ -153,7 +201,12 @@ class EngineTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == 'posix', 'requires POSIX ownership semantics')
     def test_setup_refuses_existing_container(self):
-        with patch.object(self.engine, 'docker', return_value=NAME + '\n'):
+        def fake_api(method, path, body=None, timeout=30):
+            if path == '/info':
+                return 200, b'{"Architecture":"aarch64"}'
+            return 200, json.dumps({'Config': {'Labels': {LABEL: 'other'}}}).encode('utf-8')
+
+        with patch('engine.docker_api', side_effect=fake_api):
             with self.assertRaises(Error):
                 self.engine.setup('MiShare')
 
