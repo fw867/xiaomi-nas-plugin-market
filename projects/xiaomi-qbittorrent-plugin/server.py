@@ -25,9 +25,13 @@ from engine import (Engine, Error, PORT, SESSION_TIMEOUT, qb_request, mutation,
 
 WEB = Path(__file__).resolve().parent / 'web'
 TTL = 86400
-# 自动登录失败后的冷却时间（秒）：下载列表是 3 秒轮询一次，不冷却会一直重试，
-# 反而把 qB 的失败计数顶上去触发临时封禁。
-AUTO_LOGIN_COOLDOWN = 60
+# 自动登录失败的冷却时间（秒）。下载列表是 3 秒轮询一次，不冷却会一直重试；
+# 而 qB 默认失败 5 次就按源 IP 封禁一小时，且**所有容器的来源 IP 都是
+# docker0 网关**，一旦被封，插件页和局域网直连的 WebUI 会一起登不上。
+AUTO_LOGIN_COOLDOWN = 300
+# 连续失败到这个次数就彻底停手，交给用户手动登录（成功登录会清零）。
+# 这样最坏情况下也不会把 qB 的失败计数顶到封禁阈值。
+AUTO_LOGIN_MAX_FAILURES = 3
 
 
 def lan_ip():
@@ -80,6 +84,7 @@ class Server(ThreadingHTTPServer):
         self.qb_cookie = ''
         self.qb_expiry = 0.0
         self.auto_login_at = 0.0
+        self.auto_login_failures = 0
         self.qb_lock = threading.Lock()
         self.qb_session_file = engine.data / 'qb-session.json'
         self.load_qb_session()
@@ -118,11 +123,11 @@ class Server(ThreadingHTTPServer):
             pass
 
     def login_qb(self, password):
-        """登录 qB 并保存会话；成功返回 True。"""
+        """登录 qB 并保存会话。返回 (是否成功, 失败原因)。"""
         try:
             code, body, header = qb_request('auth/login', {'username': 'admin', 'password': password})
         except Error:
-            return False
+            return False, 'qBittorrent 未运行或尚未就绪'
         # qB 5.x 登录成功是 204 + 空 body、cookie 名为 QBT_SID_<端口>；4.x 是
         # 200 + "Ok." + SID。按 4.x 严格校验会让密码正确也报失败。
         jar = SimpleCookie()
@@ -132,18 +137,26 @@ class Server(ThreadingHTTPServer):
             jar = SimpleCookie()
         name = next((n for n in ('QBT_SID_' + str(PORT), 'SID') if n in jar), '')
         sid = jar[name].value if name else ''
-        if code not in (200, 204) or not sid or not re.fullmatch(r'[A-Za-z0-9_-]{8,256}', sid):
-            return False
-        self.save_qb_session(name + '=' + sid)
-        return True
+        if code in (200, 204) and sid and re.fullmatch(r'[A-Za-z0-9_-]{8,256}', sid):
+            self.save_qb_session(name + '=' + sid)
+            return True, ''
+        # 失败原因要如实区分：被封禁时密码其实是对的，笼统说「密码错误」会让人
+        # 反复尝试，而每试一次都在给封禁续期。
+        if b'banned' in body:
+            return False, ('qBittorrent 已按 IP 封禁登录。容器与网页的来源地址相同，'
+                           '所以两者会一起被挡；等约一小时自行解除，或重启 qBittorrent 容器立即解除')
+        return False, '登录失败，密码错误或登录次数过多'
 
     def ensure_qb_session(self):
-        """会话失效时，用安装时记下的密码自动补登一次。
+        """会话失效时，用安装时记下的密码自动补登。
 
-        这样用户点「qB Web 控制台」就能直接进下载列表，不必再输密码。
+        必须限制重试：见 AUTO_LOGIN_MAX_FAILURES 的说明 —— 无节制重试会把
+        主机自己送进 qB 的封禁名单。
         """
         if self.qb_session():
             return True
+        if self.auto_login_failures >= AUTO_LOGIN_MAX_FAILURES:
+            return False
         password = self.engine.saved_credential()
         if not password:
             return False
@@ -151,7 +164,12 @@ class Server(ThreadingHTTPServer):
         if now - self.auto_login_at < AUTO_LOGIN_COOLDOWN:
             return False
         self.auto_login_at = now
-        return self.login_qb(password)
+        ok, _ = self.login_qb(password)
+        if ok:
+            self.auto_login_failures = 0
+            return True
+        self.auto_login_failures += 1
+        return False
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -315,9 +333,11 @@ class Handler(BaseHTTPRequestHandler):
                 password = data.get('password')
                 if not isinstance(password, str) or not 1 <= len(password) <= 200:
                     raise Error('请输入 qBittorrent 密码')
-                if not self.server.login_qb(password):
-                    raise Error('登录失败，密码错误或登录次数过多')
-                # 这次密码是对的，记下来供以后自动登录
+                ok, reason = self.server.login_qb(password)
+                if not ok:
+                    raise Error(reason)
+                # 这次密码是对的，记下来供以后自动登录，并重置自动登录的失败计数
+                self.server.auto_login_failures = 0
                 self.server.engine.save_credential(password)
             elif action == 'logout':
                 self.server.clear_qb_session()

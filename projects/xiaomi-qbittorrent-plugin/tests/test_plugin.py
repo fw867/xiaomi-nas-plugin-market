@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from engine import (Engine, Error, IMAGE, NAME, LABEL, PORT, BT_PORT, VERSION, confined, mutation,
                     password_hash, container_config, installed_version)
-from server import Server, accepted
+from server import Server, accepted, AUTO_LOGIN_MAX_FAILURES
 
 
 class EngineTests(unittest.TestCase):
@@ -448,6 +448,29 @@ class HTTPTests(unittest.TestCase):
         self.assertFalse(accepted(b'{"added_torrent_ids":[]}'))
         self.assertFalse(accepted(b'Fails.'))
         self.assertFalse(accepted(b''))
+
+    def test_auto_login_stops_after_repeated_failures(self):
+        """连续失败到上限就停手。
+
+        回归用例：qB 默认失败 5 次按源 IP 封禁一小时，而所有容器的来源 IP 都是
+        docker0 网关 —— 无节制的自动登录会把插件页和局域网 WebUI 一起挡在门外。
+        """
+        self.server.engine.config = {'relative': 'MiShare', 'download': '', 'device': 0, 'inode': 0}
+        self.server.engine.save_credential('wrong')
+        with patch.object(self.server.engine, 'owned', return_value={'State': {'Running': True}}), \
+                patch('server.qb_request', return_value=(401, b'Unauthorized', '')) as login:
+            for _ in range(10):
+                self.server.auto_login_at = 0        # 跳过冷却，单看次数上限
+                self.server.ensure_qb_session()
+        self.assertEqual(login.call_count, AUTO_LOGIN_MAX_FAILURES)
+
+    def test_login_after_ban_reports_the_real_reason(self):
+        """被封禁时密码其实是对的，必须如实说明，否则用户会反复试、给封禁续期。"""
+        banned = b'Your IP address has been banned after too many failed login attempts'
+        with patch('server.qb_request', return_value=(403, banned, '')):
+            code, body = self.request('POST', '/api/login', {'password': 'whatever'}, self.auth())
+        self.assertEqual(code, 400)
+        self.assertIn('封禁', json.loads(body)['error'])
 
     def test_expired_qb_cookie_cleared(self):
         """qB 说会话失效（401/403）时，插件要把本地会话一并清掉。"""
