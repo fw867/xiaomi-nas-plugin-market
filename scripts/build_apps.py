@@ -570,6 +570,18 @@ def load_existing_hashes() -> dict[str, str]:
         return {}
 
 
+def load_existing_generated_at() -> int:
+    """读取现有 apps.json 的 generatedAt，用于内容没变时原样保留。"""
+    if not APPS_JSON.is_file():
+        return 0
+    try:
+        data = json.loads(APPS_JSON.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return 0
+    value = data.get("generatedAt")
+    return value if isinstance(value, int) else 0
+
+
 def load_existing_apps() -> list[dict[str, Any]]:
     """读取现有 apps.json 中的应用条目（用于 --only 时保留其它条目）。"""
     if not APPS_JSON.is_file():
@@ -677,10 +689,23 @@ def main() -> int:
 
     repo = detect_repo_slug()
     branch = "main"
+    # 内容全都没变时不要刷新 generatedAt：否则 CI 每次运行都会产生一个只改
+    # 时间戳的提交（就是那个 "chore: auto-build apps"），本地后续改动随即与
+    # 远端分叉，于是每次推送前都得先 pull --rebase 一遍。
+    content_changed = (
+        len(apps) != len(existing_hashes)
+        or any(existing_hashes.get(entry["id"]) != entry["sha256"] for entry in apps)
+    )
+    previous_generated_at = load_existing_generated_at()
+    if content_changed or not previous_generated_at:
+        generated_at = int(time.time())
+    else:
+        generated_at = previous_generated_at
+        print("内容与已发布版本一致，保持 generatedAt 不变（不产生空提交）")
     apps_doc = {
         "schemaVersion": 2,
         "name": "小米智能存储应用商店",
-        "generatedAt": int(time.time()),
+        "generatedAt": generated_at,
         "repository": repo,
         "branch": branch,
         "store": {
