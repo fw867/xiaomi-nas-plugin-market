@@ -311,9 +311,9 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
     {
         "id": "transmission",
         "name": "Transmission 下载",
-        "version": "0.1.0",
-        "summary": "BT 下载，可设置下载目录、并发数、连接数与上传下载限速",
-        "description": "随包携带 aarch64 的 transmission-daemon（从 Entware 提取），不需要 Docker 或 Entware；内置 transmission-web-control 界面。",
+        "version": "0.2.0",
+        "summary": "Docker 版 BT 下载：可设置下载/配置/监控目录与 WebUI 账号；端口 9091、51413",
+        "description": "Docker 容器运行 LinuxServer Transmission；配置页可设置下载目录、配置文件夹目录、监控目录与 WebUI 用户名密码。需要 Docker。",
         "project": "xiaomi-transmission-plugin",
         "pluginId": 11006,
         "port": 18140,
@@ -321,18 +321,11 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
         "uiKey": "transmission",
         "iconSource": "web/assets/transmission.png",
         "iconName": "transmission.icon",
-        # bin/ lib/ licenses/ runtime-manifest.json 由 scripts/fetch_runtime.py 从
-        # Entware 提取；web/twc/ 由 scripts/fetch_web_control.py 取回；
-        # web/assets/transmission.png 是 Transmission 官方图标（MIT），随仓库存放。
-        # 三者都是打包输入，缺失时 build_bundle 会直接报 “Missing package source”。
         "runtime": {
             "server.py": "server.py",
-            "bin": "bin",
-            "lib": "lib",
-            "runtime-manifest.json": "runtime-manifest.json",
-            "licenses": "licenses",
-            "scripts": "scripts",
+            "engine.py": "engine.py",
             "web": "web",
+            "licenses": "licenses",
             "README.md": "README.md",
         },
         "ui": "web",
@@ -344,10 +337,10 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
         "tags": ["download"],
         "author": "community",
         "registry": {
-            "icon": "/icon/transmission.icon?v=1",
+            "icon": "/icon/transmission.icon?v=0.2.0",
             "frontend": {
                 "title": "Transmission 下载",
-                "desc": "下载任务管理",
+                "desc": "下载配置管理",
                 "type": "url",
                 "permission": ["admin"],
                 "dev_type": [1, 2, 3, 4],

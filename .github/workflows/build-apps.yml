@@ -85,6 +85,11 @@ jobs:
             (cd projects/xiaomi-qbittorrent-plugin && python3 scripts/build_ui.py) \
               || echo "qB UI build failed"
           fi
+          # transmission (Docker) UI
+          if [ -f projects/xiaomi-transmission-plugin/scripts/build_ui.py ]; then
+            (cd projects/xiaomi-transmission-plugin && python3 scripts/build_ui.py) \
+              || echo "transmission UI build failed"
+          fi
 
       - name: Build apps and apps.json
         env:

@@ -2,7 +2,7 @@
   "plugin": "transmission",
   "name": "Transmission 下载",
   "id": 11006,
-  "desc": "BT 下载，可设置下载目录、并发数、连接数与限速",
+  "desc": "Docker 版 BT 下载，可设置下载/配置/监控目录与 WebUI 账号",
   "tags": [
     "download"
   ],

@@ -1,61 +1,134 @@
 <!doctype html>
 <html lang="zh-CN">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+    <meta name="tr-session" content="__SESSION_TOKEN__">
+    <meta name="csrf-token" content="__CSRF_TOKEN__">
     <title>Transmission 下载</title>
-    <link rel="stylesheet" href="styles.css?v=5" />
-  </head>
-  <body>
-    <header class="topbar">
-      <button class="icon-button" id="backButton" aria-label="返回">‹</button>
-      <div class="brand"><strong>Transmission 下载</strong><small>下载任务与限速设置</small></div>
-      <button class="icon-button refresh" id="refreshButton" aria-label="刷新">↻</button>
-    </header>
+    <link rel="stylesheet" href="styles.css?v=0.2.0">
+</head>
 
-    <main>
-      <section class="card status-card">
-        <span class="status-dot" id="statusDot" aria-hidden="true"></span>
-        <div class="status-copy">
-          <strong id="statusText">读取中…</strong>
-          <small id="statusHint">正在查询 transmission-daemon 状态</small>
-          <small class="status-meta" id="statusMeta"></small>
-        </div>
-      </section>
+<body>
+    <div id="tr-app">
+        <header class="topbar">
+            <img class="app-icon" data-icon="transmission" alt="">
+            <div class="brand">
+                <strong>Transmission 下载</strong>
+                <small>Docker</small>
+            </div>
+            <button id="refresh" class="icon-button" title="刷新" aria-label="刷新"><img data-icon="reload" alt=""></button>
+        </header>
 
-      <section class="actions">
-        <button class="btn primary" id="startBtn">启动</button>
-        <button class="btn ghost" id="restartBtn">重启</button>
-        <button class="btn danger" id="stopBtn">停止</button>
-      </section>
+        <main>
+            <section class="card status-card">
+                <span class="status-dot" id="statusDot" aria-hidden="true"></span>
+                <div class="status-copy">
+                    <strong id="serviceState" role="status">正在连接</strong>
+                    <small id="serviceInfo"></small>
+                </div>
+            </section>
 
-      <section class="card web-control" id="webControlCard" hidden>
-        <div class="row">
-          <div class="row-copy">
-            <strong>Transmission Web 界面</strong>
-            <small>用 transmission-web-control 完整管理任务、种子与 Tracker</small>
-          </div>
-          <a class="btn link" id="webControlLink" href="twc/index.html" target="_blank" rel="noopener">打开</a>
-        </div>
-      </section>
+            <p id="error" class="alert" role="alert" hidden></p>
 
-      <section class="card missing" id="missingCard" hidden>
-        <div class="row-copy">
-          <strong>运行文件未就绪</strong>
-          <small id="missingHint"></small>
-        </div>
-      </section>
+            <section id="setup" class="card" hidden>
+                <h2>初始化 Transmission</h2>
+                <form id="setupForm" autocomplete="off">
+                    <div class="field">
+                        <span class="field-label">下载目录</span>
+                        <div class="field-row">
+                            <input name="download" id="downloadPath" readonly required placeholder="选择目录">
+                            <button type="button" class="btn choose" data-target="download">选择</button>
+                        </div>
+                    </div>
+                    <div class="field">
+                        <span class="field-label">配置文件夹目录</span>
+                        <div class="field-row">
+                            <input name="config" id="configPath" readonly required placeholder="选择目录">
+                            <button type="button" class="btn choose" data-target="config">选择</button>
+                        </div>
+                    </div>
+                    <div class="field">
+                        <span class="field-label">监控目录</span>
+                        <div class="field-row">
+                            <input name="watch" id="watchPath" readonly required placeholder="选择目录">
+                            <button type="button" class="btn choose" data-target="watch">选择</button>
+                        </div>
+                    </div>
+                    <div class="field">
+                        <span class="field-label">WebUI 用户名</span>
+                        <input name="username" type="text" required maxlength="64" autocomplete="username" placeholder="例如 admin">
+                    </div>
+                    <div class="field">
+                        <span class="field-label">WebUI 密码</span>
+                        <input name="password" type="password" required minlength="8" maxlength="200" autocomplete="new-password" placeholder="至少 8 位">
+                    </div>
+                    <details class="fold">
+                        <summary>目录和账号会怎么被使用</summary>
+                        <p>三个目录分别挂载为容器内的 <code>/downloads</code>、<code>/config</code>、<code>/watch</code>，必须属于同一 NAS 用户且互不相同。WebUI 账号密码通过镜像环境变量写入，端口映射为 TCP 9091 与 TCP/UDP 51413。首次启动会拉取 LinuxServer Transmission 镜像。</p>
+                    </details>
+                    <label class="check">
+                        <input type="checkbox" required>
+                        <span>我同意启动 Transmission，并仅下载有权获取的内容</span>
+                    </label>
+                    <button type="submit" class="btn primary block">安装并启动</button>
+                </form>
+            </section>
 
-      <form id="settingsForm" autocomplete="off">
-        <div id="groups"></div>
-        <section class="actions actions-save">
-          <button class="btn primary" id="saveBtn" type="submit">保存并应用</button>
-          <button class="btn ghost" id="reloadBtn" type="button">放弃修改</button>
-        </section>
-      </form>
-    </main>
+            <section class="card" id="serviceActions" hidden>
+                <div class="paths">
+                    <div><span class="muted">下载目录</span><strong id="downloadDir">—</strong></div>
+                    <div><span class="muted">配置目录</span><strong id="configDir">—</strong></div>
+                    <div><span class="muted">监控目录</span><strong id="watchDir">—</strong></div>
+                    <div><span class="muted">WebUI 用户</span><strong id="username">—</strong></div>
+                </div>
+                <div class="service-row">
+                    <span class="muted" id="peerPortHint">WebUI 9091 · BT 51413</span>
+                    <button id="toggleService" class="btn">启动服务</button>
+                </div>
+            </section>
 
-    <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="app.js?v=4" defer></script>
-  </body>
+            <section class="card" id="access" hidden>
+                <h2>Transmission WebUI</h2>
+                <div class="address-row">
+                    <code id="address">—</code>
+                    <button id="copyAddress" type="button" class="btn small">复制</button>
+                </div>
+                <p class="muted">局域网设备可直接打开该地址，使用安装时设置的 WebUI 用户名和密码登录。</p>
+            </section>
+
+            <details class="card fold fold-card" id="notes">
+                <summary>说明与限制</summary>
+                <ul>
+                    <li>容器 <code>xiaomi-plugin-transmission</code> 只挂载所选的配置、下载、监控目录，不挂载 Docker socket，不使用 privileged 或 host 网络。</li>
+                    <li>WebUI 端口 9091（TCP）对局域网开放；BT 入站端口 51413（TCP/UDP）已映射，公网入站仍需在路由器转发。</li>
+                    <li>停止或卸载插件只停止容器，配置与已下载文件都会保留。</li>
+                    <li>旧版原生 Transmission 插件的配置不会自动迁移，升级后需重新初始化。</li>
+                </ul>
+            </details>
+
+            <footer>Transmission 下载 · __PLUGIN_VERSION__</footer>
+        </main>
+
+        <dialog id="browse">
+            <div class="dialog-head">
+                <h2>选择目录</h2>
+                <button class="dialog-close" data-close="browse" aria-label="关闭"><img data-icon="close" alt=""></button>
+            </div>
+            <div class="field-row">
+                <button class="btn small" id="up" type="button" aria-label="上一级" title="上一级">上一级</button>
+                <code id="browsePath">用户存储根目录</code>
+            </div>
+            <div id="folders"></div>
+            <div class="dialog-actions">
+                <button id="selectFolder" class="btn primary" type="button">选择此目录</button>
+            </div>
+        </dialog>
+
+        <div id="toast" role="status" hidden></div>
+    </div>
+    <script src="app.bundle.js?v=0.2.0"></script>
+</body>
+
 </html>

@@ -1,29 +1,28 @@
 [Unit]
-Description=Xiaomi Transmission Plugin
-After=network.target nginx.service
-Wants=network-online.target
+Description=Xiaomi Transmission Docker Plugin
+After=network.target docker.service nginx.service
+Requires=docker.service
 
 [Service]
 Type=simple
 WorkingDirectory=/data/plugin/transmission/current
-Environment=HOST=127.0.0.1
-Environment=PORT=18140
-Environment=WEB_DIR=/data/plugin/transmission/current/web
-Environment=RUNTIME_DIR=/data/plugin/transmission/current
+Environment=NAS_USER_ID=__NAS_USER_ID__
 Environment=DATA_DIR=/data/plugin/transmission/data
-Environment=RPC_PORT=9091
 Environment=LOCAL_ROOT=/nas/pool0/__NAS_USER_ID__/data
+Environment=PORT=18140
 ExecStart=/usr/bin/python3 /data/plugin/transmission/current/server.py
-ExecStopPost=-/bin/sh -c 'kill -TERM "$(cat /data/plugin/transmission/data/transmission-daemon.pid 2>/dev/null)" 2>/dev/null || true'
+ExecStopPost=/usr/bin/python3 /data/plugin/transmission/current/server.py --stop-owned
 Restart=on-failure
 RestartSec=5
-KillMode=control-group
-TimeoutStopSec=40
-# 下载文件默认 0644，让设备上的文件管理能正常读取
-# （daemon 自己还会按 settings.json 的 umask 再设一次，默认 022）。
-UMask=0022
+UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+MemoryMax=160M
+TasksMax=32
+TimeoutStopSec=35
+KillMode=control-group
 
 [Install]
 WantedBy=multi-user.target

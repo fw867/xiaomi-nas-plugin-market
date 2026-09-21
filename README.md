@@ -71,7 +71,7 @@ NAS_USER_ID=u123456 bash -c "$(curl -fsSL https://raw.githubusercontent.com/fw86
 | [阿里云盘备份](projects/xiaomi-aliyundrive-sync-plugin) | 0.1.0 | 需要自己获批的阿里云盘应用，再扫码授权 |
 | [WebDAV 文件桥](projects/xiaomi-webdav-plugin) | 0.2.0-rc5 | 测试版；多账号、多目录授权、远程单向备份 |
 | [qB 下载](projects/xiaomi-qbittorrent-plugin) | 0.1.2 | 磁力/种子下载、限速；需要 Docker |
-| [Transmission 下载](projects/xiaomi-transmission-plugin) | 0.1.0 | BT 下载、限速与并发设置；随包携带 transmission-daemon，不需要 Docker |
+| [Transmission 下载](projects/xiaomi-transmission-plugin) | 0.2.0 | Docker 版 BT：可设下载/配置/监控目录与 WebUI 账号；端口 9091、51413；需要 Docker |
 | [Emby 媒体服务器](projects/xiaomi-emby-plugin) | 0.1.0 | Emby 官方镜像的受限容器；媒体目录读写挂载，端口 8096 对局域网开放；需要 Docker |
 | 夸克网盘 | 未发布 | 目前没有可用实现 |
 
