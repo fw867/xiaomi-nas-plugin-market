@@ -73,6 +73,7 @@ NAS_USER_ID=u123456 bash -c "$(curl -fsSL https://raw.githubusercontent.com/fw86
 | [qB 下载](projects/xiaomi-qbittorrent-plugin) | 0.1.2 | 磁力/种子下载、限速；需要 Docker |
 | [Transmission 下载](projects/xiaomi-transmission-plugin) | 0.2.0 | Docker 版 BT：可设下载/配置/监控目录与 WebUI 账号；端口 9091、51413；需要 Docker |
 | [Emby 媒体服务器](projects/xiaomi-emby-plugin) | 0.1.0 | Emby 官方镜像的受限容器；媒体目录读写挂载，端口 8096 对局域网开放；需要 Docker |
+| [DPanel 容器管理](projects/xiaomi-dpanel-plugin) | 0.1.0 | 轻量 Docker 面板；挂载 docker.sock 与配置目录，端口 8807；需要 Docker |
 | 夸克网盘 | 未发布 | 目前没有可用实现 |
 
 ## 插件如何分发

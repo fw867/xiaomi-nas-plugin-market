@@ -1,0 +1,20 @@
+#!/bin/sh
+# 小米插件规范要求的控制脚本：plugincenter boot 时会执行 enable。
+# 本插件的服务启停由 systemd 负责（xiaomi-dpanel.service）。
+
+log() {
+    logger -t "plugin" "[dpanel] control: $*"
+}
+
+log "do $1"
+
+case "$1" in
+    enable)
+        systemctl start xiaomi-dpanel.service 2>/dev/null
+        ;;
+    disable)
+        systemctl stop xiaomi-dpanel.service 2>/dev/null
+        ;;
+esac
+
+exit 0

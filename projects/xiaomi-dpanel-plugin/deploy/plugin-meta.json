@@ -1,0 +1,16 @@
+{
+  "plugin": "dpanel",
+  "name": "DPanel 容器管理",
+  "id": 11008,
+  "desc": "轻量 Docker 管理面板，容器/镜像/Compose 可视化管理",
+  "tags": [
+    "tool",
+    "docker"
+  ],
+  "developer": "community",
+  "publisher": "community",
+  "system": false,
+  "type": "standard",
+  "service": "xiaomi-dpanel.service",
+  "uiKey": "dpanel"
+}

@@ -16,3 +16,7 @@
 # Emby 图标与容器
 
 `projects/xiaomi-emby-plugin` 不随包分发 Emby 二进制，使用者确认后由插件从 Docker Hub 拉取官方镜像 `emby/embyserver:4.10.0.40`（多架构 manifest digest `sha256:3aafff933d3f28d23ed0bc201022abe71c0aa80deb17177566c726b9bbc686c6`）。Emby 为第三方专有软件，其许可与商标归 Emby 官方所有，本插件不代表官方背书，也不包含 Emby Premiere 相关授权。插件图标来自 Icon-Icons 的 Emby 图标（`emby_macos_bigsur_icon_190203.png`），仅用于识别兼容软件。
+
+# DPanel 图标与容器
+
+`projects/xiaomi-dpanel-plugin` 不随包分发 DPanel 二进制，使用者确认后由插件拉取 `dpanel/dpanel:lite`（digest `sha256:befa4221aeebbeac9148cceca06f8b474f412b2de68b5f3968a68e04a0e632c1`）。DPanel 名称与商标归其开发团队所有，本插件不代表官方背书。插件图标取自 DPanel CDN（`https://cdn.w7.cc/dpanel/dpanel-logo-small.png`），仅用于识别兼容软件。DPanel 面板需要访问 Docker socket 才能管理容器，请使用者知悉相关权限风险。
