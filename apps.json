@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "name": "小米智能存储应用商店",
-  "generatedAt": 1789839140,
+  "generatedAt": 1789966366,
   "repository": "fw867/xiaomi-nas-plugin-market",
   "branch": "main",
   "store": {
@@ -89,12 +89,12 @@
     {
       "id": "qbittorrent",
       "name": "qB 下载",
-      "version": "0.1.6",
+      "version": "0.1.7",
       "summary": "磁力与种子下载、暂停继续和限速；首次启动需拉取独立 Docker 镜像",
       "description": "磁力/种子下载、进度、暂停继续、限速。需要 Docker。",
-      "bundle": "apps/qbittorrent-0.1.6.zip",
-      "sha256": "328c667ce1a6f9da3ae6461a37e9937e7d24faebb0c760b3305d5a6281e59d84",
-      "size": 336916,
+      "bundle": "apps/qbittorrent-0.1.7.zip",
+      "sha256": "c89aeadd7337662b775204e9e560d36b7bc164bbf14d26278f755468d48265e6",
+      "size": 337467,
       "icon": "apps/icons/qbittorrent.png",
       "channel": "stable",
       "tags": [
@@ -126,12 +126,12 @@
     {
       "id": "transmission",
       "name": "Transmission 下载",
-      "version": "0.1.11",
-      "summary": "BT 下载，可设置下载目录、并发数、连接数与上传下载限速",
-      "description": "随包携带 aarch64 的 transmission-daemon（从 Entware 提取），不需要 Docker 或 Entware；内置 transmission-web-control 界面。",
-      "bundle": "apps/transmission-0.1.11.zip",
-      "sha256": "04152211644b3f565d6eaf9cc284443e85656efb4c6249fc5cbc9c1df4204483",
-      "size": 16149439,
+      "version": "0.1.12",
+      "summary": "Docker 版 BT 下载：可设置下载/配置/监控目录与 WebUI 账号；端口 9091、51413",
+      "description": "Docker 容器运行 LinuxServer Transmission；配置页可设置下载目录、配置文件夹目录、监控目录与 WebUI 用户名密码。需要 Docker。",
+      "bundle": "apps/transmission-0.1.12.zip",
+      "sha256": "e9005f92535b2ca921a36aeef3291f0f22ccbbf5bb58a6760e00dd7a4d54a39e",
+      "size": 813058,
       "icon": "apps/icons/transmission.png",
       "channel": "stable",
       "tags": [
