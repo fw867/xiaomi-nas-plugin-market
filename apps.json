@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "name": "小米智能存储应用商店",
-  "generatedAt": 1789967921,
+  "generatedAt": 1789975863,
   "repository": "fw867/xiaomi-nas-plugin-market",
   "branch": "main",
   "store": {
@@ -177,6 +177,24 @@
       "author": "community",
       "pluginId": 11008,
       "port": 18160
+    },
+    {
+      "id": "jellyfin",
+      "name": "Jellyfin 媒体服务器",
+      "version": "0.1.0",
+      "summary": "开源媒体服务器；配置/缓存/媒体持久化，HTTP 端口 8097 对局域网开放",
+      "description": "官方 Jellyfin 镜像的受限容器；媒体目录、配置目录与缓存持久化，端口映射 8097/8920/7359，可与 Emby 同时安装。需要 Docker。",
+      "bundle": "apps/jellyfin-0.1.0.zip",
+      "sha256": "0759fce159a35e512504158b1577cde394cb6d6a8671190e308ada59c45958cd",
+      "size": 130824,
+      "icon": "apps/icons/jellyfin.png",
+      "channel": "stable",
+      "tags": [
+        "media"
+      ],
+      "author": "community",
+      "pluginId": 11009,
+      "port": 18170
     }
   ]
 }
