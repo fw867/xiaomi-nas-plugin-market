@@ -149,9 +149,15 @@ def container_config(config):
         ],
         'Labels': {LABEL: config['owner']},
         'HostConfig': {
-            'RestartPolicy': {'Name': 'no'},
-            'Memory': 1024 * 1024 * 1024,
-            'MemorySwap': 1024 * 1024 * 1024,
+            # 失败后自动重启，但限次：Emby 扫描媒体库时内存会明显上涨，撞到
+            # 限额会被 cgroup 的 oom-killer 杀掉。限次可以避免在持续 OOM 时
+            # 变成无限重启循环。
+            'RestartPolicy': {'Name': 'on-failure', 'MaximumRetryCount': 3},
+            # 原来卡在 1 GiB 太紧：实测 EmbyServer 的匿名内存会涨到 ~980 MB，
+            # 一撞线就被杀，而容器日志只留一句 "Out of memory."、ExitCode 还是 0，
+            # 表面上像「自己关了」。宿主机有 3.9 GiB，放宽到 2 GiB。
+            'Memory': 2 * 1024 * 1024 * 1024,
+            'MemorySwap': 2 * 1024 * 1024 * 1024,
             'NanoCpus': 2 * 10 ** 9,
             'PidsLimit': 512,
             'SecurityOpt': ['no-new-privileges:true'],

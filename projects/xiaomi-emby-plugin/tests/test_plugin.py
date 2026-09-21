@@ -55,7 +55,8 @@ class EngineTests(unittest.TestCase):
         # 端口必须在顶层 ExposedPorts 里一起声明：只给 PortBindings 时，
         # Engine API 会静默忽略镜像 EXPOSE 里没有的端口，映射不生效。
         self.assertEqual(cfg['ExposedPorts'], {str(PORT) + '/tcp': {}})
-        self.assertEqual(host['RestartPolicy'], {'Name': 'no'})
+        # 失败后自动重启但限次，避免持续 OOM 时变成无限重启循环
+        self.assertEqual(host['RestartPolicy'], {'Name': 'on-failure', 'MaximumRetryCount': 3})
         # 不能提权、不能改网络模式、不挂 docker socket 或设备
         self.assertNotIn('Privileged', host)
         self.assertNotIn('NetworkMode', host)
@@ -68,8 +69,9 @@ class EngineTests(unittest.TestCase):
         # 媒体目录必须可写：Emby 需要把元数据和字幕写回媒体文件夹
         self.assertFalse(any(m.get('ReadOnly') for m in host['Mounts']))
         # 资源限制
-        self.assertEqual(host['Memory'], 1024 * 1024 * 1024)
-        self.assertEqual(host['MemorySwap'], 1024 * 1024 * 1024)
+        # 2 GiB：1 GiB 时 Emby 扫描媒体库会被 cgroup OOM 杀掉
+        self.assertEqual(host['Memory'], 2 * 1024 * 1024 * 1024)
+        self.assertEqual(host['MemorySwap'], 2 * 1024 * 1024 * 1024)
         self.assertEqual(host['NanoCpus'], 2 * 10 ** 9)
         self.assertEqual(host['PidsLimit'], 512)
         self.assertEqual(host['SecurityOpt'], ['no-new-privileges:true'])
