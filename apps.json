@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "name": "小米智能存储应用商店",
-  "generatedAt": 1789966366,
+  "generatedAt": 1789967921,
   "repository": "fw867/xiaomi-nas-plugin-market",
   "branch": "main",
   "store": {
@@ -158,6 +158,25 @@
       "author": "community",
       "pluginId": 11007,
       "port": 18150
+    },
+    {
+      "id": "dpanel",
+      "name": "DPanel 容器管理",
+      "version": "0.1.0",
+      "summary": "轻量 Docker 管理面板；可视化管理容器、镜像与 Compose；需要 Docker",
+      "description": "DPanel Lite 镜像的受限容器；挂载 Docker socket 与可选配置目录，面板端口 8807 对局域网开放。",
+      "bundle": "apps/dpanel-0.1.0.zip",
+      "sha256": "fb21d64c6fec44495e96fb6cb8e97503dcf6c34e9a3c6db0da61065f96394180",
+      "size": 104730,
+      "icon": "apps/icons/dpanel.png",
+      "channel": "stable",
+      "tags": [
+        "tool",
+        "docker"
+      ],
+      "author": "community",
+      "pluginId": 11008,
+      "port": 18160
     }
   ]
 }
