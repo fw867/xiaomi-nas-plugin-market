@@ -1,0 +1,15 @@
+{
+  "plugin": "jellyfin",
+  "name": "Jellyfin 媒体服务器",
+  "id": 11009,
+  "desc": "开源媒体服务器；配置/缓存/媒体持久化，端口 8097 对局域网开放",
+  "tags": [
+    "media"
+  ],
+  "developer": "community",
+  "publisher": "community",
+  "system": false,
+  "type": "standard",
+  "service": "xiaomi-jellyfin.service",
+  "uiKey": "jellyfin"
+}

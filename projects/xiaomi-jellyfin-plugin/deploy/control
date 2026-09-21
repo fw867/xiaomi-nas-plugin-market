@@ -1,0 +1,20 @@
+#!/bin/sh
+# 小米插件规范：plugincenter boot 时执行 enable。
+# 实际启停由 systemd（xiaomi-jellyfin.service）负责。
+
+log() {
+    logger -t "plugin" "[jellyfin] control: $*"
+}
+
+log "do $1"
+
+case "$1" in
+    enable)
+        systemctl start xiaomi-jellyfin.service 2>/dev/null
+        ;;
+    disable)
+        systemctl stop xiaomi-jellyfin.service 2>/dev/null
+        ;;
+esac
+
+exit 0

@@ -20,3 +20,7 @@
 # DPanel 图标与容器
 
 `projects/xiaomi-dpanel-plugin` 不随包分发 DPanel 二进制，使用者确认后由插件拉取 `dpanel/dpanel:lite`（digest `sha256:befa4221aeebbeac9148cceca06f8b474f412b2de68b5f3968a68e04a0e632c1`）。DPanel 名称与商标归其开发团队所有，本插件不代表官方背书。插件图标取自 DPanel CDN（`https://cdn.w7.cc/dpanel/dpanel-logo-small.png`），仅用于识别兼容软件。DPanel 面板需要访问 Docker socket 才能管理容器，请使用者知悉相关权限风险。
+
+# Jellyfin 图标与容器
+
+`projects/xiaomi-jellyfin-plugin` 不随包分发 Jellyfin 二进制，使用者确认后由插件拉取官方镜像 `jellyfin/jellyfin:latest`（digest `sha256:78d3ea1207d1322471fcac39a614f004f2ccf7e878f95ab2977d752f07e4dd7e`）。Jellyfin 为开源项目（GPL），名称与商标归 Jellyfin 项目所有，本插件不代表官方背书。插件图标取自 Jellyfin 官方 GitHub 组织头像，仅用于识别兼容软件。
