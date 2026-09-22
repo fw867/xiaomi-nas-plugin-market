@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "name": "小米智能存储应用商店",
-  "generatedAt": 1790070022,
+  "generatedAt": 1790070356,
   "repository": "fw867/xiaomi-nas-plugin-market",
   "branch": "main",
   "store": {
@@ -199,12 +199,12 @@
     {
       "id": "fwclient",
       "name": "内网穿透",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "summary": "fwclient 内网穿透客户端；可配服务器域名与令牌，显示版本并支持升级",
       "description": "随包携带 fwclient-linux-arm64。优先以守护进程运行 fwclient -s <域名> -t <令牌> -d；UI 显示当前版本，支持 -u 升级。",
-      "bundle": "apps/fwclient-0.1.0.zip",
-      "sha256": "200608d32110e511641e86c3064909a4571a7823052152090cdbc89ef6073007",
-      "size": 2445853,
+      "bundle": "apps/fwclient-0.1.1.zip",
+      "sha256": "1840eaafec90ff0828b2e6b94eedee20d86ab4a5a551f98cd1aa123c5dbaf98d",
+      "size": 5991350,
       "icon": "apps/icons/fwclient.png",
       "channel": "stable",
       "tags": [
