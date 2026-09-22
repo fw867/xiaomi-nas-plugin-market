@@ -108,7 +108,9 @@ async function refresh() {
     const log = await call('/log');
     const text = log.log || '';
     const lines = text.split('\n').filter((line) => line.trim());
-    $('logBox').textContent = lines.length ? text : '（暂无）';
+    // 倒序：最新日志在最上面
+    const ordered = lines.slice().reverse().join('\n');
+    $('logBox').textContent = lines.length ? ordered : '（暂无）';
     $('logCount').textContent = lines.length ? lines.length + ' 行' : '暂无日志';
   } catch (e) {
     showError(e.message);
@@ -169,6 +171,8 @@ $('upgrade').onclick = async () => {
   try {
     await act('/service/upgrade');
     toast('已检查并升级');
+    if (state) state.error = '';
+    showError('');
   } catch (e) {
     toast(e.message);
   } finally {
