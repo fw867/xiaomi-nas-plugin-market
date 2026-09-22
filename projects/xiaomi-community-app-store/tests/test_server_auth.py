@@ -218,6 +218,21 @@ class ServerAuthTests(unittest.TestCase):
                 self.assertEqual(200, status)
         self.assertEqual([False, True], calls)
 
+    def test_frontend_uses_script_based_absolute_urls(self) -> None:
+        """Windows 客户端 location 可能带 /D:/ 盘符；API 必须用 app.js 基址拼绝对 URL。"""
+        from pathlib import Path
+
+        script = (Path(__file__).resolve().parents[1] / "web" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("function pluginAssetBase()", script)
+        self.assertIn("const assetBase = pluginAssetBase()", script)
+        self.assertIn("assetUrl(`api/${name}${query}`)", script)
+        self.assertIn("fetch(assetUrl('api/status')", script)
+        # 禁止再用相对路径打 API（会被错误基址解析成 /D:/plugin/...）
+        self.assertNotIn("fetch('api/status'", script)
+        self.assertNotIn("fetch(`api/${action}`", script)
+        # 非 JSON 错误不能带 ok，否则 fetchApi 不会回退到后续候选路径
+        self.assertIn("不要带 ok 字段", script)
+
 
 if __name__ == "__main__":
     unittest.main()

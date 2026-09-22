@@ -147,12 +147,37 @@ async function readJson(response) {
     if (response.status === 401) return { ok: false, error: '请从小米智能存储客户端重新打开插件市场' };
     const type = (response.headers.get('content-type') || '').split(';')[0].trim();
     const snippet = text.slice(0, 80).replace(/\s+/g, ' ').trim();
+    // 不要带 ok 字段：fetchApi 靠 'ok' in payload 判断服务端 JSON，
+    // 否则第一个候选 URL 的 HTML 400 会短路掉后续回退。
     return {
-      ok: false,
       error: `服务返回了非 JSON 响应（HTTP ${response.status} ${type || 'unknown'}）：${snippet || '（空）'}`,
     };
   }
 }
+
+// Windows 客户端 / micro-app 里 location 可能带盘符（/D:/plugin/...）或指向主壳，
+// 相对 fetch 会打到 nginx 400。与 aliyundrive/115 插件一致：以 app.js 的
+// script URL 为绝对基址，不依赖 location。
+function pluginAssetBase() {
+  const loadedScript = document.currentScript?.src
+    || [...document.scripts].map((script) => script.src).find((src) => /\/app\.js(?:$|\?)/.test(src));
+  if (loadedScript) return new URL('./', loadedScript).href;
+
+  const microAppRoute = window.__MICRO_APP_BASE_ROUTE__;
+  if (typeof microAppRoute === 'string' && microAppRoute) {
+    const cleaned = microAppRoute.replace(/^\/[A-Za-z]:/, '') || microAppRoute;
+    const normalized = cleaned.endsWith('/') ? cleaned : `${cleaned}/`;
+    if (normalized.startsWith('/')) return new URL(normalized, window.location.origin).href;
+    return new URL(normalized, window.location.href).href;
+  }
+
+  const pathname = window.location.pathname.replace(/^\/[A-Za-z]:/, '');
+  const dir = pathname.replace(/[^/]*$/, '') || '/';
+  return new URL(dir, window.location.origin).href;
+}
+
+const assetBase = pluginAssetBase();
+const assetUrl = (path) => new URL(path, assetBase).href;
 
 function sessionHeaders(extra, includeSession) {
   // 空值头会被部分代理/nginx 判成 400 Bad Request，一律不要发。
@@ -167,14 +192,14 @@ function sessionHeaders(extra, includeSession) {
 async function fetchApi(path, init) {
   // 本地代理可能把 /api/* 当成前端路由回退到 index.html。
   // 依次尝试：标准 API → 静态扩展名 → 页面路径 + ?api=；并区分是否带会话头。
+  // 一律用 assetUrl 生成绝对地址，避开 location 上的盘符/micro-app 基址错误。
   const [name, qs] = String(path).split('?');
   const query = qs ? `?${qs}` : '';
-  const dir = location.pathname.replace(/[^/]*$/, '');
   const urls = [
-    `api/${name}${query}`,
-    `${dir}catalog.json${query}`,
-    `${dir}index.html?api=${encodeURIComponent(name)}${query ? `&${qs}` : ''}`,
-    `${dir}catalog.js${query}`,
+    assetUrl(`api/${name}${query}`),
+    assetUrl(`catalog.json${query}`),
+    assetUrl(`index.html?api=${encodeURIComponent(name)}${query ? `&${qs}` : ''}`),
+    assetUrl(`catalog.js${query}`),
   ];
   let lastError = new Error('请求失败');
   for (const url of urls) {
@@ -208,13 +233,12 @@ async function fetchApi(path, init) {
 
 function loadCatalogScript() {
   return new Promise((resolve, reject) => {
-    const dir = location.pathname.replace(/[^/]*$/, '');
     const script = document.createElement('script');
     const timeout = setTimeout(() => {
       script.remove();
       reject(new Error('catalog.js 加载超时'));
     }, 8000);
-    script.src = dir + 'catalog.js?ts=' + Date.now();
+    script.src = assetUrl(`catalog.js?ts=${Date.now()}`);
     script.onload = () => {
       clearTimeout(timeout);
       script.remove();
@@ -263,7 +287,7 @@ async function loadStoreStatus() {
   const releaseLink = document.getElementById('releaseLink');
 
   try {
-    const res = await fetch('api/status', {
+    const res = await fetch(assetUrl('api/status'), {
       credentials: 'same-origin',
       cache: 'no-store',
       headers: sessionHeaders(),
@@ -284,7 +308,7 @@ async function loadStoreStatus() {
   releaseLink.hidden = true;
 
   try {
-    const res = await fetch('api/update-check', {
+    const res = await fetch(assetUrl('api/update-check'), {
       credentials: 'same-origin',
       cache: 'no-store',
       headers: sessionHeaders(),
@@ -329,7 +353,7 @@ async function selfUpdate() {
   btn.textContent = '更新中…';
   noteEl.textContent = '正在下载并安装新版本，请勿关闭页面…';
   try {
-    const res = await fetch('api/self-update', {
+    const res = await fetch(assetUrl('api/self-update'), {
       method: 'POST',
       credentials: 'same-origin',
       headers: sessionHeaders({
@@ -371,7 +395,7 @@ async function mutate(action, item, actions) {
   buttons.forEach((button) => { button.disabled = true; });
   if (clicked) clicked.textContent = action === 'install' ? '处理中…' : '卸载中…';
   try {
-    const response = await fetch(`api/${action}`, {
+    const response = await fetch(assetUrl(`api/${action}`), {
       method: 'POST',
       credentials: 'same-origin',
       headers: sessionHeaders({
