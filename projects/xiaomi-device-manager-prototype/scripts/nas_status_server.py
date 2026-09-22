@@ -9,7 +9,7 @@ import time
 from datetime import datetime
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo
 
 PORT = int(os.environ.get("PORT", "18080"))
@@ -400,9 +400,7 @@ def load_docker_stats():
     return stats_by_name
 
 
-def load_status():
-    live = load_live_metrics()
-    hostname = socket.gethostname()
+def load_services():
     docker_active = run(["systemctl", "is-active", "docker.service"]) == "active"
     docker_version = run([DOCKER_BIN, "version", "--format", "{{.Server.Version}}"])
     containers = []
@@ -444,21 +442,114 @@ def load_status():
         )
 
     return {
+        "docker": {
+            "active": docker_active,
+            "version": docker_version,
+            "running": len(containers),
+        },
+        "containers": containers,
+    }
+
+
+def load_device_info():
+    """CPU 型号、开机时间、网卡 IP —— 顶部设备大卡片用。"""
+    cpu_model = ""
+    hardware = ""
+    for line in read_text("/proc/cpuinfo").splitlines():
+        if line.lower().startswith("model name") and not cpu_model:
+            cpu_model = line.split(":", 1)[1].strip()
+        elif line.lower().startswith("hardware") and not hardware:
+            hardware = line.split(":", 1)[1].strip()
+    cpu_label = cpu_model or hardware or f"{os.cpu_count() or 0} 核处理器"
+
+    uptime_seconds = 0.0
+    raw_uptime = (read_text("/proc/uptime") or "0").split()
+    if raw_uptime:
+        try:
+            uptime_seconds = float(raw_uptime[0])
+        except ValueError:
+            uptime_seconds = 0.0
+
+    ips = []
+    try:
+        output = run(["ip", "-4", "-o", "addr", "show", "scope", "global"], timeout=3)
+        for line in output.splitlines():
+            parts = line.split()
+            if len(parts) >= 4 and parts[2] == "inet":
+                iface = parts[1].rstrip(":")
+                addr = parts[3].split("/", 1)[0]
+                ips.append({"iface": iface, "addr": addr})
+    except Exception:
+        try:
+            hostname = socket.gethostname()
+            addr = socket.gethostbyname(hostname)
+            if addr and not addr.startswith("127."):
+                ips.append({"iface": "eth0", "addr": addr})
+        except Exception:
+            pass
+
+    return {
+        "hostname": socket.gethostname(),
+        "cpuModel": cpu_label,
+        "cores": os.cpu_count() or 0,
+        "uptimeSeconds": round(uptime_seconds),
+        "ips": ips,
+        "kernel": (os.uname().release if hasattr(os, "uname") else ""),
+    }
+
+
+def format_uptime(seconds: int) -> str:
+    seconds = max(0, int(seconds or 0))
+    days, rem = divmod(seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes = rem // 60
+    if days:
+        return f"{days} 天 {hours} 小时"
+    if hours:
+        return f"{hours} 小时 {minutes} 分"
+    return f"{minutes} 分钟"
+
+
+def load_metrics_payload():
+    live = load_live_metrics()
+    with history_lock:
+        points = list(history)
+    device = load_device_info()
+    return {
         "ok": True,
         "source": "127.0.0.1",
         "probeMode": "local",
-        "hostname": hostname,
+        "hostname": device["hostname"],
+        "updatedAt": live["updatedAt"],
+        "sampledAt": live.get("sampledAt"),
+        "metrics": live["metrics"],
+        "history": points,
+        "device": {
+            **device,
+            "uptimeLabel": format_uptime(device["uptimeSeconds"]),
+        },
+    }
+
+
+def load_services_payload():
+    return {"ok": True, "source": "127.0.0.1", "probeMode": "local", "services": load_services()}
+
+
+def load_drives_payload():
+    return {"ok": True, "source": "127.0.0.1", "probeMode": "local", "drives": load_drives()}
+
+
+def load_status():
+    live = load_live_metrics()
+    return {
+        "ok": True,
+        "source": "127.0.0.1",
+        "probeMode": "local",
+        "hostname": socket.gethostname(),
         "updatedAt": live["updatedAt"],
         "metrics": live["metrics"],
         "drives": load_drives(),
-        "services": {
-            "docker": {
-                "active": docker_active,
-                "version": docker_version,
-                "running": len(containers),
-            },
-            "containers": containers,
-        },
+        "services": load_services(),
     }
 
 
@@ -493,9 +584,19 @@ class Handler(SimpleHTTPRequestHandler):
             return
         if request_path == "/api/nas-status" or request_path.endswith("/api/nas-status"):
             try:
-                status = load_status()
-                with history_lock:
-                    status["history"] = list(history)
+                query = parse_qs(urlparse(self.path).query)
+                section = (query.get("section") or ["all"])[0]
+                # 打开页面只拉 metrics；服务/硬盘在折叠展开时再拉，避免首屏跑 docker ps + smartctl。
+                if section == "metrics":
+                    status = load_metrics_payload()
+                elif section == "services":
+                    status = load_services_payload()
+                elif section == "drives":
+                    status = load_drives_payload()
+                else:
+                    status = load_status()
+                    with history_lock:
+                        status["history"] = list(history)
                 self.send_json(200, status)
             except Exception as exc:
                 payload = {"ok": False, "source": "127.0.0.1", "probeMode": "local", "error": str(exc)}

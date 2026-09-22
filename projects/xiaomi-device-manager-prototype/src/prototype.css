@@ -685,7 +685,7 @@ button {
   }
   .toolbar-title { font-size: 15px; }
   .toolbar-button { width: 34px; height: 34px; }
-  .manager-main { padding: 12px 12px 28px; }
+  .manager-main { padding: 12px 12px 20px; }
   .manager-grid { grid-template-columns: 1fr; gap: 16px; }
   .section-heading { margin-bottom: 9px; }
   .manager-section h2,
@@ -693,6 +693,9 @@ button {
   .trend-panel,
   .docker-details { padding: 14px 12px; }
   .drive-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .hero-card { padding: 16px 14px 14px; border-radius: 18px; }
+  .hero-ident h1 { font-size: 16px; }
+  .hero-facts > div { grid-template-columns: 56px minmax(0, 1fr); }
 }
 
 /* 窄屏仍保持两列指标卡：一列会把页面拉得很长 */
@@ -714,4 +717,299 @@ button {
   .drive-grid { grid-template-columns: 1fr; }
   .drive-title { grid-template-columns: 42px minmax(0, 1fr); }
   .drive-title em { grid-column: 2; justify-self: start; }
+}
+
+
+/* 底部 Tab 栏 + 设备大卡片 */
+.manager-app {
+  padding-bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+}
+
+.hero-card {
+  margin: 4px 0 18px;
+  padding: 18px 18px 16px;
+  border-radius: 20px;
+  background: linear-gradient(145deg, #1c3350 0%, #2f84f6 58%, #4aa3ff 100%);
+  color: #fff;
+  box-shadow: 0 14px 34px rgba(31, 78, 145, 0.28);
+}
+
+.hero-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.hero-ident {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  min-width: 0;
+}
+
+.hero-logo {
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.16);
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  flex: 0 0 auto;
+}
+
+.hero-ident h1 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hero-ident p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  opacity: 0.9;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.45);
+}
+
+.live-dot.is-live {
+  background: #3dffa0;
+  box-shadow: 0 0 0 3px rgba(61, 255, 160, 0.18);
+}
+
+.hero-uptime {
+  text-align: right;
+  flex: 0 0 auto;
+}
+
+.hero-uptime small {
+  display: block;
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+.hero-uptime strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.hero-facts {
+  margin: 16px 0 0;
+  display: grid;
+  gap: 10px;
+}
+
+.hero-facts > div {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+}
+
+.hero-facts dt {
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+.hero-facts dd {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+.bottom-tabs {
+  position: fixed;
+  z-index: 20;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px));
+  border-top: 1px solid var(--mi-line);
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(18px);
+}
+
+.bottom-tab {
+  min-height: 48px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--mi-copy);
+  display: grid;
+  place-items: center;
+  gap: 2px;
+  padding: 6px 4px;
+  position: relative;
+}
+
+.bottom-tab.is-active {
+  color: var(--mi-blue);
+  background: rgba(47, 132, 246, 0.1);
+  font-weight: 700;
+}
+
+.bottom-tab:focus-visible {
+  outline: 2px solid var(--mi-blue);
+  outline-offset: 2px;
+}
+
+.bottom-tab-label {
+  font-size: 12.5px;
+}
+
+.bottom-tab-dot {
+  position: absolute;
+  top: 8px;
+  right: 18px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--mi-blue);
+}
+
+.manager-main {
+  padding-bottom: 8px;
+}
+
+/* 折叠懒加载面板：服务 / 硬盘健康 */
+.lazy-panel {
+  margin-top: 24px;
+  border: 1px solid var(--mi-line);
+  border-radius: 16px;
+  background: var(--mi-card);
+  box-shadow: 0 10px 30px rgba(31, 45, 61, 0.05);
+  overflow: hidden;
+}
+
+.lazy-summary {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.lazy-summary:hover { background: #f9fbfe; }
+.lazy-summary:focus-visible {
+  outline: 2px solid var(--mi-blue);
+  outline-offset: -2px;
+}
+
+.lazy-summary > span {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.lazy-summary strong {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.lazy-summary small {
+  color: var(--mi-copy);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.lazy-chevron {
+  flex: 0 0 auto;
+  color: var(--mi-muted);
+  transition: transform 0.18s ease;
+}
+
+.lazy-chevron.is-open { transform: rotate(180deg); color: var(--mi-blue); }
+
+.lazy-body {
+  border-top: 1px solid var(--mi-line);
+  padding: 16px 18px 18px;
+  animation: lazy-fade-in 0.18s ease;
+}
+
+@keyframes lazy-fade-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+
+.lazy-loading {
+  min-height: 120px;
+  display: grid;
+  place-items: center;
+  gap: 12px;
+  color: var(--mi-copy);
+  font-size: 13px;
+}
+
+.lazy-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid rgba(47, 132, 246, 0.18);
+  border-top-color: var(--mi-blue);
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
+}
+
+.lazy-error {
+  min-height: 100px;
+  display: grid;
+  place-items: center;
+  gap: 12px;
+  text-align: center;
+  color: var(--mi-copy);
+  font-size: 13px;
+}
+
+.lazy-error button {
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 16px;
+  background: var(--mi-blue);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.lazy-body .empty-detail {
+  min-height: 80px;
+  display: grid;
+  place-items: center;
+  margin: 0;
+}
+
+.lazy-body .service-card {
+  border: 0;
+  box-shadow: none;
+  padding: 0;
+  background: transparent;
+}
+
+.lazy-body .docker-details {
+  margin-top: 14px;
 }

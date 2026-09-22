@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowLeftIcon, ChevronDownIcon, ChevronRightIcon, ReloadIcon } from "@radix-ui/react-icons";
 import "./prototype.css";
 
@@ -103,6 +103,21 @@ type HistoryPoint = {
   diskIo?: number;
 };
 
+type ServicesData = {
+  docker: { active: boolean; version: string; running: number };
+  containers: ContainerInfo[];
+};
+
+type DeviceInfo = {
+  hostname: string;
+  cpuModel: string;
+  cores: number;
+  uptimeSeconds: number;
+  uptimeLabel?: string;
+  kernel?: string;
+  ips: { iface: string; addr: string }[];
+};
+
 type NasStatus = {
   ok: boolean;
   source: string;
@@ -111,6 +126,7 @@ type NasStatus = {
   updatedAt: string;
   live: boolean;
   history: HistoryPoint[];
+  device?: DeviceInfo;
   metrics: {
     cpu: { percent: number; source?: string; load: string; cores: number };
     memory: { percent: number; usedMb: number; totalMb: number };
@@ -119,28 +135,32 @@ type NasStatus = {
     network: { interface: string; rxBps: number; txBps: number };
     diskIo: { devices: string[]; readBps: number; writeBps: number };
   };
-  drives: DriveInfo[];
-  services: {
-    docker: { active: boolean; version: string; running: number };
-    containers: ContainerInfo[];
-  };
 };
+
+type MainTab = "overview" | "services" | "drives" | "check";
 
 type LiveMetrics = Pick<NasStatus, "ok" | "updatedAt" | "metrics"> & { sampledAt: number };
 
-function resolveNasApi(path: "nas-status" | "live-metrics") {
+type SectionKey = "services" | "drives";
+
+function resolveNasApi(path: string) {
+  const [name, query] = path.split("?");
+  const suffix = query ? `?${query}` : "";
   const configured = import.meta.env.VITE_NAS_STATUS_API as string | undefined;
-  if (configured) return path === "nas-status" ? configured : configured.replace(/nas-status$/, "live-metrics");
+  if (configured) {
+    const base = name === "nas-status" ? configured : configured.replace(/nas-status$/, name);
+    return `${base}${suffix}`;
+  }
 
   const host = window.location.hostname;
   const isLocalPreview = host === "127.0.0.1" || host === "localhost";
   if (isLocalPreview && window.location.port === "5177") {
-    return `http://127.0.0.1:5188/api/${path}`;
+    return `http://127.0.0.1:5188/api/${name}${suffix}`;
   }
   // Windows 客户端 location 可能带盘符（/D:/plugin/...），不能用相对 api/。
   // 产物在 assets/*.js 下，import.meta.url 上一级即插件根目录。
   const pluginRoot = new URL("../", import.meta.url).href;
-  return new URL(`api/${path}`, pluginRoot).href;
+  return new URL(`api/${name}${suffix}`, pluginRoot).href;
 }
 
 function sourceLabel(status: NasStatus) {
@@ -179,6 +199,15 @@ const fallbackStatus: NasStatus = {
   updatedAt: "14:42",
   live: false,
   history: [],
+  device: {
+    hostname: "NAS 本机",
+    cpuModel: "4 核处理器",
+    cores: 4,
+    uptimeSeconds: 284400,
+    uptimeLabel: "3 天 7 小时",
+    kernel: "",
+    ips: [{ iface: "eth0", addr: "192.168.1.8" }],
+  },
   metrics: {
     cpu: { percent: 20, load: "2.55 / 2.73 / 2.57", cores: 4 },
     memory: { percent: 46, usedMb: 1792, totalMb: 3814 },
@@ -186,11 +215,6 @@ const fallbackStatus: NasStatus = {
     temperature: { celsius: 58.2 },
     network: { interface: "enu1u3", rxBps: 0, txBps: 0 },
     diskIo: { devices: ["sda", "sdb"], readBps: 0, writeBps: 0 },
-  },
-  drives: [],
-  services: {
-    docker: { active: true, version: "20.10.17", running: 1 },
-    containers: [{ name: "miot_central", image: "system", status: "Up" }],
   },
 };
 
@@ -325,47 +349,187 @@ function TrendChart({ metric, points }: { metric: Metric; points: HistoryPoint[]
   );
 }
 
-function DriveHealth({ drives }: { drives: DriveInfo[] }) {
+function DeviceHeroCard({ status }: { status: NasStatus }) {
+  const device = status.device;
+  const ips = device?.ips?.length ? device.ips : [{ iface: "lan", addr: "—" }];
+  const ipText = ips.map((item) => `${item.iface} ${item.addr}`).join(" · ");
+
   return (
-    <section className="drive-section">
-      <div className="section-heading">
-        <h2>硬盘健康</h2>
-        <span>{drives.length ? `${drives.length} 块物理硬盘` : "未检测到物理硬盘"}</span>
+    <section className="hero-card" aria-label="设备信息">
+      <div className="hero-top">
+        <div className="hero-ident">
+          <span className="hero-logo" aria-hidden="true">
+            NAS
+          </span>
+          <div>
+            <h1>{device?.hostname || status.hostname || "小米智能存储"}</h1>
+            <p>
+              <span className={`live-dot ${status.live ? "is-live" : ""}`} aria-hidden="true" />
+              {status.live ? "在线 · 本机采集" : "演示数据"}
+            </p>
+          </div>
+        </div>
+        <div className="hero-uptime">
+          <small>已运行</small>
+          <strong>{device?.uptimeLabel || "—"}</strong>
+        </div>
       </div>
-      <div className="drive-grid">
-        {drives.map((drive) => {
-          const warningCount = drive.reallocatedSectors + drive.pendingSectors + drive.offlineUncorrectable;
-          const healthy = drive.smartPassed !== false && warningCount === 0;
-          return (
-            <article className="drive-card" key={drive.device}>
-              <div className="drive-title">
-                <span className={`drive-status ${healthy ? "is-healthy" : "is-warning"}`}>HD</span>
-                <div>
-                  <strong>{drive.device.replace("/dev/", "硬盘 ").toUpperCase()}</strong>
-                  <small>{drive.model}</small>
-                </div>
-                <em className={healthy ? "is-healthy" : "is-warning"}>{healthy ? "SMART 正常" : "需要检查"}</em>
-              </div>
-              <dl className="drive-facts">
-                <div><dt>容量</dt><dd>{formatCapacity(drive.capacityBytes)}</dd></div>
-                <div><dt>温度</dt><dd>{drive.temperature === null ? "未知" : `${drive.temperature}°C`}</dd></div>
-                <div><dt>通电时间</dt><dd>{drive.powerOnHours === null ? "未知" : `${drive.powerOnHours} 小时`}</dd></div>
-                <div><dt>转速</dt><dd>{drive.rotationRate ? `${drive.rotationRate} RPM` : "固态硬盘"}</dd></div>
-                <div><dt>重映射扇区</dt><dd>{drive.reallocatedSectors}</dd></div>
-                <div><dt>待处理扇区</dt><dd>{drive.pendingSectors}</dd></div>
-                <div><dt>不可校正扇区</dt><dd>{drive.offlineUncorrectable}</dd></div>
-                <div><dt>接口错误</dt><dd>{drive.crcErrors}</dd></div>
-              </dl>
-              {drive.serial ? <p className="drive-serial">序列号 {drive.serial}</p> : null}
-            </article>
-          );
-        })}
-      </div>
+
+      <dl className="hero-facts">
+        <div>
+          <dt>处理器</dt>
+          <dd title={device?.cpuModel || ""}>
+            {device?.cpuModel || "—"}
+            {device?.cores ? ` · ${device.cores} 核` : ""}
+          </dd>
+        </div>
+        <div>
+          <dt>网络地址</dt>
+          <dd title={ipText}>{ipText}</dd>
+        </div>
+        {device?.kernel ? (
+          <div>
+            <dt>内核</dt>
+            <dd title={device.kernel}>{device.kernel}</dd>
+          </div>
+        ) : null}
+      </dl>
     </section>
   );
 }
 
-function DockerDetails({ status }: { status: NasStatus }) {
+function BottomTabs({
+  active,
+  onChange,
+  servicesReady,
+  drivesReady,
+}: {
+  active: MainTab;
+  onChange: (tab: MainTab) => void;
+  servicesReady: boolean;
+  drivesReady: boolean;
+}) {
+  const tabs: { id: MainTab; label: string; badge?: string }[] = [
+    { id: "overview", label: "概览" },
+    { id: "services", label: "服务", badge: servicesReady ? "·" : undefined },
+    { id: "drives", label: "硬盘", badge: drivesReady ? "·" : undefined },
+    { id: "check", label: "检查" },
+  ];
+  return (
+    <nav className="bottom-tabs" aria-label="数据视图">
+      {tabs.map((tab) => (
+        <button
+          key={tab.id}
+          type="button"
+          className={`bottom-tab ${active === tab.id ? "is-active" : ""}`}
+          onClick={() => onChange(tab.id)}
+          aria-current={active === tab.id ? "page" : undefined}
+        >
+          <span className="bottom-tab-label">{tab.label}</span>
+          {tab.badge ? <span className="bottom-tab-dot" aria-hidden="true" /> : null}
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+function LazyPanel({
+  panelId,
+  title,
+  summary,
+  open,
+  loading,
+  error,
+  onToggle,
+  onRetry,
+  children,
+}: {
+  panelId: string;
+  title: string;
+  summary: string;
+  open: boolean;
+  loading: boolean;
+  error: string | null;
+  onToggle: () => void;
+  onRetry: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <section className={`lazy-panel ${open ? "is-open" : ""}`}>
+      <button
+        type="button"
+        className="lazy-summary"
+        onClick={onToggle}
+        aria-expanded={open}
+        aria-controls={panelId}
+      >
+        <span>
+          <strong>{title}</strong>
+          <small>{summary}</small>
+        </span>
+        <ChevronDownIcon className={`lazy-chevron ${open ? "is-open" : ""}`} width={20} height={20} />
+      </button>
+      {open ? (
+        <div className="lazy-body" id={panelId}>
+          {loading ? (
+            <div className="lazy-loading" role="status" aria-live="polite">
+              <span className="lazy-spinner" aria-hidden="true" />
+              <p>正在读取…</p>
+            </div>
+          ) : error ? (
+            <div className="lazy-error" role="alert">
+              <p>{error}</p>
+              <button type="button" onClick={onRetry}>
+                重试
+              </button>
+            </div>
+          ) : (
+            children
+          )}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function DriveHealth({ drives }: { drives: DriveInfo[] }) {
+  if (!drives.length) {
+    return <p className="empty-detail">未检测到物理硬盘</p>;
+  }
+  return (
+    <div className="drive-grid">
+      {drives.map((drive) => {
+        const warningCount = drive.reallocatedSectors + drive.pendingSectors + drive.offlineUncorrectable;
+        const healthy = drive.smartPassed !== false && warningCount === 0;
+        return (
+          <article className="drive-card" key={drive.device}>
+            <div className="drive-title">
+              <span className={`drive-status ${healthy ? "is-healthy" : "is-warning"}`}>HD</span>
+              <div>
+                <strong>{drive.device.replace("/dev/", "硬盘 ").toUpperCase()}</strong>
+                <small>{drive.model}</small>
+              </div>
+              <em className={healthy ? "is-healthy" : "is-warning"}>{healthy ? "SMART 正常" : "需要检查"}</em>
+            </div>
+            <dl className="drive-facts">
+              <div><dt>容量</dt><dd>{formatCapacity(drive.capacityBytes)}</dd></div>
+              <div><dt>温度</dt><dd>{drive.temperature === null ? "未知" : `${drive.temperature}°C`}</dd></div>
+              <div><dt>通电时间</dt><dd>{drive.powerOnHours === null ? "未知" : `${drive.powerOnHours} 小时`}</dd></div>
+              <div><dt>转速</dt><dd>{drive.rotationRate ? `${drive.rotationRate} RPM` : "固态硬盘"}</dd></div>
+              <div><dt>重映射扇区</dt><dd>{drive.reallocatedSectors}</dd></div>
+              <div><dt>待处理扇区</dt><dd>{drive.pendingSectors}</dd></div>
+              <div><dt>不可校正扇区</dt><dd>{drive.offlineUncorrectable}</dd></div>
+              <div><dt>接口错误</dt><dd>{drive.crcErrors}</dd></div>
+            </dl>
+            {drive.serial ? <p className="drive-serial">序列号 {drive.serial}</p> : null}
+          </article>
+        );
+      })}
+    </div>
+  );
+}
+
+function DockerDetails({ services }: { services: ServicesData }) {
   return (
     <section className="docker-details" aria-live="polite">
       <div className="detail-heading">
@@ -373,15 +537,15 @@ function DockerDetails({ status }: { status: NasStatus }) {
           <p>服务详情</p>
           <h3>Docker 容器</h3>
         </div>
-        <strong>{status.services.docker.running} 个运行中</strong>
+        <strong>{services.docker.running} 个运行中</strong>
       </div>
       <div className="docker-meta">
-        <span>服务 {status.services.docker.active ? "active" : "inactive"}</span>
-        <span>Docker {status.services.docker.version || "版本未知"}</span>
+        <span>服务 {services.docker.active ? "active" : "inactive"}</span>
+        <span>Docker {services.docker.version || "版本未知"}</span>
       </div>
       <div className="container-list">
-        {status.services.containers.length ? (
-          status.services.containers.map((container) => {
+        {services.containers.length ? (
+          services.containers.map((container) => {
             const isCentral = container.name === "miot_central";
             return (
               <article className={`container-item ${isCentral ? "is-protected" : ""}`} key={container.id || container.name}>
@@ -417,11 +581,17 @@ function DockerDetails({ status }: { status: NasStatus }) {
 
 export default function Prototype() {
   const [refreshing, setRefreshing] = useState(false);
-  const [expanded, setExpanded] = useState(false);
   const [activeMetric, setActiveMetric] = useState<MetricKey | null>(null);
+  const [mainTab, setMainTab] = useState<MainTab>("overview");
   const [dockerOpen, setDockerOpen] = useState(false);
   const [status, setStatus] = useState<NasStatus>(fallbackStatus);
   const [statusError, setStatusError] = useState<string | null>(null);
+  const [services, setServices] = useState<ServicesData | null>(null);
+  const [servicesLoading, setServicesLoading] = useState(false);
+  const [servicesError, setServicesError] = useState<string | null>(null);
+  const [drives, setDrives] = useState<DriveInfo[] | null>(null);
+  const [drivesLoading, setDrivesLoading] = useState(false);
+  const [drivesError, setDrivesError] = useState<string | null>(null);
   const liveRefreshInFlight = useRef(false);
   const statusSourceLabel = sourceLabel(status);
 
@@ -503,17 +673,18 @@ export default function Prototype() {
   const selectedMetric = metrics.find((metric) => metric.key === activeMetric) ?? null;
 
   const serviceRows = useMemo(() => {
+    if (!services) return [];
     const rows = [
       {
         badge: "DO",
         tone: "docker",
         title: "Docker 服务",
-        subtitle: `服务 ${status.services.docker.active ? "active" : "inactive"} · ${status.services.docker.version || "版本未知"}`,
-        value: `${status.services.docker.running} 个运行中`,
+        subtitle: `服务 ${services.docker.active ? "active" : "inactive"} · ${services.docker.version || "版本未知"}`,
+        value: `${services.docker.running} 个运行中`,
       },
     ];
 
-    for (const container of status.services.containers) {
+    for (const container of services.containers) {
       const isCentral = container.name === "miot_central";
       const isOpenClaw = container.name.toLowerCase().includes("openclaw");
       rows.push({
@@ -533,12 +704,12 @@ export default function Prototype() {
     }
 
     return rows;
-  }, [status]);
+  }, [services]);
 
   async function refresh() {
     setRefreshing(true);
     try {
-      const response = await fetch(resolveNasApi("nas-status"), { cache: "no-store" });
+      const response = await fetch(resolveNasApi("nas-status?section=metrics"), { cache: "no-store" });
       if (!response.ok) throw new Error(`API ${response.status}`);
 
       const payload = (await response.json()) as Omit<NasStatus, "live">;
@@ -551,6 +722,40 @@ export default function Prototype() {
       setStatusError(error instanceof Error ? error.message : "本机 API 暂不可用");
     } finally {
       setRefreshing(false);
+    }
+  }
+
+  async function loadServices(force = false) {
+    if (!force && services) return;
+    setServicesLoading(true);
+    setServicesError(null);
+    try {
+      const response = await fetch(resolveNasApi("nas-status?section=services"), { cache: "no-store" });
+      if (!response.ok) throw new Error(`API ${response.status}`);
+      const payload = (await response.json()) as { ok: boolean; services?: ServicesData; error?: string };
+      if (!payload.ok || !payload.services) throw new Error(payload.error || "服务状态读取失败");
+      setServices(payload.services);
+    } catch (error) {
+      setServicesError(error instanceof Error ? error.message : "服务状态暂不可用");
+    } finally {
+      setServicesLoading(false);
+    }
+  }
+
+  async function loadDrives(force = false) {
+    if (!force && drives) return;
+    setDrivesLoading(true);
+    setDrivesError(null);
+    try {
+      const response = await fetch(resolveNasApi("nas-status?section=drives"), { cache: "no-store" });
+      if (!response.ok) throw new Error(`API ${response.status}`);
+      const payload = (await response.json()) as { ok: boolean; drives?: DriveInfo[]; error?: string };
+      if (!payload.ok || !payload.drives) throw new Error(payload.error || "硬盘状态读取失败");
+      setDrives(payload.drives);
+    } catch (error) {
+      setDrivesError(error instanceof Error ? error.message : "硬盘状态暂不可用");
+    } finally {
+      setDrivesLoading(false);
     }
   }
 
@@ -584,7 +789,6 @@ export default function Prototype() {
         };
       });
       setStatusError(null);
-      setStatusError(null);
     } catch (error) {
       setStatus((current) => ({ ...current, live: false }));
       setStatusError(error instanceof Error ? error.message : "实时监控暂不可用");
@@ -603,6 +807,13 @@ export default function Prototype() {
     setActiveMetric(null);
   }
 
+  function changeTab(tab: MainTab) {
+    setMainTab(tab);
+    if (tab === "services") void loadServices();
+    if (tab === "drives") void loadDrives();
+    if (tab === "overview") setActiveMetric(null);
+  }
+
   useEffect(() => {
     void refresh();
     const timer = window.setInterval(() => {
@@ -610,6 +821,19 @@ export default function Prototype() {
     }, 2000);
     return () => window.clearInterval(timer);
   }, []);
+
+  const servicesSummary = services
+    ? `Docker ${services.docker.active ? "运行中" : "未运行"} · ${services.docker.running} 个容器`
+    : servicesLoading
+      ? "正在读取服务…"
+      : "点击加载 Docker 与容器";
+  const drivesSummary = drives
+    ? drives.length
+      ? `${drives.length} 块物理硬盘`
+      : "未检测到物理硬盘"
+    : drivesLoading
+      ? "正在读取硬盘…"
+      : "点击加载 SMART 健康";
 
   return (
     <div className="manager-app">
@@ -620,7 +844,11 @@ export default function Prototype() {
         <span className="toolbar-title">设备管家</span>
         <button
           className={`toolbar-button ${refreshing ? "is-spinning" : ""}`}
-          onClick={refresh}
+          onClick={() => {
+            void refresh();
+            if (services) void loadServices(true);
+            if (drives) void loadDrives(true);
+          }}
           aria-label="刷新状态"
         >
           <ReloadIcon width={20} height={20} />
@@ -628,72 +856,141 @@ export default function Prototype() {
       </header>
 
       <main className="manager-main">
-        <div className="manager-grid">
-          <section className="manager-section system-section">
-            <div className="section-heading">
-              <h2>系统状态</h2>
-              <span className={`live-chip ${status.live ? "is-live" : "is-demo"}`}>
-                {status.live ? `实时 · ${statusSourceLabel}` : "离线演示"}
-              </span>
-            </div>
-            <div className="metrics-grid">
-              {metrics.map((metric) => (
-                <Fragment key={metric.key}>
-                  <MetricCard
-                    metric={metric}
-                    selected={metric.key === activeMetric}
-                    onSelect={() => selectMetric(metric.key)}
-                  />
-                  {metric.key === activeMetric ? <TrendChart metric={metric} points={status.history} /> : null}
-                </Fragment>
-              ))}
-            </div>
-          </section>
+        {mainTab === "overview" ? (
+          <>
+            <DeviceHeroCard status={status} />
+            <section className="manager-section system-section">
+              <div className="section-heading">
+                <h2>系统状态</h2>
+                <span className={`live-chip ${status.live ? "is-live" : "is-demo"}`}>
+                  {status.live ? `实时 · ${statusSourceLabel}` : "离线演示"}
+                </span>
+              </div>
+              <div className="metrics-grid">
+                {metrics.map((metric) => (
+                  <Fragment key={metric.key}>
+                    <MetricCard
+                      metric={metric}
+                      selected={metric.key === activeMetric}
+                      onSelect={() => selectMetric(metric.key)}
+                    />
+                    {metric.key === activeMetric ? <TrendChart metric={metric} points={status.history} /> : null}
+                  </Fragment>
+                ))}
+              </div>
+            </section>
+          </>
+        ) : null}
 
-          <section className="manager-section service-section">
+        {mainTab === "services" ? (
+          <section className="manager-section">
             <div className="section-heading">
               <h2>服务</h2>
-              <span>{status.services.docker.active ? "运行正常" : "需要检查"}</span>
+              <span>{servicesSummary}</span>
             </div>
-            <div className="service-card">
-              <ServiceRow {...serviceRows[0]} onClick={toggleDockerDetails} expanded={dockerOpen} />
-              {serviceRows.slice(1).map((service) => (
-                <ServiceRow key={service.title} {...service} />
-              ))}
-            </div>
+            {servicesLoading && !services ? (
+              <div className="lazy-panel">
+                <div className="lazy-body">
+                  <div className="lazy-loading" role="status" aria-live="polite">
+                    <span className="lazy-spinner" aria-hidden="true" />
+                    <p>正在读取…</p>
+                  </div>
+                </div>
+              </div>
+            ) : servicesError ? (
+              <div className="lazy-panel">
+                <div className="lazy-body">
+                  <div className="lazy-error" role="alert">
+                    <p>{servicesError}</p>
+                    <button type="button" onClick={() => void loadServices(true)}>
+                      重试
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : services ? (
+              <div className="service-card">
+                <ServiceRow {...serviceRows[0]} onClick={toggleDockerDetails} expanded={dockerOpen} />
+                {serviceRows.slice(1).map((service) => (
+                  <ServiceRow key={service.title} {...service} />
+                ))}
+                {dockerOpen ? <DockerDetails services={services} /> : null}
+              </div>
+            ) : (
+              <div className="lazy-panel">
+                <div className="lazy-body">
+                  <div className="lazy-loading">
+                    <p>切换到本页后开始读取服务状态</p>
+                  </div>
+                </div>
+              </div>
+            )}
           </section>
-        </div>
+        ) : null}
 
-        <DriveHealth drives={status.drives} />
+        {mainTab === "drives" ? (
+          <section className="manager-section">
+            <div className="section-heading">
+              <h2>硬盘健康</h2>
+              <span>{drivesSummary}</span>
+            </div>
+            {drivesLoading && !drives ? (
+              <div className="lazy-panel">
+                <div className="lazy-body">
+                  <div className="lazy-loading" role="status" aria-live="polite">
+                    <span className="lazy-spinner" aria-hidden="true" />
+                    <p>正在读取…</p>
+                  </div>
+                </div>
+              </div>
+            ) : drivesError ? (
+              <div className="lazy-panel">
+                <div className="lazy-body">
+                  <div className="lazy-error" role="alert">
+                    <p>{drivesError}</p>
+                    <button type="button" onClick={() => void loadDrives(true)}>
+                      重试
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <DriveHealth drives={drives ?? []} />
+            )}
+          </section>
+        ) : null}
 
-        {dockerOpen ? <DockerDetails status={status} /> : null}
-
-        <section className={`check-card ${expanded ? "is-open" : ""}`}>
-          <button className="check-summary" onClick={() => setExpanded((value) => !value)} aria-expanded={expanded}>
-            <span>
-              <strong>最近检查</strong>
-              <small>{refreshing ? "正在读取设备状态" : `${status.updatedAt} 更新`}</small>
-            </span>
-            <ChevronDownIcon width={20} height={20} />
-          </button>
-          {expanded ? (
-            <div className="check-details">
-              <p>
-                {statusError
-                  ? `本机 API 暂不可用，当前保留最近一次数据：${statusError}。`
-                  : `来自 ${statusSourceLabel} 的只读状态：Docker ${status.services.docker.active ? "运行中" : "未运行"}，存储池容量充足。`}
-              </p>
-              <div className="check-pill-row">
-                <span>CPU {status.metrics.cpu.percent < 85 ? "正常" : "偏高"}</span>
-                <span>内存 {status.metrics.memory.percent < 85 ? "正常" : "偏高"}</span>
-                <span>服务 {status.services.docker.active ? "正常" : "异常"}</span>
+        {mainTab === "check" ? (
+          <section className="manager-section">
+            <div className="section-heading">
+              <h2>最近检查</h2>
+              <span>{refreshing ? "正在读取设备状态" : `${status.updatedAt} 更新`}</span>
+            </div>
+            <div className="check-card is-open">
+              <div className="check-details">
+                <p>
+                  {statusError
+                    ? `本机 API 暂不可用，当前保留最近一次数据：${statusError}。`
+                    : `来自 ${statusSourceLabel} 的只读系统状态${services ? `：Docker ${services.docker.active ? "运行中" : "未运行"}` : ""}。`}
+                </p>
+                <div className="check-pill-row">
+                  <span>CPU {status.metrics.cpu.percent < 85 ? "正常" : "偏高"}</span>
+                  <span>内存 {status.metrics.memory.percent < 85 ? "正常" : "偏高"}</span>
+                  {services ? <span>服务 {services.docker.active ? "正常" : "异常"}</span> : null}
+                </div>
               </div>
             </div>
-          ) : null}
-        </section>
-
-        <p className="manager-footnote">设备管家 · 让设备状态一目了然</p>
+            <p className="manager-footnote">设备管家 · 让设备状态一目了然</p>
+          </section>
+        ) : null}
       </main>
+
+      <BottomTabs
+        active={mainTab}
+        onChange={changeTab}
+        servicesReady={Boolean(services)}
+        drivesReady={Boolean(drives)}
+      />
     </div>
   );
 }
