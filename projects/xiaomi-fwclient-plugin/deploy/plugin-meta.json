@@ -1,0 +1,16 @@
+{
+  "plugin": "fwclient",
+  "name": "内网穿透",
+  "id": 11010,
+  "desc": "fwclient 内网穿透客户端；可配服务器域名与令牌，支持升级",
+  "tags": [
+    "tool",
+    "network"
+  ],
+  "developer": "community",
+  "publisher": "community",
+  "system": false,
+  "type": "standard",
+  "service": "xiaomi-fwclient.service",
+  "uiKey": "fwclient"
+}

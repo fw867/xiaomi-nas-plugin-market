@@ -1,0 +1,17 @@
+#!/bin/sh
+log() {
+    logger -t "plugin" "[fwclient] control: $*"
+}
+
+log "do $1"
+
+case "$1" in
+    enable)
+        systemctl start xiaomi-fwclient.service 2>/dev/null
+        ;;
+    disable)
+        systemctl stop xiaomi-fwclient.service 2>/dev/null
+        ;;
+esac
+
+exit 0

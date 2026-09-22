@@ -75,6 +75,7 @@ NAS_USER_ID=u123456 bash -c "$(curl -fsSL https://raw.githubusercontent.com/fw86
 | [Emby 媒体服务器](projects/xiaomi-emby-plugin) | 0.1.0 | Emby 官方镜像的受限容器；媒体目录读写挂载，端口 8096 对局域网开放；需要 Docker |
 | [DPanel 容器管理](projects/xiaomi-dpanel-plugin) | 0.1.0 | 轻量 Docker 面板；挂载 docker.sock 与配置目录，端口 8807；需要 Docker |
 | [Jellyfin 媒体服务器](projects/xiaomi-jellyfin-plugin) | 0.1.0 | 开源媒体服务器；配置/缓存/媒体持久化，端口 8097；需要 Docker |
+| [内网穿透](projects/xiaomi-fwclient-plugin) | 0.1.0 | fwclient 隧道；可配服务器/令牌，显示版本并支持升级 |
 | 夸克网盘 | 未发布 | 目前没有可用实现 |
 
 ## 插件如何分发

@@ -24,3 +24,7 @@
 # Jellyfin 图标与容器
 
 `projects/xiaomi-jellyfin-plugin` 不随包分发 Jellyfin 二进制，使用者确认后由插件拉取官方镜像 `jellyfin/jellyfin:latest`（digest `sha256:78d3ea1207d1322471fcac39a614f004f2ccf7e878f95ab2977d752f07e4dd7e`）。Jellyfin 为开源项目（GPL），名称与商标归 Jellyfin 项目所有，本插件不代表官方背书。插件图标取自 Jellyfin 官方 GitHub 组织头像，仅用于识别兼容软件。
+
+# fwclient 内网穿透
+
+`projects/xiaomi-fwclient-plugin` 随包分发 **fwclient-linux-arm64**（内网穿透客户端，构建自本项目关联的 fwserver 源码）。使用者需自备合法的网关域名与访问令牌；隧道流量与规则由网关侧配置。插件图标为本项目自绘，仅用于识别。

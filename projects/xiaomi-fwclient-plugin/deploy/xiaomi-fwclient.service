@@ -1,0 +1,28 @@
+[Unit]
+Description=Xiaomi fwclient Tunnel Plugin
+After=network.target nginx.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/data/plugin/fwclient/current
+Environment=NAS_USER_ID=__NAS_USER_ID__
+Environment=DATA_DIR=/data/plugin/fwclient/data
+Environment=RUNTIME_DIR=/data/plugin/fwclient/current
+Environment=PORT=18180
+ExecStart=/usr/bin/python3 /data/plugin/fwclient/current/server.py
+ExecStopPost=/usr/bin/python3 /data/plugin/fwclient/current/server.py --stop-owned
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+MemoryMax=128M
+TasksMax=32
+TimeoutStopSec=30
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target
