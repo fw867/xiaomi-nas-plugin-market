@@ -177,6 +177,32 @@ class ServerAuthTests(unittest.TestCase):
                 self.assertIn("json", headers.get("Content-Type", ""), path)
                 self.assertTrue(json.loads(body.decode("utf-8")).get("ok"), path)
 
+    def test_catalog_js_uses_script_channel(self) -> None:
+        """catalog.js 走静态资源通道，避开自定义头触发的 nginx 400。"""
+        session = self.session_token()
+
+        def fake_catalog(*, cache_path=None, force_refresh=False):
+            return {"apps": [], "store": {}}
+
+        with mock.patch("server.load_apps_catalog", side_effect=fake_catalog):
+            status, headers, body = self.request(
+                "GET", "/catalog.js", headers={"Cookie": f"xiaomi_community_store_session={session}"}
+            )
+        self.assertEqual(200, status)
+        self.assertIn("javascript", headers.get("Content-Type", ""))
+        text = body.decode("utf-8")
+        self.assertTrue(text.startswith("window.__BOOTSTRAP_CATALOG__="))
+        self.assertTrue(json.loads(text.split("=", 1)[1].rsplit(";", 1)[0]).get("ok"))
+
+    def test_empty_session_header_is_not_required(self) -> None:
+        """cookie 会话足够；不要求必须再带 X-Community-Session。"""
+        session = self.session_token()
+        # 只用 Cookie，不带自定义头
+        status, _, _ = self.request("GET", "/api/status", headers={
+            "Cookie": f"xiaomi_community_store_session={session}",
+        })
+        self.assertEqual(200, status)
+
     def test_catalog_refresh_bypasses_ttl_cache(self) -> None:
         """刷新按钮带 refresh=1，要跳过后端 TTL 缓存直接重拉远程。"""
         session = self.session_token()

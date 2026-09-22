@@ -248,15 +248,48 @@ class StoreHandler(BaseHTTPRequestHandler):
 
     def _is_catalog_route(self, path: str, query: dict[str, list[str]]) -> bool:
         """Windows 本地代理（https://localhost:443）会把未知路径 SPA 回退成
-        index.html。除标准 /api/catalog 外，再认两种静态扩展友好写法。
+        index.html，且自定义请求头可能触发 nginx 400。除 /api/catalog 外，
+        再认静态扩展名与挂在页面路径上的查询参数。
         """
-        if path == "/api/catalog":
-            return True
-        if path in ("/catalog.json", "/api/catalog.json"):
+        if path in ("/api/catalog", "/catalog.json", "/api/catalog.json", "/catalog.js"):
             return True
         if path in ("/", "/index.html") and query.get("api") == ["catalog"]:
             return True
         return False
+
+    def _send_catalog(self, force_refresh: bool, as_script: bool = False) -> None:
+        try:
+            catalog = load_apps_catalog(cache_path=CATALOG_CACHE, force_refresh=force_refresh)
+            packages = catalog.get("apps", [])
+            for package in packages:
+                icon = str(package.get("icon", ""))
+                if icon and not icon.startswith("http"):
+                    package["iconUrl"] = f"{RAW_BASE}/{icon.lstrip('/')}"
+                elif icon:
+                    package["iconUrl"] = icon
+                else:
+                    package["iconUrl"] = ""
+                inventory = (self.app.manager.inventory() if self.app.manager else {}).get(package["id"], {})
+                package["installedVersion"] = inventory.get("version")
+                package["managed"] = bool(inventory.get("managed"))
+            payload = {
+                "ok": True,
+                "catalog": {"schemaVersion": 2, "packages": packages, "store": catalog.get("store", {})},
+                "preview": self.app.dev,
+            }
+        except StoreError as error:
+            payload = {"ok": False, "error": str(error)}
+            if as_script:
+                body = ("window.__BOOTSTRAP_CATALOG__=" + json.dumps(payload, ensure_ascii=False) + ";\n").encode("utf-8")
+                self._send(HTTPStatus.INTERNAL_SERVER_ERROR, body, "application/javascript; charset=utf-8")
+                return
+            self._json(HTTPStatus.INTERNAL_SERVER_ERROR, payload)
+            return
+        if as_script:
+            body = ("window.__BOOTSTRAP_CATALOG__=" + json.dumps(payload, ensure_ascii=False) + ";\n").encode("utf-8")
+            self._send(HTTPStatus.OK, body, "application/javascript; charset=utf-8")
+            return
+        self._json(HTTPStatus.OK, payload)
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
@@ -265,7 +298,10 @@ class StoreHandler(BaseHTTPRequestHandler):
         if self._is_catalog_route(path, query):
             if not self._require_session():
                 return
-            self._handle_catalog(force_refresh=query.get("refresh") == ["1"])
+            self._send_catalog(
+                force_refresh=query.get("refresh") == ["1"],
+                as_script=path.endswith(".js"),
+            )
             return
         if path in ("/", "/index.html"):
             self._serve_index()
@@ -313,31 +349,7 @@ class StoreHandler(BaseHTTPRequestHandler):
             })
 
     def _handle_catalog(self, force_refresh: bool = False) -> None:
-        """从 GitHub 拉取 apps.json（带本地缓存），图标转为 raw URL。
-
-        带 refresh=1 时跳过 TTL 缓存，直接重新拉远程——页面上的刷新按钮用它。
-        """
-        try:
-            catalog = load_apps_catalog(cache_path=CATALOG_CACHE, force_refresh=force_refresh)
-            packages = catalog.get("apps", [])
-            for package in packages:
-                icon = str(package.get("icon", ""))
-                if icon and not icon.startswith("http"):
-                    package["iconUrl"] = f"{RAW_BASE}/{icon.lstrip('/')}"
-                elif icon:
-                    package["iconUrl"] = icon
-                else:
-                    package["iconUrl"] = ""
-                inventory = (self.app.manager.inventory() if self.app.manager else {}).get(package["id"], {})
-                package["installedVersion"] = inventory.get("version")
-                package["managed"] = bool(inventory.get("managed"))
-            self._json(HTTPStatus.OK, {
-                "ok": True,
-                "catalog": {"schemaVersion": 2, "packages": packages, "store": catalog.get("store", {})},
-                "preview": self.app.dev,
-            })
-        except StoreError as error:
-            self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(error)})
+        self._send_catalog(force_refresh=force_refresh)
 
     def _request_json(self) -> dict[str, object]:
         try:

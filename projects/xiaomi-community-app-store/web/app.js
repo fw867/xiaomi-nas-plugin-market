@@ -138,8 +138,8 @@ function render() {
 }
 
 async function readJson(response) {
-  // Windows 本地代理偶发把 401/SPA 回退包成 HTML；先读文本再解析，避免
-  // "Unexpected token '<'"。
+  // Windows 本地代理偶发把 401/SPA 回退/网关错误包成 HTML；先读文本再解析，
+  // 避免 "Unexpected token '<'"。
   const text = await response.text();
   try {
     return JSON.parse(text);
@@ -154,32 +154,79 @@ async function readJson(response) {
   }
 }
 
+function sessionHeaders(extra, includeSession) {
+  // 空值头会被部分代理/nginx 判成 400 Bad Request，一律不要发。
+  const headers = {};
+  for (const [key, value] of Object.entries(extra || {})) {
+    if (value !== undefined && value !== null && value !== '') headers[key] = value;
+  }
+  if (includeSession !== false && sessionToken) headers['X-Community-Session'] = sessionToken;
+  return headers;
+}
+
 async function fetchApi(path, init) {
   // 本地代理可能把 /api/* 当成前端路由回退到 index.html。
-  // 依次尝试：标准 API → 静态扩展名 catalog.json → 页面路径 + ?api=
+  // 依次尝试：标准 API → 静态扩展名 → 页面路径 + ?api=；并区分是否带会话头。
   const [name, qs] = String(path).split('?');
   const query = qs ? `?${qs}` : '';
   const dir = location.pathname.replace(/[^/]*$/, '');
-  const attempts = [
+  const urls = [
     `api/${name}${query}`,
     `${dir}catalog.json${query}`,
     `${dir}index.html?api=${encodeURIComponent(name)}${query ? `&${qs}` : ''}`,
+    `${dir}catalog.js${query}`,
   ];
   let lastError = new Error('请求失败');
-  for (const url of attempts) {
-    try {
-      const response = await fetch(url, init);
-      const payload = await readJson(response);
-      if (response.status === 401) return { response, payload, url };
-      if (payload && typeof payload === 'object' && ('ok' in payload)) {
-        return { response, payload, url };
+  for (const url of urls) {
+    for (const withSession of (sessionToken ? [true, false] : [false])) {
+      try {
+        const base = Object.assign({}, init || {});
+        base.headers = sessionHeaders(withSession ? (init && init.headers) : undefined, withSession);
+        const response = await fetch(url, base);
+        const payload = await readJson(response);
+        if (response.status === 401) return { response, payload, url };
+        if (payload && typeof payload === 'object' && ('ok' in payload)) {
+          return { response, payload, url };
+        }
+        lastError = new Error(payload && payload.error ? payload.error : '服务返回了非 JSON 响应');
+      } catch (error) {
+        lastError = error;
       }
-      lastError = new Error(payload && payload.error ? payload.error : '服务返回了非 JSON 响应');
-    } catch (error) {
-      lastError = error;
     }
   }
+  // 最后用 script 标签拉 catalog.js（静态资源通道，避开自定义请求头）
+  try {
+    const payload = await loadCatalogScript();
+    if (payload && typeof payload === 'object') {
+      return { response: { status: 200, ok: true }, payload, url: 'catalog.js' };
+    }
+  } catch (error) {
+    lastError = error;
+  }
   throw lastError;
+}
+
+function loadCatalogScript() {
+  return new Promise((resolve, reject) => {
+    const dir = location.pathname.replace(/[^/]*$/, '');
+    const script = document.createElement('script');
+    const timeout = setTimeout(() => {
+      script.remove();
+      reject(new Error('catalog.js 加载超时'));
+    }, 8000);
+    script.src = dir + 'catalog.js?ts=' + Date.now();
+    script.onload = () => {
+      clearTimeout(timeout);
+      script.remove();
+      resolve(window.__BOOTSTRAP_CATALOG__ || null);
+    };
+    script.onerror = () => {
+      clearTimeout(timeout);
+      script.remove();
+      reject(new Error('catalog.js 加载失败'));
+    };
+    document.head.appendChild(script);
+  });
 }
 
 async function loadCatalog(force) {
@@ -188,7 +235,6 @@ async function loadCatalog(force) {
     const { response, payload } = await fetchApi(name, {
       credentials: 'same-origin',
       cache: 'no-store',
-      headers: { 'X-Community-Session': sessionToken },
     });
     if (response.status === 401) {
       packageList.replaceChildren(Object.assign(document.createElement('div'), {
@@ -220,7 +266,7 @@ async function loadStoreStatus() {
     const res = await fetch('api/status', {
       credentials: 'same-origin',
       cache: 'no-store',
-      headers: { 'X-Community-Session': sessionToken },
+      headers: sessionHeaders(),
     });
     const data = await readJson(res);
     if (data.ok) localEl.textContent = `v${data.version}`;
@@ -241,7 +287,7 @@ async function loadStoreStatus() {
     const res = await fetch('api/update-check', {
       credentials: 'same-origin',
       cache: 'no-store',
-      headers: { 'X-Community-Session': sessionToken },
+      headers: sessionHeaders(),
     });
     const data = await readJson(res);
     checkBtn.disabled = false;
@@ -286,11 +332,10 @@ async function selfUpdate() {
     const res = await fetch('api/self-update', {
       method: 'POST',
       credentials: 'same-origin',
-      headers: {
+      headers: sessionHeaders({
         'Content-Type': 'application/json',
-        'X-CSRF-Token': csrfToken,
-        'X-Community-Session': sessionToken,
-      },
+        'X-CSRF-Token': csrfToken || undefined,
+      }),
       body: '{}',
     });
     const data = await readJson(res);
@@ -329,11 +374,10 @@ async function mutate(action, item, actions) {
     const response = await fetch(`api/${action}`, {
       method: 'POST',
       credentials: 'same-origin',
-      headers: {
+      headers: sessionHeaders({
         'Content-Type': 'application/json',
-        'X-CSRF-Token': csrfToken,
-        'X-Community-Session': sessionToken,
-      },
+        'X-CSRF-Token': csrfToken || undefined,
+      }),
       body: JSON.stringify({ id: item.id }),
     });
     const payload = await readJson(response);
