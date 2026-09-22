@@ -137,6 +137,18 @@ function render() {
   if (counter) counter.textContent = preview ? '本地预览' : parts.join(' · ');
 }
 
+async function readJson(response) {
+  // Windows 本地代理偶发把 401 包成 HTML 登录页；先读文本再解析，避免
+  // "Unexpected token '<'"。
+  const text = await response.text();
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    if (response.status === 401) return { ok: false, error: '请从小米智能存储客户端重新打开插件市场' };
+    return { ok: false, error: '服务返回了非 JSON 响应，请重新打开插件市场' };
+  }
+}
+
 async function loadCatalog(force) {
   try {
     const response = await fetch(`api/catalog${force ? '?refresh=1' : ''}`, {
@@ -144,7 +156,7 @@ async function loadCatalog(force) {
       cache: 'no-store',
       headers: { 'X-Community-Session': sessionToken },
     });
-    const payload = await response.json();
+    const payload = await readJson(response);
     if (response.status === 401) {
       packageList.replaceChildren(Object.assign(document.createElement('div'), {
         className: 'empty',
@@ -177,7 +189,7 @@ async function loadStoreStatus() {
       cache: 'no-store',
       headers: { 'X-Community-Session': sessionToken },
     });
-    const data = await res.json();
+    const data = await readJson(res);
     if (data.ok) localEl.textContent = `v${data.version}`;
     else localEl.textContent = '未知';
   } catch { localEl.textContent = '未知'; }
@@ -198,7 +210,7 @@ async function loadStoreStatus() {
       cache: 'no-store',
       headers: { 'X-Community-Session': sessionToken },
     });
-    const data = await res.json();
+    const data = await readJson(res);
     checkBtn.disabled = false;
     checkBtn.textContent = '检查更新';
 
@@ -248,7 +260,7 @@ async function selfUpdate() {
       },
       body: '{}',
     });
-    const data = await res.json();
+    const data = await readJson(res);
     if (!res.ok || !data.ok) throw new Error(data.error || '更新失败');
     if (data.updated) {
       noteEl.textContent = `已更新到 v${data.version}，页面即将刷新…`;
@@ -291,7 +303,7 @@ async function mutate(action, item, actions) {
       },
       body: JSON.stringify({ id: item.id }),
     });
-    const payload = await response.json();
+    const payload = await readJson(response);
     if (!response.ok || !payload.ok) throw new Error(payload.error || '操作失败');
     showToast(action === 'install' ? `${item.name} 已安装` : `${item.name} 已卸载，数据已保留`);
     await loadCatalog();

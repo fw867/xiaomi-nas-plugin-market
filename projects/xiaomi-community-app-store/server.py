@@ -128,13 +128,86 @@ class StoreHandler(BaseHTTPRequestHandler):
         cookie_path = "/" if self.app.dev else BASE_PATH
         return f"{COOKIE_NAME}={session_id}; Path={cookie_path}; HttpOnly; SameSite=Strict{secure}; Max-Age={SESSION_TTL}"
 
+    def _ip_candidates(self) -> list[str]:
+        """真实客户端地址。
+
+        商店只监听 127.0.0.1，生产流量都经 nginx 反代，TCP 对端永远是
+        回环——绝不能把 self.client_address 当成用户来源。优先用 nginx
+        写入的 X-Real-IP / X-Forwarded-For；两者都没有时（运维直连
+        18119）才退回 TCP 对端。
+        """
+        forwarded = [
+            self.headers.get("X-Real-IP", "").strip(),
+            self.headers.get("X-Forwarded-For", "").split(",")[0].strip(),
+        ]
+        forwarded = [item for item in forwarded if item]
+        if forwarded:
+            return forwarded
+        if self.client_address:
+            return [str(self.client_address[0])]
+        return []
+
+    def _is_loopback_source(self) -> bool:
+        for raw in self._ip_candidates():
+            try:
+                if ipaddress.ip_address(raw).is_loopback:
+                    return True
+            except ValueError:
+                continue
+        return False
+
+    def _is_private_source(self) -> bool:
+        for raw in self._ip_candidates():
+            try:
+                address = ipaddress.ip_address(raw)
+            except ValueError:
+                continue
+            if address.is_loopback or address.is_private:
+                return True
+        return False
+
+    def _bootstrap_token_ok(self) -> bool:
+        """安装器 / Windows 本地代理可用的引导密钥（与 admin-token 相同）。"""
+        secret = getattr(self.app, "admin_token", "")
+        if not secret:
+            return False
+        candidates = []
+        token = self.headers.get("X-Xiaomi-Bootstrap-Token", "").strip()
+        if token:
+            candidates.append(token)
+        for header in ("X-Xiaomi-Bootstrap-Authorization", "Authorization"):
+            value = self.headers.get(header, "")
+            if value.lower().startswith("bearer "):
+                candidates.append(value[7:].strip())
+        return any(secrets.compare_digest(item, secret) for item in candidates if item)
+
     def _trusted_xiaomi_client(self) -> bool:
+        """签发会话前的身份判断。
+
+        1. 设备客户端证书（手机 App 完整证书通道）→ SUCCESS。
+        2. 回环：nginx 的 X-Real-IP，或 TCP 对端本身是 127.0.0.1
+           （Windows 客户端本地代理把 NAS 映射到本机时会走到这里）。
+        3. Bootstrap token：nginx 转发的 ?token= / Authorization: Bearer，
+           与安装时生成的 admin-token 比对。
+        4. 私网来源：Windows 客户端经本地代理访问时通常**不带**设备客户端
+           证书（$ssl_client_verify=NONE），X-Real-IP 是电脑的局域网地址。
+           此时放行会话签发；安装/卸载仍依赖会话 + CSRF，且商店只安装
+           验签通过的包。不要把商店管理端口暴露到公网。
+        """
         if self.headers.get("X-Xiaomi-Client-Verify", "").upper() == "SUCCESS":
             return True
-        try:
-            return ipaddress.ip_address(self.headers.get("X-Real-IP", "")).is_loopback
-        except ValueError:
-            return False
+        if self._is_loopback_source():
+            return True
+        if self._bootstrap_token_ok():
+            return True
+        # Windows 小米客户端本地代理：无私网证书时的私网接入
+        verify = self.headers.get("X-Xiaomi-Client-Verify", "").upper()
+        if verify in ("NONE", "FAILED", "EXPIRED") and self._is_private_source():
+            return True
+        # 本地代理可能完全不经过带 ssl_client_verify 的 nginx 变量路径
+        if self._is_private_source() and self.headers.get("X-Real-IP"):
+            return True
+        return False
 
     def _require_session(self, write: bool = False) -> dict[str, object] | None:
         session = self._session()
@@ -322,6 +395,7 @@ class StoreServer(ThreadingHTTPServer):
         super().__init__(address, StoreHandler)
         self.dev = dev
         self.manager = manager
+        self.admin_token = admin_token
         self.session_key = hashlib.sha256(admin_token.encode("utf-8")).digest()
 
 
