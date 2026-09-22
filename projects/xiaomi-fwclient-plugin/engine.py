@@ -181,6 +181,35 @@ class Engine:
         atomic_json(self.cfgfile, self.config)
         os.chmod(self.cfgfile, 0o600)
 
+    def reconfigure(self, server, token, insecure=None):
+        """已初始化后修改服务器域名或访问令牌，改完自动重启客户端。
+
+        页面不回显令牌明文，所以留空表示「令牌保持不变」——只有用户真的填了
+        新值才会覆盖。
+        """
+        if not self.config:
+            raise Error('请先初始化')
+        new_server = validate_server(server)
+        if isinstance(token, str) and token:
+            new_token = validate_token(token)
+        else:
+            new_token = self.config.get('token', '')
+            if not new_token:
+                raise Error('请填写访问令牌')
+        new_insecure = bool(insecure) if insecure is not None else bool(self.config.get('insecure'))
+        if (new_server == self.config.get('server') and new_token == self.config.get('token')
+                and new_insecure == bool(self.config.get('insecure'))):
+            raise Error('没有需要修改的内容')
+        if self.find_pids():
+            self.stop(remember=False)
+        self.config['server'] = new_server
+        self.config['token'] = new_token
+        self.config['insecure'] = new_insecure
+        self.config['enabled'] = True
+        atomic_json(self.cfgfile, self.config)
+        os.chmod(self.cfgfile, 0o600)
+        self.start()
+
     def start(self):
         if not self.config:
             raise Error('请先填写服务器域名与访问令牌')
@@ -264,7 +293,7 @@ class Engine:
         return '\n'.join(parts[-lines:])[-4000:]
 
     def launch(self, action, data):
-        if action not in ('setup', 'start', 'stop', 'upgrade'):
+        if action not in ('setup', 'start', 'stop', 'upgrade', 'reconfigure'):
             raise Error('未知操作')
         if self.dev:
             raise Error('预览模式不会启动或修改穿透客户端')
@@ -277,6 +306,8 @@ class Engine:
                 if action == 'setup':
                     self.setup(data.get('server', ''), data.get('token', ''), data.get('insecure', False))
                     self.start()
+                elif action == 'reconfigure':
+                    self.reconfigure(data.get('server', ''), data.get('token', ''), data.get('insecure'))
                 elif action == 'start':
                     self.start()
                 elif action == 'stop':

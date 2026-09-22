@@ -98,7 +98,15 @@ code {
   display: flex;
   align-items: center;
   gap: 12px;
+  flex-wrap: wrap;
 }
+.status-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+.status-actions .btn { min-height: 40px; padding: 0 14px; font-size: 14px; }
 
 .status-dot {
   flex: 0 0 auto;
@@ -110,7 +118,7 @@ code {
 .status-dot.on { background: var(--green); box-shadow: 0 0 0 4px rgba(31, 157, 99, .15); }
 .status-dot.off { background: #b9c2cf; box-shadow: 0 0 0 4px rgba(185, 194, 207, .18); }
 
-.status-copy { min-width: 0; }
+.status-copy { min-width: 0; flex: 1 1 auto; }
 .status-copy strong { display: block; font-size: 15.5px; font-weight: 650; }
 .status-copy small { display: block; color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
 

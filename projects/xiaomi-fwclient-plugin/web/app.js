@@ -47,23 +47,36 @@ function stateLabel(s) {
   return s.running ? '穿透运行中' : '已停止';
 }
 
+function toggleLabel(running) {
+  return running ? '停止服务' : '启动服务';
+}
+
 function render(s) {
   $('serviceState').textContent = stateLabel(s);
   const dot = s.busy ? '' : (s.running ? 'on' : 'off');
   $('statusDot').className = dot ? 'status-dot ' + dot : 'status-dot';
-  $('setup').hidden = s.configured || s.busy;
-  $('serviceActions').hidden = !s.configured;
-  $('serverName').textContent = s.server || '—';
-  $('tokenState').textContent = s.hasToken ? '已保存' : '未设置';
-  $('clientVersion').textContent = s.clientVersion || '—';
-  $('toggleService').textContent = s.running ? '停止服务' : '启动服务';
-  $('toggleService').disabled = s.busy;
-  $('upgrade').disabled = s.busy;
+
   const info = [];
-  if (s.clientVersion) info.push('fwclient ' + s.clientVersion);
+  if (s.clientVersion) info.push('当前版本 v' + s.clientVersion);
   if (s.preview) info.push('预览模式');
   $('clientInfo').textContent = info.join(' · ');
   $('clientInfo').hidden = !info.length;
+
+  // 配置卡常驻：已配置时也能改服务器域名。令牌不回显，留空表示保持不变。
+  $('setup').hidden = s.busy;
+  const form = $('setupForm');
+  if (s.configured && s.server) {
+    if (form.elements.server.value !== s.server) form.elements.server.value = s.server;
+    $('confirmCheck').hidden = true;
+    $('saveBtn').textContent = '保存并重新启动';
+  } else {
+    $('confirmCheck').hidden = false;
+    $('saveBtn').textContent = '保存并启动';
+  }
+
+  $('toggleService').disabled = s.busy;
+  $('toggleService').textContent = toggleLabel(s.running);
+  $('upgrade').disabled = s.busy;
   if (!s.busy && s.error) showError(s.error);
   else if (!s.busy) showError('');
 }
@@ -95,16 +108,22 @@ $('refresh').onclick = () => refresh();
 $('setupForm').onsubmit = async (e) => {
   e.preventDefault();
   const form = e.target;
+  const configured = !!(state && state.configured);
+  const action = configured ? '/service/reconfigure' : '/service/setup';
+  const token = form.elements.token.value;
+  const payload = {
+    server: form.elements.server.value.trim(),
+    insecure: form.elements.insecure.checked,
+  };
+  // 令牌留空 = 保持原有值不变（页面不回显明文）
+  if (token) payload.token = token;
   const submit = form.querySelector('button[type=submit]');
   submit.disabled = true;
   try {
-    await act('/service/setup', {
-      server: form.elements.server.value.trim(),
-      token: form.elements.token.value,
-      insecure: form.elements.insecure.checked,
-    });
-    form.reset();
-    toast('已保存并启动');
+    await act(action, payload);
+    form.elements.token.value = '';
+    if (state && state.server) form.elements.server.value = state.server;
+    toast(configured ? '已保存并重新启动' : '已保存并启动');
   } catch (err) {
     toast(err.message);
   } finally {
@@ -115,8 +134,10 @@ $('toggleService').onclick = async () => {
   if (!state) return;
   const button = $('toggleService');
   button.disabled = true;
+  const wasRunning = state.running;
   try {
-    await act('/service/' + (state.running ? 'stop' : 'start'));
+    await act('/service/' + (wasRunning ? 'stop' : 'start'));
+    toast(wasRunning ? '正在停止' : '正在启动');
   } catch (e) {
     toast(e.message);
   } finally {

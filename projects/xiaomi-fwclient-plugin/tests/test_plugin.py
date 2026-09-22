@@ -32,6 +32,33 @@ class EngineTests(unittest.TestCase):
     def test_installed_version(self):
         self.assertEqual(installed_version(), VERSION)
 
+    def test_reconfigure_updates_server_and_keeps_token(self):
+        """已配置后可改服务器域名；令牌留空表示保持原值（页面不回显明文）。"""
+        with patch('engine.Engine.ensure_binary'):
+            self.engine.setup('fw867.com', 'tk_' + 'c' * 20)
+        with patch('engine.Engine.find_pids', return_value=[]), patch('engine.Engine.start'):
+            self.engine.reconfigure('new.example.com', '')
+        self.assertEqual(self.engine.config['server'], 'new.example.com')
+        self.assertEqual(self.engine.config['token'], 'tk_' + 'c' * 20)
+
+    def test_reconfigure_replaces_token_when_provided(self):
+        with patch('engine.Engine.ensure_binary'):
+            self.engine.setup('fw867.com', 'tk_' + 'c' * 20)
+        with patch('engine.Engine.find_pids', return_value=[]), patch('engine.Engine.start'):
+            self.engine.reconfigure('fw867.com', 'tk_' + 'e' * 20)
+        self.assertEqual(self.engine.config['token'], 'tk_' + 'e' * 20)
+
+    def test_reconfigure_rejects_empty_changes(self):
+        with patch('engine.Engine.ensure_binary'):
+            self.engine.setup('fw867.com', 'tk_' + 'c' * 20)
+        with patch('engine.Engine.find_pids', return_value=[]), patch('engine.Engine.start'):
+            with self.assertRaises(Error):
+                self.engine.reconfigure('fw867.com', '')
+
+    def test_reconfigure_requires_existing_config(self):
+        with self.assertRaises(Error):
+            self.engine.reconfigure('fw867.com', 'tk_' + 'd' * 20)
+
     def test_setup_saves_config_without_echo(self):
         with patch('engine.Engine.ensure_binary'):
             self.engine.setup('fw867.com', 'tk_' + 'b' * 20, insecure=True)

@@ -22,18 +22,22 @@
         </header>
 
         <main>
-            <section class="card status-card">
+            <section class="card status-card" id="statusCard">
                 <span class="status-dot" id="statusDot" aria-hidden="true"></span>
                 <div class="status-copy">
                     <strong id="serviceState" role="status">正在连接</strong>
                     <small id="clientInfo"></small>
                 </div>
+                <div class="status-actions">
+                    <button id="upgrade" class="btn">检查升级</button>
+                    <button id="toggleService" class="btn">启动服务</button>
+                </div>
             </section>
 
             <p id="error" class="alert" role="alert" hidden></p>
 
-            <section id="setup" class="card" hidden>
-                <h2>配置穿透客户端</h2>
+            <section id="setup" class="card">
+                <h2>穿透配置</h2>
                 <form id="setupForm" autocomplete="off">
                     <div class="field">
                         <span class="field-label">服务器域名</span>
@@ -41,7 +45,7 @@
                     </div>
                     <div class="field">
                         <span class="field-label">访问令牌</span>
-                        <input name="token" type="password" required minlength="8" maxlength="256" autocomplete="new-password" placeholder="tk_…">
+                        <input name="token" type="password" maxlength="256" autocomplete="new-password" placeholder="tk_…（留空表示令牌不变）">
                     </div>
                     <label class="check">
                         <input type="checkbox" name="insecure">
@@ -51,24 +55,12 @@
                         <summary>会怎么启动</summary>
                         <p>优先以守护进程运行：<code>fwclient -s &lt;域名&gt; -t &lt;令牌&gt; -d</code>。首次运行会在数据目录生成 <code>fwclient.id</code> 与 <code>fwclient.log</code>。穿透规则在网关管理端配置。</p>
                     </details>
-                    <label class="check">
+                    <label class="check" id="confirmCheck">
                         <input type="checkbox" required>
                         <span>我确认拥有该服务器与令牌，并同意启动内网穿透客户端</span>
                     </label>
-                    <button type="submit" class="btn primary block">保存并启动</button>
+                    <button type="submit" class="btn primary block" id="saveBtn">保存并启动</button>
                 </form>
-            </section>
-
-            <section class="card service-card" id="serviceActions" hidden>
-                <div class="service-copy">
-                    <div><span class="muted">服务器</span><strong id="serverName">—</strong></div>
-                    <div><span class="muted">访问令牌</span><strong id="tokenState">已保存</strong></div>
-                    <div><span class="muted">客户端版本</span><strong id="clientVersion">—</strong></div>
-                </div>
-                <div class="service-buttons">
-                    <button id="upgrade" class="btn">检查升级</button>
-                    <button id="toggleService" class="btn">启动服务</button>
-                </div>
             </section>
 
             <details class="card fold fold-card" id="logCard">
