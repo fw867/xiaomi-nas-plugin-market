@@ -75,7 +75,10 @@ async function refresh() {
     state = await call('/status');
     render(state);
     const log = await call('/log');
-    $('logBox').textContent = log.log || '（暂无）';
+    const text = log.log || '';
+    const lines = text.split('\n').filter((line) => line.trim());
+    $('logBox').textContent = lines.length ? text : '（暂无）';
+    $('logCount').textContent = lines.length ? lines.length + ' 行' : '暂无日志';
   } catch (e) {
     showError(e.message);
   } finally {
@@ -133,6 +136,27 @@ $('upgrade').onclick = async () => {
     button.disabled = false;
     button.textContent = '检查升级';
     await refresh();
+  }
+};
+
+// 一键复制整份日志；剪贴板不可用时退回到全选，让用户手动复制。
+$('copyLog').onclick = async () => {
+  const box = $('logBox');
+  const text = box.textContent || '';
+  if (!text || text === '（暂无）') {
+    toast('暂无可复制的日志');
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(text);
+    toast('日志已复制（' + text.split('\n').filter((l) => l.trim()).length + ' 行）');
+  } catch (e) {
+    const range = document.createRange();
+    range.selectNodeContents(box);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    toast('剪贴板不可用，已全选，请按 Ctrl+C 复制');
   }
 };
 

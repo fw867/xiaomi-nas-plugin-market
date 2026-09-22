@@ -37,7 +37,7 @@
                 <form id="setupForm" autocomplete="off">
                     <div class="field">
                         <span class="field-label">服务器域名</span>
-                        <input name="server" type="text" required maxlength="253" placeholder="例如 fw867.com">
+                        <input name="server" type="text" required maxlength="253" placeholder="例如 x.com">
                     </div>
                     <div class="field">
                         <span class="field-label">访问令牌</span>
@@ -66,17 +66,21 @@
                     <div><span class="muted">客户端版本</span><strong id="clientVersion">—</strong></div>
                 </div>
                 <div class="service-buttons">
-                    <button id="upgrade" class="btn small">检查升级</button>
+                    <button id="upgrade" class="btn">检查升级</button>
                     <button id="toggleService" class="btn">启动服务</button>
                 </div>
             </section>
 
-            <details class="card fold fold-card" id="notes">
+            <details class="card fold fold-card" id="logCard">
                 <summary>日志摘要</summary>
+                <div class="log-actions">
+                    <span class="log-count" id="logCount">（暂无）</span>
+                    <button type="button" id="copyLog" class="btn">复制日志</button>
+                </div>
                 <pre id="logBox" class="log">（暂无）</pre>
             </details>
 
-            <details class="card fold fold-card">
+            <details class="card fold fold-card" id="notes">
                 <summary>说明与限制</summary>
                 <ul>
                     <li>命令：<code>fwclient -s &lt;域名&gt; -t &lt;令牌&gt; -d</code>；<code>-u</code> 升级，<code>-v</code> 版本，<code>-insecure</code> 跳过 TLS。</li>
