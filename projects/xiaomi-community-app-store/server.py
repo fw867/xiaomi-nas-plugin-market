@@ -246,8 +246,27 @@ class StoreHandler(BaseHTTPRequestHandler):
             headers["Set-Cookie"] = self._session_cookie(session_id)
         self._send(HTTPStatus.OK, html.encode("utf-8"), "text/html; charset=utf-8", headers)
 
+    def _is_catalog_route(self, path: str, query: dict[str, list[str]]) -> bool:
+        """Windows 本地代理（https://localhost:443）会把未知路径 SPA 回退成
+        index.html。除标准 /api/catalog 外，再认两种静态扩展友好写法。
+        """
+        if path == "/api/catalog":
+            return True
+        if path in ("/catalog.json", "/api/catalog.json"):
+            return True
+        if path in ("/", "/index.html") and query.get("api") == ["catalog"]:
+            return True
+        return False
+
     def do_GET(self) -> None:
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
+        query = parse_qs(parsed.query)
+        if self._is_catalog_route(path, query):
+            if not self._require_session():
+                return
+            self._handle_catalog(force_refresh=query.get("refresh") == ["1"])
+            return
         if path in ("/", "/index.html"):
             self._serve_index()
             return
@@ -267,12 +286,6 @@ class StoreHandler(BaseHTTPRequestHandler):
             if not self._require_session():
                 return
             self._handle_update_check()
-            return
-        if path == "/api/catalog":
-            if not self._require_session():
-                return
-            query = parse_qs(urlparse(self.path).query)
-            self._handle_catalog(force_refresh=query.get("refresh") == ["1"])
             return
         # 静态资源（web/ 目录下的 JS/CSS/HTML）
         file_path = self._safe_file(WEB, path)

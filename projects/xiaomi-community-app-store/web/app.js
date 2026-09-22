@@ -138,25 +138,58 @@ function render() {
 }
 
 async function readJson(response) {
-  // Windows 本地代理偶发把 401 包成 HTML 登录页；先读文本再解析，避免
+  // Windows 本地代理偶发把 401/SPA 回退包成 HTML；先读文本再解析，避免
   // "Unexpected token '<'"。
   const text = await response.text();
   try {
     return JSON.parse(text);
   } catch (error) {
     if (response.status === 401) return { ok: false, error: '请从小米智能存储客户端重新打开插件市场' };
-    return { ok: false, error: '服务返回了非 JSON 响应，请重新打开插件市场' };
+    const type = (response.headers.get('content-type') || '').split(';')[0].trim();
+    const snippet = text.slice(0, 80).replace(/\s+/g, ' ').trim();
+    return {
+      ok: false,
+      error: `服务返回了非 JSON 响应（HTTP ${response.status} ${type || 'unknown'}）：${snippet || '（空）'}`,
+    };
   }
+}
+
+async function fetchApi(path, init) {
+  // 本地代理可能把 /api/* 当成前端路由回退到 index.html。
+  // 依次尝试：标准 API → 静态扩展名 catalog.json → 页面路径 + ?api=
+  const [name, qs] = String(path).split('?');
+  const query = qs ? `?${qs}` : '';
+  const dir = location.pathname.replace(/[^/]*$/, '');
+  const attempts = [
+    `api/${name}${query}`,
+    `${dir}catalog.json${query}`,
+    `${dir}index.html?api=${encodeURIComponent(name)}${query ? `&${qs}` : ''}`,
+  ];
+  let lastError = new Error('请求失败');
+  for (const url of attempts) {
+    try {
+      const response = await fetch(url, init);
+      const payload = await readJson(response);
+      if (response.status === 401) return { response, payload, url };
+      if (payload && typeof payload === 'object' && ('ok' in payload)) {
+        return { response, payload, url };
+      }
+      lastError = new Error(payload && payload.error ? payload.error : '服务返回了非 JSON 响应');
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError;
 }
 
 async function loadCatalog(force) {
   try {
-    const response = await fetch(`api/catalog${force ? '?refresh=1' : ''}`, {
+    const name = force ? 'catalog?refresh=1' : 'catalog';
+    const { response, payload } = await fetchApi(name, {
       credentials: 'same-origin',
       cache: 'no-store',
       headers: { 'X-Community-Session': sessionToken },
     });
-    const payload = await readJson(response);
     if (response.status === 401) {
       packageList.replaceChildren(Object.assign(document.createElement('div'), {
         className: 'empty',

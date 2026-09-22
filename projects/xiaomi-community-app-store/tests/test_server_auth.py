@@ -156,6 +156,27 @@ class ServerAuthTests(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual("no-store", headers["Cache-Control"])
 
+    def test_catalog_reachable_via_static_extension_and_page_query(self) -> None:
+        """Windows 本地代理可能把 /api/* SPA 回退成 HTML；catalog.json / ?api=catalog 要可用。"""
+        session = self.session_token()
+
+        def fake_catalog(*, cache_path=None, force_refresh=False):
+            return {"apps": [], "store": {}}
+
+        with mock.patch("server.load_apps_catalog", side_effect=fake_catalog):
+            for path in (
+                "/api/catalog",
+                "/catalog.json",
+                "/api/catalog.json",
+                "/index.html?api=catalog",
+            ):
+                status, headers, body = self.request(
+                    "GET", path, headers={"X-Community-Session": session}
+                )
+                self.assertEqual(200, status, path)
+                self.assertIn("json", headers.get("Content-Type", ""), path)
+                self.assertTrue(json.loads(body.decode("utf-8")).get("ok"), path)
+
     def test_catalog_refresh_bypasses_ttl_cache(self) -> None:
         """刷新按钮带 refresh=1，要跳过后端 TTL 缓存直接重拉远程。"""
         session = self.session_token()
