@@ -134,9 +134,13 @@ function resolveNasApi(path: "nas-status" | "live-metrics") {
 
   const host = window.location.hostname;
   const isLocalPreview = host === "127.0.0.1" || host === "localhost";
-  return isLocalPreview && window.location.port === "5177"
-    ? `http://127.0.0.1:5188/api/${path}`
-    : `api/${path}`;
+  if (isLocalPreview && window.location.port === "5177") {
+    return `http://127.0.0.1:5188/api/${path}`;
+  }
+  // Windows 客户端 location 可能带盘符（/D:/plugin/...），不能用相对 api/。
+  // 产物在 assets/*.js 下，import.meta.url 上一级即插件根目录。
+  const pluginRoot = new URL("../", import.meta.url).href;
+  return new URL(`api/${path}`, pluginRoot).href;
 }
 
 function sourceLabel(status: NasStatus) {

@@ -1,5 +1,22 @@
 (() => {
   'use strict';
+// Windows 客户端 location 可能带盘符（/D:/plugin/...），相对 fetch 会 400。
+// 以当前 script URL 为绝对基址（与 aliyundrive/115 插件一致）。
+function pluginAssetBase() {
+  const loaded = document.currentScript?.src
+    || [...document.scripts].map((s) => s.src).find((src) => /\/app(?:\.bundle)?\.js(?:$|\?)/.test(src));
+  if (loaded) return new URL('./', loaded).href;
+  const route = window.__MICRO_APP_BASE_ROUTE__;
+  if (typeof route === 'string' && route) {
+    const cleaned = route.replace(/^\/[A-Za-z]:/, '') || route;
+    const normalized = cleaned.endsWith('/') ? cleaned : `${cleaned}/`;
+    return new URL(normalized, window.location.origin).href;
+  }
+  const dir = window.location.pathname.replace(/^\/[A-Za-z]:/, '').replace(/[^/]*$/, '');
+  return new URL(dir || '/', window.location.origin).href;
+}
+const assetUrl = (path) => new URL(path, pluginAssetBase()).href;
+
   const icons = __ICON_ASSETS__;
   const root = document.querySelector('#qb-app');
   const $ = (s) => root.querySelector(s);
@@ -14,7 +31,7 @@
   function toast(message) { $('#toast').textContent = message; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').hidden = true, 6500); }
   function showError(message) { const box = $('#error'); box.textContent = message || ''; box.hidden = !message; }
   async function api(route, data) {
-    const response = await fetch('api/' + route, {method:data === undefined ? 'GET':'POST', cache:'no-store', headers:{'X-QB-Session':session,'X-CSRF-Token':csrf,...(data === undefined ? {} : {'Content-Type':'application/json'})}, body:data === undefined ? undefined : JSON.stringify(data)});
+    const response = await fetch(assetUrl('api/' + route), {method:data === undefined ? 'GET':'POST', cache:'no-store', headers:{'X-QB-Session':session,'X-CSRF-Token':csrf,...(data === undefined ? {} : {'Content-Type':'application/json'})}, body:data === undefined ? undefined : JSON.stringify(data)});
     const result = await response.json().catch(() => ({})); if (!response.ok || !result.ok) throw new Error(result.error || '请求失败'); return result;
   }
   async function busy(button, fn) { button.disabled = true; try {await fn();} catch(e) {toast(e.message);} finally {button.disabled = false;} }

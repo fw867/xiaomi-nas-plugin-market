@@ -119,7 +119,7 @@ function reportLayoutMetrics() {
     visual: visualViewport ? `${Math.round(visualViewport.width)}x${Math.round(visualViewport.height)}` : 'unavailable',
     dpr: String(window.devicePixelRatio || 1),
   });
-  window.fetch(`api/status?${parameters.toString()}`, { cache: 'no-store' }).catch(() => {});
+  window.fetch(assetUrl(`api/status?${parameters.toString()}`), { cache: 'no-store' }).catch(() => {});
 }
 
 function escapeHtml(value) {
@@ -170,7 +170,7 @@ function scheduleLabel(schedule) {
 }
 
 async function api(route, options = {}) {
-  const response = await fetch(`api/${route}`, {
+  const response = await fetch(assetUrl(`api/${route}`), {
     method: options.method || 'GET',
     headers: options.body ? { 'Content-Type': 'application/json' } : undefined,
     body: options.body ? JSON.stringify(options.body) : undefined,

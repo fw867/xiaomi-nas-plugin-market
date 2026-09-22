@@ -9,8 +9,25 @@ const escapeHTML = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp
 const icon = (name) => `<img src="${window.WEBDAV_ICON_ASSETS[name]}" alt="">`;
 const button = (action, id, title, image) => `<button class="icon" data-action="${action}" data-id="${id}" title="${title}" aria-label="${title}">${icon(image)}</button>`;
 function toast(message) { $('#toast').textContent = message; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').hidden = true, 6500); }
+// Windows 客户端 location 可能带盘符（/D:/plugin/...），相对 fetch 会 400。
+// 以当前 script URL 为绝对基址（与 aliyundrive/115 插件一致）。
+function pluginAssetBase() {
+  const loaded = document.currentScript?.src
+    || [...document.scripts].map((s) => s.src).find((src) => /\/app(?:\.bundle)?\.js(?:$|\?)/.test(src));
+  if (loaded) return new URL('./', loaded).href;
+  const route = window.__MICRO_APP_BASE_ROUTE__;
+  if (typeof route === 'string' && route) {
+    const cleaned = route.replace(/^\/[A-Za-z]:/, '') || route;
+    const normalized = cleaned.endsWith('/') ? cleaned : `${cleaned}/`;
+    return new URL(normalized, window.location.origin).href;
+  }
+  const dir = window.location.pathname.replace(/^\/[A-Za-z]:/, '').replace(/[^/]*$/, '');
+  return new URL(dir || '/', window.location.origin).href;
+}
+const assetUrl = (path) => new URL(path, pluginAssetBase()).href;
+
 async function api(route, body) {
-  const response = await fetch('api/' + route, {method: body === undefined ? 'GET' : 'POST', cache:'no-store', headers:{'X-WebDAV-Session':session, 'X-CSRF-Token':csrf, ...(body === undefined ? {} : {'Content-Type':'application/json'})}, body:body === undefined ? undefined : JSON.stringify(body)});
+  const response = await fetch(assetUrl('api/' + route), {method: body === undefined ? 'GET' : 'POST', cache:'no-store', headers:{'X-WebDAV-Session':session, 'X-CSRF-Token':csrf, ...(body === undefined ? {} : {'Content-Type':'application/json'})}, body:body === undefined ? undefined : JSON.stringify(body)});
   const result = await response.json();
   if (!response.ok || !result.ok) throw new Error(result.error || '请求失败');
   return result;
@@ -87,7 +104,7 @@ for (const [id,route,dialog] of [['remoteForm','remote/save','remoteDialog'],['j
   $('#'+id).onsubmit=event=>{event.preventDefault();const form=event.target;if(id==='shareForm'&&!validateSharePassword()){form.reportValidity();return;}busy(form.querySelector('[type=submit]'),async()=>{await act(route,fields(form));if(dialog)$('#'+dialog).close();if(id==='shareForm')form.elements.password.value='';toast('设置已保存');});};
 }
 $('#toggleShare').onclick=()=>busy($('#toggleShare'),async()=>{if(!state.share.enabled&&!state.share.hasPassword)throw new Error('请先保存共享设置和密码');await act(state.share.enabled?'share/stop':'share/start',{});});
-$('#certificate').onclick=()=>busy($('#certificate'),async()=>{const response=await fetch('api/certificate',{headers:{'X-WebDAV-Session':session}});if(!response.ok)throw new Error('证书下载失败');const url=URL.createObjectURL(await response.blob());const a=document.createElement('a');a.href=url;a.download='nas-webdav-ca.crt';a.click();setTimeout(()=>URL.revokeObjectURL(url),60000);});
+$('#certificate').onclick=()=>busy($('#certificate'),async()=>{const response=await fetch(assetUrl('api/certificate'),{headers:{'X-WebDAV-Session':session}});if(!response.ok)throw new Error('证书下载失败');const url=URL.createObjectURL(await response.blob());const a=document.createElement('a');a.href=url;a.download='nas-webdav-ca.crt';a.click();setTimeout(()=>URL.revokeObjectURL(url),60000);});
 async function loadFolders() {
   clearTimeout(browseOpenTimer);cancelFolderRename?.();$('#browseError').textContent='';
   const generation=++browseGeneration; $('#folders').innerHTML='<p>读取目录中…</p>';$('#chooseFolder').disabled=true;$('#up').disabled=true;

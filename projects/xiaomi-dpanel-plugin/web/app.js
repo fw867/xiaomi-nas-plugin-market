@@ -1,4 +1,21 @@
 'use strict';
+// Windows 客户端 location 可能带盘符（/D:/plugin/...），相对 fetch 会 400。
+// 以当前 script URL 为绝对基址（与 aliyundrive/115 插件一致）。
+function pluginAssetBase() {
+  const loaded = document.currentScript?.src
+    || [...document.scripts].map((s) => s.src).find((src) => /\/app(?:\.bundle)?\.js(?:$|\?)/.test(src));
+  if (loaded) return new URL('./', loaded).href;
+  const route = window.__MICRO_APP_BASE_ROUTE__;
+  if (typeof route === 'string' && route) {
+    const cleaned = route.replace(/^\/[A-Za-z]:/, '') || route;
+    const normalized = cleaned.endsWith('/') ? cleaned : `${cleaned}/`;
+    return new URL(normalized, window.location.origin).href;
+  }
+  const dir = window.location.pathname.replace(/^\/[A-Za-z]:/, '').replace(/[^/]*$/, '');
+  return new URL(dir || '/', window.location.origin).href;
+}
+const assetUrl = (path) => new URL(path, pluginAssetBase()).href;
+
 const $ = (id) => document.getElementById(id);
 const session = document.querySelector('meta[name="dpanel-session"]').content;
 const csrf = document.querySelector('meta[name="csrf-token"]').content;
@@ -29,7 +46,7 @@ async function call(path, body) {
     headers['Content-Type'] = 'application/json';
   }
   // 相对路径：插件页挂在 /plugin/<用户>/dpanel/ 下
-  const response = await fetch('api' + path, {
+  const response = await fetch(assetUrl('api' + path), {
     method: body === undefined ? 'GET' : 'POST',
     headers,
     body: body === undefined ? undefined : JSON.stringify(body),

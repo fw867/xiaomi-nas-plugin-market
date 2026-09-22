@@ -66,16 +66,18 @@ NAS_USER_ID=u123456 bash -c "$(curl -fsSL https://raw.githubusercontent.com/fw86
 
 | 插件 | 版本 | 说明 |
 | --- | --- | --- |
-| [设备管家](projects/xiaomi-device-manager-prototype) | 0.4.1 | 只读查看 CPU、内存、温度、网络、磁盘 SMART 和 Docker 状态 |
-| [115 云备份](projects/xiaomi-115-sync-plugin) | 0.1.0 | 需要自己获批的 115 App ID，再扫码授权 |
-| [阿里云盘备份](projects/xiaomi-aliyundrive-sync-plugin) | 0.1.0 | 需要自己获批的阿里云盘应用，再扫码授权 |
-| [WebDAV 文件桥](projects/xiaomi-webdav-plugin) | 0.2.0-rc5 | 测试版；多账号、多目录授权、远程单向备份 |
-| [qB 下载](projects/xiaomi-qbittorrent-plugin) | 0.1.2 | 磁力/种子下载、限速；需要 Docker |
-| [Transmission 下载](projects/xiaomi-transmission-plugin) | 0.2.0 | Docker 版 BT：可设下载/配置/监控目录与 WebUI 账号；端口 9091、51413；需要 Docker |
-| [Emby 媒体服务器](projects/xiaomi-emby-plugin) | 0.1.0 | Emby 官方镜像的受限容器；媒体目录读写挂载，端口 8096 对局域网开放；需要 Docker |
+| [设备管家](projects/xiaomi-device-manager-prototype) | 0.4.9 | 只读查看 CPU、内存、温度、网络、磁盘 SMART 和 Docker 状态 |
+| [115 云备份](projects/xiaomi-115-sync-plugin) | 0.1.6 | 需要自己获批的 115 App ID，再扫码授权 |
+| [阿里云盘备份](projects/xiaomi-aliyundrive-sync-plugin) | 0.1.6 | 需要自己获批的阿里云盘应用，再扫码授权 |
+| [WebDAV 文件桥](projects/xiaomi-webdav-plugin) | 0.2.2-rc5 | 测试版；多账号、多目录授权、远程单向备份 |
+| [qB 下载](projects/xiaomi-qbittorrent-plugin) | 0.1.7 | 磁力/种子下载、限速；需要 Docker |
+| [SSH 开关](projects/xiaomi-ssh-control-plugin) | 0.1.4 | 启停 SSH 远程登录，可设开机自启 |
+| [Transmission 下载](projects/xiaomi-transmission-plugin) | 0.1.12 | Docker 版 BT：可设下载/配置/监控目录与 WebUI 账号；端口 9091、51413；需要 Docker |
+| [Emby 媒体服务器](projects/xiaomi-emby-plugin) | 0.1.10 | Emby 官方镜像的受限容器；媒体目录读写挂载，端口 8096 对局域网开放；需要 Docker |
 | [DPanel 容器管理](projects/xiaomi-dpanel-plugin) | 0.1.0 | 轻量 Docker 面板；挂载 docker.sock 与配置目录，端口 8807；需要 Docker |
 | [Jellyfin 媒体服务器](projects/xiaomi-jellyfin-plugin) | 0.1.0 | 开源媒体服务器；配置/缓存/媒体持久化，端口 8097；需要 Docker |
-| [内网穿透](projects/xiaomi-fwclient-plugin) | 0.1.0 | fwclient 隧道；可配服务器/令牌，显示版本并支持升级 |
+| [内网穿透](projects/xiaomi-fwclient-plugin) | 0.1.1 | fwclient 隧道；可配服务器/令牌，显示版本并支持升级 |
+| 应用商店（本体） | 0.2.21 | 浏览、安装、更新上述插件；见 [xiaomi-community-app-store](projects/xiaomi-community-app-store) |
 | 夸克网盘 | 未发布 | 目前没有可用实现 |
 
 ## 插件如何分发
@@ -190,6 +192,10 @@ projects/                          插件源码
   xiaomi-qbittorrent-plugin/       qB 下载
   xiaomi-ssh-control-plugin/       SSH 开关
   xiaomi-transmission-plugin/      Transmission 下载
+  xiaomi-emby-plugin/              Emby 媒体服务器
+  xiaomi-dpanel-plugin/            DPanel 容器管理
+  xiaomi-jellyfin-plugin/          Jellyfin 媒体服务器
+  xiaomi-fwclient-plugin/          内网穿透
 
 apps/                              构建产物（提交到 git）
 apps.json                          应用清单（自动生成）
@@ -236,20 +242,59 @@ python3 server.py --dev    # 预览模式，不修改 NAS
 # 打开 http://127.0.0.1:18119/
 ```
 
+### 前端 API 地址（Windows 客户端必读）
+
+插件页挂在 `/plugin/<用户>/<插件key>/` 下，但 **Windows 小米智能存储客户端**在
+WebView / micro-app 里可能把 `location` 解析成带盘符的形态（例如
+`/D:/plugin/...`）。此时相对路径 `fetch('api/status')` 会被打成
+`/D:/plugin/.../api/status`，nginx 直接 400 HTML，页面显示
+「服务返回了非 JSON 响应」。
+
+因此插件前端 **不要用相对路径调 API**，应以自己脚本的 URL 为基址拼绝对地址：
+
+```js
+function pluginAssetBase() {
+  const loaded = document.currentScript?.src
+    || [...document.scripts].map((s) => s.src).find((src) => /\/app(?:\.bundle)?\.js(?:$|\?)/.test(src));
+  if (loaded) return new URL('./', loaded).href;
+  const route = window.__MICRO_APP_BASE_ROUTE__;
+  if (typeof route === 'string' && route) {
+    const cleaned = route.replace(/^\/[A-Za-z]:/, '') || route;
+    const normalized = cleaned.endsWith('/') ? cleaned : `${cleaned}/`;
+    return new URL(normalized, window.location.origin).href;
+  }
+  const dir = window.location.pathname.replace(/^\/[A-Za-z]:/, '').replace(/[^/]*$/, '');
+  return new URL(dir || '/', window.location.origin).href;
+}
+const assetUrl = (path) => new URL(path, pluginAssetBase()).href;
+
+// 用法
+await fetch(assetUrl('api/status'));
+```
+
+约定：
+
+- API 一律相对插件根目录的 `api/...`，最终 URL 形如
+  `https://<host>/plugin/<用户>/<key>/api/...`（不要写成 `/api/...`，那会打到站点根）。
+- Vite / 打包产物在 `assets/*.js` 下时，用 `new URL('../', import.meta.url)` 取插件根
+  （设备管家即如此）。
+- 静态资源（图标、CSS）同样建议走 `assetUrl`，避免 Mac 主壳 / Windows 盘符基址错误。
+
 ### 添加新插件
 
 1. 在 `projects/` 下创建插件目录（参考现有插件结构）。
 2. **提供规范要素文件**（否则开机后会被系统强制卸载）：
    - `deploy/plugin-meta.json`：名称、描述、标签、服务名等元数据
    - `deploy/control`：转发到该插件 systemd 服务的控制脚本
-3. 在 `scripts/build_apps.py` 的 `PACKAGE_SPECS` 中添加条目。
-4. 运行 `python3 scripts/build_apps.py --only <id>` 验证打包，
+3. 前端 API 按上一节用 `assetUrl` 拼绝对地址，不要写相对 `api/...`。
+4. 在 `scripts/build_apps.py` 的 `PACKAGE_SPECS` 中添加条目。
+5. 运行 `python3 scripts/build_apps.py --only <id>` 验证打包，
    确认 bundle 里包含 `runtime/plugin-meta.json` 与 `runtime/control`。
-5. 提交推送，CI 自动更新 `apps/` 和 `apps.json`。
+6. 提交推送，CI 自动更新 `apps/` 和 `apps.json`。
 
 ## 当前限制
 
-- 测试发布，不是经过全机型验证的正式产品。已在 RP05 和 Mac 客户端验证；Windows 10/11 实体安装、其他固件仍需测试。
+- 测试发布，不是经过全机型验证的正式产品。已在 RP05、Mac 客户端、Windows 10/11 客户端验证插件市场与 API 基址修复；其他固件与机型仍需测试。
 - 第三方云盘接口、授权审批和限流由服务方决定。
 - WebDAV 与云盘备份不是传播删除的双向镜像。重要文件另做备份。
 - 不承诺官方 OTA 后入口与服务始终存在。
