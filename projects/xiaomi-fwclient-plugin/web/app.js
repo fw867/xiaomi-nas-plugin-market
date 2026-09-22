@@ -57,7 +57,8 @@ function render(s) {
   $('statusDot').className = dot ? 'status-dot ' + dot : 'status-dot';
 
   const info = [];
-  if (s.clientVersion) info.push('当前版本 v' + s.clientVersion);
+  // clientVersion 来自 fwclient -v，本身已带 v 前缀，不要再补一次
+  if (s.clientVersion) info.push('当前版本 ' + s.clientVersion);
   if (s.preview) info.push('预览模式');
   $('clientInfo').textContent = info.join(' · ');
   $('clientInfo').hidden = !info.length;

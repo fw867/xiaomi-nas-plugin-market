@@ -51,10 +51,6 @@
                         <input type="checkbox" name="insecure">
                         <span>跳过 TLS 校验（仅自签证书场景）</span>
                     </label>
-                    <details class="fold">
-                        <summary>会怎么启动</summary>
-                        <p>优先以守护进程运行：<code>fwclient -s &lt;域名&gt; -t &lt;令牌&gt; -d</code>。首次运行会在数据目录生成 <code>fwclient.id</code> 与 <code>fwclient.log</code>。穿透规则在网关管理端配置。</p>
-                    </details>
                     <label class="check" id="confirmCheck">
                         <input type="checkbox" required>
                         <span>我确认拥有该服务器与令牌，并同意启动内网穿透客户端</span>
@@ -75,7 +71,7 @@
             <details class="card fold fold-card" id="notes">
                 <summary>说明与限制</summary>
                 <ul>
-                    <li>命令：<code>fwclient -s &lt;域名&gt; -t &lt;令牌&gt; -d</code>；<code>-u</code> 升级，<code>-v</code> 版本，<code>-insecure</code> 跳过 TLS。</li>
+                    <li>启动方式：优先以守护进程运行 <code>fwclient -s &lt;域名&gt; -t &lt;令牌&gt; -d</code>，穿透规则在网关管理端配置；首次运行会在数据目录生成 <code>fwclient.id</code> 与 <code>fwclient.log</code>。其余参数：<code>-u</code> 升级，<code>-v</code> 版本，<code>-insecure</code> 跳过 TLS。</li>
                     <li>令牌只保存在插件私有目录（0600），不会显示在页面上。</li>
                     <li>升级会替换数据目录中的 <code>fwclient</code> 二进制，升级完成后可重新启动服务。</li>
                 </ul>
