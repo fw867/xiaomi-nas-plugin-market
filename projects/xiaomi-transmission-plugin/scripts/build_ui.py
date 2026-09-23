@@ -7,7 +7,7 @@ root = Path(__file__).resolve().parents[1]
 source = root / 'web/app.js'
 icons = {p.stem: 'data:image/png;base64,' + base64.b64encode(p.read_bytes()).decode()
          for p in sorted((root / 'web/assets').glob('*.png'))}
-template = source.read_text(encoding='utf-8', newline='\n')
+template = source.read_text(encoding='utf-8')
 if '__ICON_ASSETS__' not in template:
     raise SystemExit('Expected source icon placeholder')
 (root / 'web/app.bundle.js').write_text(
