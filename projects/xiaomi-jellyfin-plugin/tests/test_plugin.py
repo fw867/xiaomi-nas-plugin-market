@@ -168,7 +168,7 @@ class HTTPTests(unittest.TestCase):
         _, body = self.request('GET', '/')
         text = body.decode()
         self.assertNotIn('__PLUGIN_VERSION__', text)
-        self.assertIn('Jellyfin 媒体服务器 · ' + installed_version(), text)
+        self.assertIn('Jellyfin · ' + installed_version(), text)
 
     def test_status_reports_lan_address_on_8097(self):
         with patch('server.lan_ip', return_value='192.168.1.30'):
@@ -184,7 +184,7 @@ class UiTests(unittest.TestCase):
     def test_ui_uses_relative_api(self):
         script = (self.web / 'app.js').read_text(encoding='utf-8')
         self.assertNotIn("'/api", script)
-        self.assertIn("fetch('api' + path", script)
+        self.assertIn("assetUrl('api' + path", script)
 
     def test_html_has_icon_and_setup_fields(self):
         html = (self.web / 'index.html').read_text(encoding='utf-8')

@@ -72,6 +72,7 @@ function render(s) {
   $('statusDot').className = dot ? 'status-dot ' + dot : 'status-dot';
   $('setup').hidden = s.configured || s.busy;
   $('serviceActions').hidden = !s.configured;
+  $('toggleService').hidden = !s.configured || s.busy;
   $('access').hidden = !(s.configured && s.running);
   $('directory').textContent = s.configured ? ('/' + (s.directory || '—')) : '—';
   $('configDirectory').textContent = s.configured

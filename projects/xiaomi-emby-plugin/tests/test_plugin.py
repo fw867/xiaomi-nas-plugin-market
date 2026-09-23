@@ -447,7 +447,7 @@ class HTTPTests(unittest.TestCase):
         _, body = self.request('GET', '/')
         text = body.decode()
         self.assertNotIn('__PLUGIN_VERSION__', text)
-        self.assertIn('Emby 媒体服务器 · ' + installed_version(), text)
+        self.assertIn('Emby · ' + installed_version(), text)
 
 
 class UiTests(unittest.TestCase):
@@ -460,7 +460,7 @@ class UiTests(unittest.TestCase):
         script = (Path(__file__).resolve().parents[1] / 'web' / 'app.js').read_text(encoding='utf-8')
         self.assertNotIn("'/api", script)
         self.assertNotIn('"/api', script)
-        self.assertIn("fetch('api' + path", script)
+        self.assertIn("assetUrl('api' + path", script)
 
 
     def test_page_version_comes_from_server(self):

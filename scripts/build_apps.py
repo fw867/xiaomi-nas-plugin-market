@@ -356,7 +356,7 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
     },
     {
         "id": "emby",
-        "name": "Emby 媒体服务器",
+        "name": "Emby",
         "version": "0.1.0",
         "summary": "在 NAS 上运行 Emby，向局域网设备串流个人影音",
         "description": "官方 Emby 镜像的受限容器；媒体目录读写挂载以便写回元数据，配置保存在插件私有目录，Emby 默认端口 8096 对局域网开放。",
@@ -384,7 +384,7 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
         "registry": {
             "icon": "/icon/emby.icon?v=0.1.0",
             "frontend": {
-                "title": "Emby 媒体服务器",
+                "title": "Emby",
                 "desc": "影音串流",
                 "type": "url",
                 "permission": ["admin"],
@@ -446,7 +446,7 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
     },
     {
         "id": "jellyfin",
-        "name": "Jellyfin 媒体服务器",
+        "name": "Jellyfin",
         "version": "0.1.0",
         "summary": "开源媒体服务器；配置/缓存/媒体持久化，HTTP 端口 8097 对局域网开放",
         "description": "官方 Jellyfin 镜像的受限容器；媒体目录、配置目录与缓存持久化，端口映射 8097/8920/7359，可与 Emby 同时安装。需要 Docker。",
@@ -474,7 +474,7 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
         "registry": {
             "icon": "/icon/jellyfin.icon?v=0.1.0",
             "frontend": {
-                "title": "Jellyfin 媒体服务器",
+                "title": "Jellyfin",
                 "desc": "影音串流",
                 "type": "url",
                 "permission": ["admin"],

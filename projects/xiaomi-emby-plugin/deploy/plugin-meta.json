@@ -1,6 +1,6 @@
 {
   "plugin": "emby",
-  "name": "Emby 媒体服务器",
+  "name": "Emby",
   "id": 11007,
   "desc": "在 NAS 上运行 Emby，整理并向局域网设备串流个人影音",
   "tags": [

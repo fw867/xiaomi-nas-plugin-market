@@ -73,9 +73,9 @@ NAS_USER_ID=u123456 bash -c "$(curl -fsSL https://raw.githubusercontent.com/fw86
 | [qB 下载](projects/xiaomi-qbittorrent-plugin) | 0.1.7 | 磁力/种子下载、限速；需要 Docker |
 | [SSH 开关](projects/xiaomi-ssh-control-plugin) | 0.1.4 | 启停 SSH 远程登录，可设开机自启 |
 | [Transmission 下载](projects/xiaomi-transmission-plugin) | 0.1.12 | Docker 版 BT：可设下载/配置/监控目录与 WebUI 账号；端口 9091、51413；需要 Docker |
-| [Emby 媒体服务器](projects/xiaomi-emby-plugin) | 0.1.10 | Emby 官方镜像的受限容器；媒体目录读写挂载，端口 8096 对局域网开放；需要 Docker |
+| [Emby](projects/xiaomi-emby-plugin) | 0.1.10 | Emby 官方镜像的受限容器；媒体目录读写挂载，端口 8096 对局域网开放；需要 Docker |
 | [DPanel 容器管理](projects/xiaomi-dpanel-plugin) | 0.1.0 | 轻量 Docker 面板；挂载 docker.sock 与配置目录，端口 8807；需要 Docker |
-| [Jellyfin 媒体服务器](projects/xiaomi-jellyfin-plugin) | 0.1.0 | 开源媒体服务器；配置/缓存/媒体持久化，端口 8097；需要 Docker |
+| [Jellyfin](projects/xiaomi-jellyfin-plugin) | 0.1.0 | 开源媒体服务器；配置/缓存/媒体持久化，端口 8097；需要 Docker |
 | [内网穿透](projects/xiaomi-fwclient-plugin) | 0.1.1 | fwclient 隧道；可配服务器/令牌，显示版本并支持升级 |
 | 应用商店（本体） | 0.2.21 | 浏览、安装、更新上述插件；见 [xiaomi-community-app-store](projects/xiaomi-community-app-store) |
 | 夸克网盘 | 未发布 | 目前没有可用实现 |
@@ -192,9 +192,9 @@ projects/                          插件源码
   xiaomi-qbittorrent-plugin/       qB 下载
   xiaomi-ssh-control-plugin/       SSH 开关
   xiaomi-transmission-plugin/      Transmission 下载
-  xiaomi-emby-plugin/              Emby 媒体服务器
+  xiaomi-emby-plugin/              Emby
   xiaomi-dpanel-plugin/            DPanel 容器管理
-  xiaomi-jellyfin-plugin/          Jellyfin 媒体服务器
+  xiaomi-jellyfin-plugin/          Jellyfin
   xiaomi-fwclient-plugin/          内网穿透
 
 apps/                              构建产物（提交到 git）

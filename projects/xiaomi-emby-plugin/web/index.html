@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
     <meta name="emby-session" content="__SESSION_TOKEN__">
     <meta name="csrf-token" content="__CSRF_TOKEN__">
-    <title>Emby 媒体服务器</title>
+    <title>Emby</title>
     <link rel="stylesheet" href="styles.css?v=0.2.0">
 </head>
 
@@ -15,7 +15,7 @@
         <header class="topbar">
             <img class="app-icon" src="assets/emby.png" alt="">
             <div class="brand">
-                <strong>Emby 媒体服务器</strong>
+                <strong>Emby</strong>
                 <small>Emby Server</small>
             </div>
             <button id="refresh" class="icon-button" title="刷新" aria-label="刷新">↻</button>
@@ -33,7 +33,7 @@
             <p id="error" class="alert" role="alert" hidden></p>
 
             <section id="setup" class="card" hidden>
-                <h2>初始化媒体服务器</h2>
+                <h2>初始化应用</h2>
                 <form id="setupForm" autocomplete="off">
                     <div class="field">
                         <span class="field-label">媒体目录</span>
@@ -100,7 +100,7 @@
                 </ul>
             </details>
 
-            <footer>Emby 媒体服务器 · __PLUGIN_VERSION__</footer>
+            <footer>Emby · __PLUGIN_VERSION__</footer>
         </main>
 
         <dialog id="browse">
