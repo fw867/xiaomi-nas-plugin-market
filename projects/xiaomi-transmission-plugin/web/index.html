@@ -23,10 +23,19 @@
 
         <main>
             <section class="card status-card">
-                <span class="status-dot" id="statusDot" aria-hidden="true"></span>
-                <div class="status-copy">
-                    <strong id="serviceState" role="status">正在连接</strong>
-                    <small id="serviceInfo"></small>
+                <div class="status-main">
+                    <span class="status-dot" id="statusDot" aria-hidden="true"></span>
+                    <div class="status-copy">
+                        <strong id="serviceState" role="status">正在连接</strong>
+                        <small id="serviceInfo"></small>
+                    </div>
+                    <div class="status-actions">
+                        <button id="toggleService" class="btn">启动服务</button>
+                    </div>
+                </div>
+                <div class="status-port">
+                    <span class="muted" id="portState">BT 端口状态未测试</span>
+                    <button id="testPort" type="button" class="btn">测试端口</button>
                 </div>
             </section>
 
@@ -83,10 +92,7 @@
                     <div><span class="muted">监控目录</span><strong id="watchDir">—</strong></div>
                     <div><span class="muted">WebUI 用户</span><strong id="username">—</strong></div>
                 </div>
-                <div class="service-row">
-                    <span class="muted" id="peerPortHint">WebUI 9091 · BT 51413</span>
-                    <button id="toggleService" class="btn">启动服务</button>
-                </div>
+                <p class="muted" id="peerPortHint">WebUI 9091 · BT 51413</p>
             </section>
 
             <section class="card" id="access" hidden>
@@ -103,8 +109,8 @@
                 <ul>
                     <li>容器 <code>xiaomi-plugin-transmission</code> 只挂载所选的配置、下载、监控目录，不挂载 Docker socket，不使用 privileged 或 host 网络。</li>
                     <li>WebUI 端口 9091（TCP）对局域网开放；BT 入站端口 51413（TCP/UDP）已映射，公网入站仍需在路由器转发。</li>
+                    <li>「控制台」默认安装 Transmission Web Control，文件放在所选配置目录的 <code>webui/</code> 下；想换成别的 WebUI，把文件替换进该目录（保证 <code>index.html</code> 在根）后重启服务即可。</li>
                     <li>停止或卸载插件只停止容器，配置与已下载文件都会保留。</li>
-                    <li>旧版原生 Transmission 插件的配置不会自动迁移，升级后需重新初始化。</li>
                 </ul>
             </details>
 

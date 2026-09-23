@@ -31,6 +31,12 @@
 - 只挂载所选三个目录，不挂载 Docker socket，不使用 privileged / host 网络
 - 资源上限：512 MiB 内存、1.5 CPU、128 PID
 - WebUI 账号密码通过镜像 `USER`/`PASS` 环境变量注入；`settings.json` 只写目录与端口等非鉴权项
+- **控制台**：默认安装 [Transmission Web Control](https://github.com/ronggang/transmission-web-control)
+  （`v1.6.1-update1`）到所选配置目录的 `webui/` 下，容器以
+  `TRANSMISSION_WEB_HOME=/config/webui` 使用它。
+  **想换成别的 WebUI**：把界面文件放进 `<配置目录>/webui/`（保证 `index.html` 在该目录根部，
+  参照官方安装脚本 `cp -r <包>/src/. $TRANSMISSION_WEB_HOME/` 的做法），然后重启服务即可；
+  插件不会覆盖你放进去的文件。
 - **`settings.json` 必须写在所选配置目录的根下**（即容器内 `/config/settings.json`）：
   镜像以 `transmission-daemon -g /config` 启动，写到 `transmission-daemon/` 子目录不会被读取，
   daemon 会回落到镜像默认的 `rpc-bind-address=[::]`，在无 IPv6 的容器里绑不上 9091，Web 界面起不来

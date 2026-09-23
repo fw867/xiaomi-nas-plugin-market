@@ -85,7 +85,21 @@ const assetUrl = (path) => new URL(path, pluginAssetBase()).href;
     $('#configDir').textContent = current.config ? '/' + current.config : '—';
     $('#watchDir').textContent = current.watch ? '/' + current.watch : '—';
     $('#username').textContent = current.username || '—';
+    renderPortState(current);
     if (!current.busy) showError(current.error);
+  }
+  // BT 端口只显示上一次「测试端口」的结果，避免每次轮询都去访问外部检测服务
+  function renderPortState(current) {
+    const port = current.port || {};
+    const value = port.peerPort || 51413;
+    let text = `BT 端口 ${value} 状态未测试`;
+    if (port.testedAt) {
+      text = port.open
+        ? `BT 端口 ${value} 公网可达`
+        : `BT 端口 ${value} 仅局域网可达 · 需在路由器转发 TCP+UDP`;
+    }
+    $('#portState').textContent = current.busy ? '正在测试端口…' : text;
+    $('#testPort').disabled = current.busy || !current.configured || !current.running;
   }
   async function browse(path) {
     browsePath = path;
@@ -143,6 +157,11 @@ const assetUrl = (path) => new URL(path, pluginAssetBase()).href;
     } catch (e) {
       toast('复制失败，请手动记录：' + text);
     }
+  });
+  $('#testPort').onclick = () => busy($('#testPort'), async () => {
+    await api('service/port-test', {});
+    toast('端口测试完成');
+    await refresh();
   });
   $('#setupForm').onsubmit = e => {
     e.preventDefault();

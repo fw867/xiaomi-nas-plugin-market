@@ -2,13 +2,17 @@
 from __future__ import annotations
 
 import http.client
+import io
 import json
 import os
 import re
 import secrets
+import shutil
 import socket
 import threading
 import time
+import urllib.request
+import zipfile
 import base64
 from pathlib import Path
 from urllib.parse import urlencode
@@ -151,6 +155,69 @@ def write_settings(config_folder, uid, gid):
     return path
 
 
+WEBUI_VERSION = 'v1.6.1-update1'
+# 官方安装脚本就是把这个 tag 的 src/ 拷进 TRANSMISSION_WEB_HOME，这里照做。
+WEBUI_ARCHIVE = ('https://github.com/ronggang/transmission-web-control/archive/'
+                 + WEBUI_VERSION + '.zip')
+WEBUI_SUBDIR = 'transmission-web-control-' + WEBUI_VERSION.lstrip('v') + '/src'
+# 控制台固定装在 <配置目录>/webui/（容器内 /config/webui），TRANSMISSION_WEB_HOME 指到它。
+# 想换成别的 WebUI，把文件放进这个目录即可，不需要改插件。
+WEBUI_FOLDER = 'webui'
+WEBUI_HOME = '/config/' + WEBUI_FOLDER
+
+
+def webui_path(config_folder):
+    return config_folder / WEBUI_FOLDER
+
+
+def fetch_bytes(url, timeout=180, limit=64 * 1024 * 1024):
+    request = urllib.request.Request(url, headers={'User-Agent': 'xiaomi-transmission-plugin'})
+    with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
+        payload = response.read(limit + 1)
+    if len(payload) > limit:
+        raise Error('控制台资源过大，已中止下载')
+    return payload
+
+
+def extract_zip(payload, destination, prefix=''):
+    """解压 zip；prefix 指定只保留该前缀下的内容（去掉顶层目录）。"""
+    destination = destination.resolve()
+    with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+        for member in archive.infolist():
+            if prefix and not member.filename.startswith(prefix):
+                continue
+            relative = member.filename[len(prefix):] if prefix else member.filename
+            if not relative:
+                continue
+            target = (destination / relative).resolve()
+            if target != destination and not str(target).startswith(str(destination) + os.sep):
+                raise Error('控制台压缩包包含非法路径')
+            if member.is_dir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(member) as source, target.open('wb') as output:
+                shutil.copyfileobj(source, output)
+
+
+def install_webui(config_folder, uid, gid, force=False):
+    """把默认控制台铺到 <配置目录>/webui/，已存在则跳过（用户自行替换过的不会被覆盖）。"""
+    target = webui_path(config_folder)
+    index = target / 'index.html'
+    if index.is_file() and not force:
+        return WEBUI_HOME
+    if force and target.exists():
+        shutil.rmtree(target)
+    target.mkdir(parents=True, exist_ok=True)
+    extract_zip(fetch_bytes(WEBUI_ARCHIVE), target, prefix=WEBUI_SUBDIR + '/')
+    if not index.is_file():
+        raise Error('控制台资源不完整，缺少 index.html')
+    for path in [target] + sorted(target.rglob('*')):
+        os.chown(path, uid, gid)
+        os.chmod(path, 0o755 if path.is_dir() else 0o644)
+    return WEBUI_HOME
+
+
 def container_config(config, data, password):
     username = config['username']
     return {
@@ -168,6 +235,8 @@ def container_config(config, data, password):
             'USER=' + username,
             'PASS=' + password,
             'PEERPORT=' + str(BT_PORT),
+            # 控制台固定在 <配置目录>/webui；换 UI 只需替换该目录里的文件
+            'TRANSMISSION_WEB_HOME=' + WEBUI_HOME,
         ],
         'Labels': {LABEL: config['owner']},
         'HostConfig': {
@@ -199,6 +268,7 @@ class Engine:
         os.chmod(self.data, 0o700)
         self.lock = threading.Lock()
         self.busy, self.error = False, ''
+        self.port_state = {'testedAt': 0, 'open': None, 'error': ''}
         self.worker = None
         self.cfgfile = self.data / 'settings.json'
         self.credentialfile = self.data / 'credential.json'
@@ -290,6 +360,8 @@ class Engine:
             'config': self.config.get('config_relative', '') if self.config else '',
             'watch': self.config.get('watch_relative', '') if self.config else '',
             'username': self.config.get('username', '') if self.config else '',
+            # BT 端口是否对公网开放：只有点了「测试端口」才有值（port-test 会访问外部检测服务）
+            'port': {'peerPort': BT_PORT, **self.port_state},
         }
 
     def _claim_folder(self, relative, field):
@@ -324,6 +396,7 @@ class Engine:
         if self.inspect() is not None:
             raise Error('同名容器已存在，拒绝覆盖')
         write_settings(config_folder, uid, gid)
+        install_webui(config_folder, uid, gid)
         stats = {key: path.stat() for key, path in
                  [('download', download), ('config', config_folder), ('watch', watch)]}
         self.config = {
@@ -386,12 +459,55 @@ class Engine:
             write_settings(config_folder, self.config['uid'], self.config['gid'])
         return stale
 
+    def ensure_webui(self):
+        """确保默认控制台已铺到 <配置目录>/webui；用户自己替换过的文件不动。"""
+        return install_webui(Path(self.config['config']), self.config['uid'], self.config['gid'])
+
+    def webui_env_stale(self, item):
+        """容器是否还指向旧的控制台路径（旧版本装在 webui/<主题>/ 下）。"""
+        env = item.get('Config', {}).get('Env') or []
+        return ('TRANSMISSION_WEB_HOME=' + WEBUI_HOME) not in env
+
+    def test_port(self):
+        """调 Transmission 的 port-test，判断 BT 端口是否对公网开放。
+
+        注意：容器里 UPnP 自动映射不生效（容器 IP 不在 LAN 网段），
+        要开放需要在路由器上手动把 BT 端口转发到 NAS。
+        """
+        if not self.config:
+            raise Error('请先初始化')
+        password = self.saved_password()
+        username = self.config.get('username', '')
+        if not password:
+            raise Error('缺少 WebUI 密码，无法测试端口')
+        code, body, session = tr_rpc('port-test', username, password, timeout=30)
+        if code == 409 and session:
+            code, body, session = tr_rpc('port-test', username, password, session, timeout=30)
+        if code != 200:
+            raise Error('端口测试失败（HTTP %s）' % code)
+        try:
+            payload = json.loads(body)
+        except ValueError as exc:
+            raise Error('端口测试返回异常') from exc
+        if payload.get('result') != 'success':
+            raise Error('端口测试失败：' + str(payload.get('result')))
+        opened = bool(payload.get('arguments', {}).get('port-is-open'))
+        self.port_state = {'testedAt': int(time.time()), 'open': opened, 'error': ''}
+        return self.port_state
+
     def start(self):
         if not self.config:
             raise Error('请先初始化')
         self.check_directories()
         repaired = self.ensure_settings()
+        self.ensure_webui()
         item = self.owned()
+        if item and self.webui_env_stale(item):
+            # 控制台路径变了：环境变量只在建容器时生效，必须重建
+            if item.get('State', {}).get('Running'):
+                self._call('POST', '/containers/' + NAME + '/stop?t=15', timeout=90)
+            self._call('DELETE', '/containers/' + NAME + '?force=1&v=1', timeout=60)
+            item = None
         if item:
             if not item.get('State', {}).get('Running'):
                 self._call('POST', '/containers/' + NAME + '/start')
@@ -432,7 +548,7 @@ class Engine:
     def launch(self, action, data):
         if self.dev:
             raise Error('预览模式不会启动下载或修改 NAS')
-        if action not in ('setup', 'start', 'stop'):
+        if action not in ('setup', 'start', 'stop', 'port-test'):
             raise Error('未知服务操作')
         if not self.lock.acquire(False):
             raise Error('服务操作正在进行，请稍候')
@@ -442,7 +558,9 @@ class Engine:
             try:
                 if action == 'setup':
                     self.setup(data, data.get('username', ''), data.get('password', ''))
-                if action in ('setup', 'start'):
+                if action == 'port-test':
+                    self.test_port()
+                elif action in ('setup', 'start'):
                     self.start()
                 else:
                     self.stop()

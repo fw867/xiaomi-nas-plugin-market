@@ -1,17 +1,19 @@
 import http.client
+import io
 import json
 import os
 import re
 import tempfile
 import threading
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
 from engine import (
     Engine, Error, IMAGE, NAME, LABEL, PORT, BT_PORT, VERSION, IMAGE_VERSION,
     confined, container_config, installed_version, settings_document,
-    webui_password, webui_username,
+    WEBUI_SUBDIR, webui_password, webui_username,
 )
 from server import Server
 
@@ -243,6 +245,7 @@ class EngineTests(unittest.TestCase):
 
         with patch('engine.docker_api', side_effect=fake_api), \
                 patch('engine.os.chown', create=True), \
+                patch('engine.fetch_bytes', return_value=self._webui_archive()), \
                 patch('engine.tr_rpc_probe', return_value=True):
             self.engine.start()
         create = next(c for c in calls if c[1].startswith('/containers/create'))
@@ -256,6 +259,133 @@ class EngineTests(unittest.TestCase):
         conf = json.loads((self.root / 'Config/settings.json').read_text(encoding='utf-8'))
         self.assertEqual(conf['rpc-bind-address'], '0.0.0.0')
         self.assertEqual(conf['download-dir'], '/downloads')
+        # 控制台固定指向 <配置目录>/webui
+        self.assertIn('TRANSMISSION_WEB_HOME=/config/webui', create[2]['Env'])
+
+    def _identity_config(self):
+        def identity(relative):
+            folder = self.root / relative
+            s = folder.stat()
+            return str(folder), relative, s.st_dev, s.st_ino
+
+        download, config, watch = identity('Downloads'), identity('Config'), identity('Watch')
+        return {
+            'owner': 'owner-token', 'uid': 1000, 'gid': 1000, 'username': 'admin',
+            'download': download[0], 'download_relative': download[1],
+            'download_device': download[2], 'download_inode': download[3],
+            'config': config[0], 'config_relative': config[1],
+            'config_device': config[2], 'config_inode': config[3],
+            'watch': watch[0], 'watch_relative': watch[1],
+            'watch_device': watch[2], 'watch_inode': watch[3],
+            'enabled': True,
+        }
+
+    def _webui_archive(self, index_html='<html></html>'):
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, 'w') as archive:
+            archive.writestr(WEBUI_SUBDIR + '/index.html', index_html)
+            archive.writestr(WEBUI_SUBDIR + '/tr-web-control/config.js', '/*c*/')
+            archive.writestr('transmission-web-control-1.6.1-update1/README.md', 'readme')
+        return buffer.getvalue()
+
+    def test_start_installs_default_webui_under_config(self):
+        self.engine.config = self._identity_config()
+        self.engine.credentialfile.write_text(json.dumps({'password': 'Example123!'}), encoding='utf-8')
+        calls = []
+
+        def fake_api(method, path, body=None, timeout=30):
+            calls.append((method, path, body))
+            if path == '/containers/' + NAME + '/json':
+                return 404, b'{"message":"No such container"}'
+            if path.startswith('/images/create'):
+                return 200, b'{}\n'
+            return 201, b'{}'
+
+        with patch('engine.fetch_bytes', return_value=self._webui_archive()), \
+                patch('engine.os.chown', create=True), \
+                patch('engine.docker_api', side_effect=fake_api), \
+                patch('engine.tr_rpc_probe', return_value=True):
+            self.engine.start()
+
+        # 只保留包内 src/ 的内容，index.html 落在 webui/ 根
+        self.assertTrue((self.root / 'Config/webui/index.html').is_file())
+        self.assertTrue((self.root / 'Config/webui/tr-web-control/config.js').is_file())
+        self.assertFalse((self.root / 'Config/webui/README.md').exists())
+        create = next(c for c in calls if c[1].startswith('/containers/create'))
+        self.assertIn('TRANSMISSION_WEB_HOME=/config/webui', create[2]['Env'])
+
+    def test_existing_webui_is_not_overwritten(self):
+        self.engine.config = self._identity_config()
+        self.engine.credentialfile.write_text(json.dumps({'password': 'Example123!'}), encoding='utf-8')
+        target = self.root / 'Config/webui'
+        target.mkdir(parents=True)
+        (target / 'index.html').write_text('<html>mine</html>', encoding='utf-8')
+
+        with patch('engine.fetch_bytes') as fetch, \
+                patch('engine.os.chown', create=True), \
+                patch('engine.docker_api', side_effect=lambda method, path, body=None, timeout=30:
+                      (404, b'{"message":"No such container"}') if path.endswith('/json') else (201, b'{}')), \
+                patch('engine.tr_rpc_probe', return_value=True):
+            self.engine.start()
+
+        fetch.assert_not_called()
+        self.assertEqual((target / 'index.html').read_text(encoding='utf-8'), '<html>mine</html>')
+
+    def test_container_with_old_webui_path_is_rebuilt(self):
+        self.engine.config = self._identity_config()
+        self.engine.credentialfile.write_text(json.dumps({'password': 'Example123!'}), encoding='utf-8')
+        calls = []
+        exists = {'value': True}
+
+        def fake_api(method, path, body=None, timeout=30):
+            calls.append((method, path, body))
+            if path == '/containers/' + NAME + '/json':
+                if not exists['value']:
+                    return 404, b'{"message":"No such container"}'
+                return 200, json.dumps({
+                    'State': {'Running': True},
+                    'Config': {
+                        'Labels': {LABEL: 'owner-token'},
+                        'Env': ['TRANSMISSION_WEB_HOME=/config/webui/transmissionic/web'],
+                    },
+                }).encode('utf-8')
+            if method == 'DELETE':
+                exists['value'] = False
+                return 204, b''
+            if path.startswith('/images/create'):
+                return 200, b'{}\n'
+            return 201, b'{}'
+
+        with patch('engine.fetch_bytes', return_value=self._webui_archive()), \
+                patch('engine.os.chown', create=True), \
+                patch('engine.docker_api', side_effect=fake_api), \
+                patch('engine.tr_rpc_probe', return_value=True):
+            self.engine.start()
+
+        self.assertTrue(any(c[0] == 'DELETE' for c in calls))
+        create = next(c for c in calls if c[1].startswith('/containers/create'))
+        self.assertIn('TRANSMISSION_WEB_HOME=/config/webui', create[2]['Env'])
+
+    def test_port_test_records_result(self):
+        self.engine.config = self._identity_config()
+        self.engine.credentialfile.write_text(json.dumps({'password': 'Example123!'}), encoding='utf-8')
+        body = json.dumps({'result': 'success', 'arguments': {'port-is-open': True}}).encode('utf-8')
+        with patch('engine.tr_rpc', return_value=(200, body, '')), \
+                patch('engine.docker_api', return_value=(404, b'{}')):
+            state = self.engine.test_port()
+            snapshot = self.engine.snapshot()
+        self.assertTrue(state['open'])
+        self.assertTrue(state['testedAt'])
+        self.assertEqual(snapshot['port']['peerPort'], BT_PORT)
+        self.assertTrue(snapshot['port']['open'])
+
+    def test_port_test_surfaces_daemon_failure(self):
+        self.engine.config = self._identity_config()
+        self.engine.credentialfile.write_text(json.dumps({'password': 'Example123!'}), encoding='utf-8')
+        body = json.dumps({'result': 'error', 'arguments': {}}).encode('utf-8')
+        with patch('engine.tr_rpc', return_value=(200, body, '')):
+            with self.assertRaises(Error):
+                self.engine.test_port()
 
 
 class HTTPTests(unittest.TestCase):

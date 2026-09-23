@@ -100,8 +100,24 @@ code {
 
 .status-card {
   display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.status-main {
+  display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.status-port {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
 }
 
 .status-dot {
@@ -114,9 +130,16 @@ code {
 .status-dot.on { background: var(--green); box-shadow: 0 0 0 4px rgba(31, 157, 99, .15); }
 .status-dot.off { background: #b9c2cf; box-shadow: 0 0 0 4px rgba(185, 194, 207, .18); }
 
-.status-copy { min-width: 0; }
+.status-copy { flex: 1 1 auto; min-width: 0; }
 .status-copy strong { display: block; font-size: 15.5px; font-weight: 650; }
 .status-copy small { display: block; color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
+
+.status-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 
 .alert {
   margin: 0 0 10px;
@@ -363,4 +386,12 @@ dialog::backdrop { background: rgba(29, 41, 61, .45); }
   #folders button:active { background: #232d3b; }
   dialog { background: #1b2330; border-color: #2a3442; }
   #toast { background: #2b3a4d; }
+}
+
+/* 窄屏：状态卡的按钮换到下一行占满宽度，避免挤压服务状态文案 */
+@media (max-width: 430px) {
+  .status-main { flex-wrap: wrap; }
+  .status-actions { width: 100%; }
+  .status-actions .btn { width: 100%; }
+  .status-port .btn { width: 100%; }
 }
