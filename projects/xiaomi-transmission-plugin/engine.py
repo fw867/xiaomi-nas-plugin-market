@@ -129,6 +129,28 @@ def settings_document():
     }
 
 
+def settings_path(config_folder):
+    """LinuxServer 镜像以 `-g /config` 启动 daemon，读写的就是这个文件。
+
+    写成 `<配置目录>/transmission-daemon/settings.json`（原生版的路径）不会被读取，
+    daemon 会回落到镜像默认值——其中 `rpc-bind-address` 是 `[::]`，在没有 IPv6 的
+    容器里绑不上 9091，Web 界面永远起不来。
+    """
+    return config_folder / 'settings.json'
+
+
+def write_settings(config_folder, uid, gid):
+    payload = json.dumps(settings_document(), ensure_ascii=False, indent=2) + '\n'
+    path = settings_path(config_folder)
+    tmp = path.with_suffix('.tmp')
+    with tmp.open('w', encoding='utf-8') as stream:
+        os.chmod(tmp, 0o600)
+        stream.write(payload)
+    os.chown(tmp, uid, gid)
+    tmp.replace(path)
+    return path
+
+
 def container_config(config, data, password):
     username = config['username']
     return {
@@ -301,20 +323,7 @@ class Engine:
         self._call('GET', '/info')
         if self.inspect() is not None:
             raise Error('同名容器已存在，拒绝覆盖')
-        daemon_dir = config_folder / 'transmission-daemon'
-        if daemon_dir.exists() and not daemon_dir.is_dir():
-            raise Error('配置目录下已有同名文件，无法写入 transmission-daemon')
-        daemon_dir.mkdir(parents=True, exist_ok=True)
-        os.chown(daemon_dir, uid, gid)
-        os.chmod(daemon_dir, 0o700)
-        confpath = daemon_dir / 'settings.json'
-        payload = json.dumps(settings_document(), ensure_ascii=False, indent=2) + '\n'
-        tmp = confpath.with_suffix('.tmp')
-        with tmp.open('w', encoding='utf-8') as stream:
-            os.chmod(tmp, 0o600)
-            stream.write(payload)
-        os.chown(tmp, uid, gid)
-        tmp.replace(confpath)
+        write_settings(config_folder, uid, gid)
         stats = {key: path.stat() for key, path in
                  [('download', download), ('config', config_folder), ('watch', watch)]}
         self.config = {
@@ -362,14 +371,34 @@ class Engine:
                     self.config[dev_key], self.config[ino_key]):
                 raise Error(label + '身份已变化，拒绝启动；请先检查存储挂载')
 
+    def ensure_settings(self):
+        """把非鉴权配置写到 daemon 真正读取的位置，并修复旧版写错目录的安装。"""
+        config_folder = Path(self.config['config'])
+        try:
+            current = json.loads(settings_path(config_folder).read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            current = {}
+        if not isinstance(current, dict):
+            current = {}
+        document = settings_document()
+        stale = not current or any(current.get(key) != value for key, value in document.items())
+        if stale:
+            write_settings(config_folder, self.config['uid'], self.config['gid'])
+        return stale
+
     def start(self):
         if not self.config:
             raise Error('请先初始化')
         self.check_directories()
+        repaired = self.ensure_settings()
         item = self.owned()
         if item:
             if not item.get('State', {}).get('Running'):
                 self._call('POST', '/containers/' + NAME + '/start')
+            elif repaired:
+                # 旧版配置写错位置，daemon 用的是镜像默认的 rpc-bind-address=[::]；
+                # 容器没有 IPv6 时绑不上 9091，必须重启才能读到修正后的配置。
+                self._call('POST', '/containers/' + NAME + '/restart?t=15', timeout=120)
         else:
             password = self.saved_password()
             if not password:

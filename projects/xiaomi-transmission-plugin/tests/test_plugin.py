@@ -161,7 +161,7 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(self.engine.config['watch'], str(self.root / 'Watch'))
         self.assertEqual(self.engine.config['username'], 'admin')
         self.assertEqual(self.engine.saved_password(), 'Example123!')
-        conf = json.loads((self.root / 'Config/transmission-daemon/settings.json').read_text(encoding='utf-8'))
+        conf = json.loads((self.root / 'Config/settings.json').read_text(encoding='utf-8'))
         self.assertEqual(conf['download-dir'], '/downloads')
         self.assertEqual(conf['watch-dir'], '/watch')
         self.assertNotIn('Example123', json.dumps(conf))
@@ -242,6 +242,7 @@ class EngineTests(unittest.TestCase):
             return 201, b'{}'
 
         with patch('engine.docker_api', side_effect=fake_api), \
+                patch('engine.os.chown', create=True), \
                 patch('engine.tr_rpc_probe', return_value=True):
             self.engine.start()
         create = next(c for c in calls if c[1].startswith('/containers/create'))
@@ -249,6 +250,12 @@ class EngineTests(unittest.TestCase):
         self.assertEqual([m['Target'] for m in mounts], ['/config', '/downloads', '/watch'])
         self.assertIn('USER=admin', create[2]['Env'])
         self.assertIn('PASS=Example123!', create[2]['Env'])
+        # LSIO 以 -g /config 启动，配置必须落在 <配置目录>/settings.json；
+        # 写到 transmission-daemon/ 子目录不会被读取，daemon 会用镜像默认的 [::] 绑定 9091，
+        # 无 IPv6 的容器里 Web 永远起不来。
+        conf = json.loads((self.root / 'Config/settings.json').read_text(encoding='utf-8'))
+        self.assertEqual(conf['rpc-bind-address'], '0.0.0.0')
+        self.assertEqual(conf['download-dir'], '/downloads')
 
 
 class HTTPTests(unittest.TestCase):
@@ -330,7 +337,9 @@ class UiTests(unittest.TestCase):
         script = (self.web / 'app.js').read_text(encoding='utf-8')
         self.assertNotIn("'/api", script)
         self.assertNotIn('"/api', script)
-        self.assertIn("fetch('api/' + route", script)
+        # Windows 客户端 location 可能带 /D:/ 盘符，必须用 script 基址拼绝对 URL
+        self.assertIn("function pluginAssetBase()", script)
+        self.assertIn("fetch(assetUrl('api/' + route)", script)
 
     def test_html_icon_references_have_assets(self):
         html = (self.web / 'index.html').read_text(encoding='utf-8')

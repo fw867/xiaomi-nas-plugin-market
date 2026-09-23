@@ -31,6 +31,9 @@
 - 只挂载所选三个目录，不挂载 Docker socket，不使用 privileged / host 网络
 - 资源上限：512 MiB 内存、1.5 CPU、128 PID
 - WebUI 账号密码通过镜像 `USER`/`PASS` 环境变量注入；`settings.json` 只写目录与端口等非鉴权项
+- **`settings.json` 必须写在所选配置目录的根下**（即容器内 `/config/settings.json`）：
+  镜像以 `transmission-daemon -g /config` 启动，写到 `transmission-daemon/` 子目录不会被读取，
+  daemon 会回落到镜像默认的 `rpc-bind-address=[::]`，在无 IPv6 的容器里绑不上 9091，Web 界面起不来
 - 停止/卸载插件只停止容器，不删除配置与下载文件
 - **旧版原生（Entware 随包二进制）配置不会自动迁移**，升级后需重新初始化
 
