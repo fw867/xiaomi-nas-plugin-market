@@ -29,7 +29,7 @@
   const escape = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const icon = (name) => `<img src="${icons[name]}" alt="">`;
   root.querySelectorAll('[data-icon]').forEach(el => el.src = icons[el.dataset.icon]);
-  let state, items = [], browsePath = '', browseTarget = '', toastTimer, polling = false, generation = 0;
+  let state, items = [], browsePath = '', browseTarget = '', toastTimer, polling = false, generation = 0, consoleOpen = false;
   const fieldIds = { download: '#downloadPath', config: '#configPath', watch: '#watchPath' };
   const bytes = (n) => {
     n = Number(n || 0);
@@ -75,8 +75,11 @@
     try { await fn(); } catch (e) { toast(e.message); } finally { button.disabled = false; }
   }
   function showConsole(on) {
-    $('#statusView').hidden = on;
-    $('#consoleView').hidden = !on;
+    consoleOpen = !!on;
+    const status = $('#statusView');
+    const view = $('#consoleView');
+    if (status) status.hidden = !!on;
+    if (view) view.hidden = !on;
     if (on) {
       if (location.hash !== '#console') location.hash = 'console';
     } else if (location.hash === '#console') {
@@ -176,15 +179,27 @@
       const current = await api('status');
       state = current;
       render(current);
-      const inConsole = location.hash === '#console';
-      if (current.running && inConsole) {
-        const result = await api('torrents');
-        items = result.items || [];
-        const t = result.transfer || {};
-        $('#downSpeed').textContent = bytes(t.dlspeed) + '/s';
-        $('#upSpeed').textContent = bytes(t.upspeed) + '/s';
-        $('#downloaded').textContent = bytes(t.downloaded);
-        renderTasks();
+      if (consoleOpen || location.hash === '#console') {
+        if (!current.running) {
+          items = [];
+          renderTasks();
+          showError('Transmission 未运行，请先启动服务');
+        } else {
+          try {
+            const result = await api('torrents');
+            items = result.items || [];
+            const t = result.transfer || {};
+            $('#downSpeed').textContent = bytes(t.dlspeed) + '/s';
+            $('#upSpeed').textContent = bytes(t.upspeed) + '/s';
+            $('#downloaded').textContent = bytes(t.downloaded);
+            showError('');
+            renderTasks();
+          } catch (e) {
+            items = [];
+            renderTasks();
+            showError(e.message);
+          }
+        }
       }
     } catch (e) {
       showError(e.message);
@@ -254,12 +269,18 @@
     await api('service/' + (state && state.running ? 'stop' : 'start'), {});
     await refresh();
   });
-  $('#openConsole').onclick = () => { showConsole(true); busy($('#openConsole'), refresh); };
-  $('#backToStatus').onclick = () => showConsole(false);
-  $('#search').oninput = renderTasks;
-  $('#filter').onchange = renderTasks;
-  $('#add').onclick = () => { $('#addForm').reset(); $('#addDialog').showModal(); };
-  $('#addForm').onsubmit = e => {
+  const openBtn = $('#openConsole');
+  if (openBtn) openBtn.onclick = () => { showConsole(true); busy(openBtn, refresh); };
+  const backBtn = $('#backToStatus');
+  if (backBtn) backBtn.onclick = () => showConsole(false);
+  const searchInput = $('#search');
+  if (searchInput) searchInput.oninput = renderTasks;
+  const filterEl = $('#filter');
+  if (filterEl) filterEl.onchange = renderTasks;
+  const addBtn = $('#add');
+  if (addBtn) addBtn.onclick = () => { $('#addForm').reset(); $('#addDialog').showModal(); };
+  const addForm = $('#addForm');
+  if (addForm) addForm.onsubmit = e => {
     e.preventDefault();
     const form = e.target;
     const magnet = form.elements.magnet.value.trim();
