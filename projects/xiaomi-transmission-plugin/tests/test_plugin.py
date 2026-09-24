@@ -616,7 +616,7 @@ class UiTests(unittest.TestCase):
         self.assertRegex(html, r'<a[^>]+id="consoleLink"[^>]+target="_blank"')
         script = (self.web / 'app.js').read_text(encoding='utf-8')
         # 同源入口（/console/），局域网与外网都能打开；直连 9091 的地址只用于内网
-        self.assertIn("assetUrl('console/?t=' + encodeURIComponent(session))", script)
+        self.assertIn("console/index.html?t=", script)
 
     def test_narrow_screen_keeps_status_buttons_compact(self):
         """窄屏下状态卡的两个按钮不能被拉满整行，否则会变成一条很长的按钮。"""

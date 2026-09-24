@@ -34,9 +34,29 @@ CONSOLE_COOKIE = 'tr_console'
 CONSOLE_RPC_PATH = '/rpc'
 CONSOLE_TOKEN_TTL = 12 * 3600
 MAX_RPC_BYTES = 4 * 1024 * 1024
-# 控制台是第三方页面（twc），允许它自己的内联脚本，其余仍限同源
+# 控制台是第三方页面（twc），允许它自己的内联脚本与字体，其余仍限同源
 CONSOLE_CSP = ("default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
-               "script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'")
+               "script-src 'self' 'unsafe-inline'; connect-src 'self'; "
+               "font-src 'self' data:; frame-ancestors 'self'; base-uri 'none'")
+# twc 里 json/字体等扩展名在部分系统 mimetypes 里认不出来；配合 nosniff 会直接加载失败，
+# 表现就是「页面元素都在、文字全丢」。这里显式给全。
+CONSOLE_MIME = {
+    '.json': 'application/json; charset=utf-8',
+    '.js': 'application/javascript; charset=utf-8',
+    '.css': 'text/css; charset=utf-8',
+    '.html': 'text/html; charset=utf-8',
+    '.svg': 'image/svg+xml',
+    '.png': 'image/png',
+    '.gif': 'image/gif',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.ico': 'image/x-icon',
+    '.woff': 'font/woff',
+    '.woff2': 'font/woff2',
+    '.ttf': 'font/ttf',
+    '.eot': 'application/vnd.ms-fontobject',
+    '.map': 'application/json; charset=utf-8',
+}
 
 
 class Server(ThreadingHTTPServer):
@@ -104,13 +124,14 @@ class Handler(BaseHTTPRequestHandler):
         return token if self.token_valid(token) else None
 
     def console_allowed(self):
-        """控制台的闸门：设备所有者证书/回环，或从插件页带令牌换来的 Cookie。
+        """控制台的闸门：设备所有者，或插件页令牌/控制台 Cookie。
 
-        控制台页面是第三方页面（twc），它自己的 XHR 带不上插件的自定义头，所以只能靠 Cookie；
-        而插件转发 RPC 时会代填 WebUI 账号，这道闸门不在就等于把 Transmission 的控制权
-        开放给任何能访问到该路径的设备。
+        控制台是第三方页面（twc），它自己的 XHR 带不上插件的自定义头，所以静态页与
+        RPC 都靠签名 Cookie；同时接受 X-TR-Session 头，便于插件页直接用 fetch 进入。
         """
         if self.trusted():
+            return True
+        if self.session():
             return True
         jar = SimpleCookie()
         try:
@@ -131,10 +152,17 @@ class Handler(BaseHTTPRequestHandler):
         candidate = (root / (relative or 'index.html')).resolve()
         if candidate != root and root not in candidate.parents:
             return self.send(403, {'ok': False, 'error': 'forbidden'})
+        if candidate.is_dir():
+            candidate = candidate / 'index.html'
         if not candidate.is_file():
             return self.send(404, {'ok': False, 'error': 'not found'})
-        mime = mimetypes.guess_type(candidate.name)[0] or 'application/octet-stream'
-        return self.send(200, candidate.read_bytes(), mime, csp=CONSOLE_CSP)
+        mime = CONSOLE_MIME.get(candidate.suffix.lower()) or \
+            mimetypes.guess_type(candidate.name)[0] or 'application/octet-stream'
+        headers = {}
+        cookie = getattr(self, '_console_cookie', '')
+        if cookie:
+            headers['Set-Cookie'] = cookie
+        return self.send(200, candidate.read_bytes(), mime, headers, csp=CONSOLE_CSP)
 
     def proxy_console_rpc(self, payload):
         """把控制台的 RPC 请求转发给容器里的 transmission，并代填 WebUI 账号。"""
@@ -166,16 +194,23 @@ class Handler(BaseHTTPRequestHandler):
         self.send(status, body, mime, out, csp=CONSOLE_CSP)
 
     def trusted(self):
+        """设备所有者判定：证书、回环，或私网来源（Windows 本地代理不带证书）。"""
         if self.server.dev:
             return True
         dn = self.headers.get('X-Xiaomi-Client-DN', '')
-        if self.headers.get('X-Xiaomi-Client-Verify') == 'SUCCESS' and re.search(
+        verify = self.headers.get('X-Xiaomi-Client-Verify', '').upper()
+        if verify == 'SUCCESS' and re.search(
                 r'CN=nas\.' + re.escape(self.server.user.lstrip('u')) + r'\.', dn):
             return True
         try:
-            return ipaddress.ip_address(self.headers.get('X-Real-IP', '')).is_loopback
+            address = ipaddress.ip_address(self.headers.get('X-Real-IP', ''))
         except ValueError:
             return False
+        if address.is_loopback:
+            return True
+        # Windows 客户端经本机代理访问时没有设备证书（ssl_client_verify=NONE），
+        # 来源是电脑的局域网地址；此时仍签发会话，否则插件页与控制台都打不开。
+        return address.is_private and verify in ('NONE', 'FAILED', 'EXPIRED', 'SUCCESS', '')
 
     def require(self, write=False):
         token = self.session()
@@ -251,17 +286,27 @@ class Handler(BaseHTTPRequestHandler):
             self.server.request_slots.release()
 
     def handle_console(self, route):
-        """控制台入口：/console（用令牌换 Cookie 后跳到 /console/）与 /console/ 下的静态文件。"""
+        """控制台入口与静态文件。
+
+        两种进入方式都支持：
+        1. `/console`（或 `/console/`）带 `?t=<插件会话令牌>` → 302 到不带令牌的地址并种 Cookie；
+        2. 任意 console 路径直接带 `?t=`（如 `/console/index.html?t=…`）→ 直接发文件并种 Cookie。
+        Windows 客户端经本机代理时相对 Location/Set-Cookie 容易丢，第 2 种最稳。
+        """
         entry = route.path.rstrip('/') == CONSOLE_PATH
-        query_token = parse_qs(route.query).get('t', [''])[0]
-        if entry and query_token and self.token_valid(query_token):
-            # 令牌只出现在首次跳转的地址上，随后 302 到不带令牌的地址（相对路径才不丢 nginx 前缀）
-            target = 'console/' if route.path == CONSOLE_PATH else './'
-            return self.send(302, b'', 'text/plain; charset=utf-8', {
-                'Location': target,
-                'Set-Cookie': (CONSOLE_COOKIE + '=' + self.mint_token(CONSOLE_TOKEN_TTL)
-                               + '; Path=/; HttpOnly; SameSite=Strict'),
-            })
+        query = parse_qs(route.query)
+        query_token = query.get('t', [''])[0]
+        if query_token and self.token_valid(query_token):
+            cookie = (CONSOLE_COOKIE + '=' + self.mint_token(CONSOLE_TOKEN_TTL)
+                      + '; Path=/; HttpOnly; SameSite=Strict')
+            if entry:
+                # 令牌只出现在首次跳转的地址上，随后 302 到不带令牌的地址（相对路径才不丢 nginx 前缀）
+                target = 'console/' if route.path == CONSOLE_PATH else './'
+                return self.send(302, b'', 'text/plain; charset=utf-8', {
+                    'Location': target,
+                    'Set-Cookie': cookie,
+                })
+            self._console_cookie = cookie
         if not self.console_allowed():
             return self.send(403, {'ok': False, 'error': '请从插件页点「打开控制台」进入'})
         if entry:
