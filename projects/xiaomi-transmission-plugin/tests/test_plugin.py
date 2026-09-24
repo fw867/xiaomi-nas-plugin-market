@@ -510,6 +510,32 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(self.request('GET', '/console?t=bad.token')[0], 403)
         self.assertEqual(self.request('POST', '/rpc', {'method': 'session-stats'})[0], 403)
 
+    def test_console_rpc_accepts_referer_token(self):
+        """控制台 XHR 带不上自定义头、也可能拿不到 Cookie：Referer 上的令牌要能授权。
+
+        控制台页就是从 /console/index.html?t=<令牌> 打开的，页面内 RPC 的同源 Referer
+        带着同一个令牌。没有 Cookie 的 App 内置 WebView 因此也能取到数据。
+        """
+        self.server.dev = False
+        self.prepare_console()
+        status, _, _ = self.request_full(
+            'POST', '/rpc',
+            {'method': 'session-stats'},
+            {'Referer': 'https://nas.example/plugin/u1/transmission/console/index.html?t='
+                        + self.token},
+        )
+        self.assertNotEqual(403, status)
+
+    def test_console_rpc_rejects_bad_referer(self):
+        self.server.dev = False
+        self.prepare_console()
+        status, _, _ = self.request_full(
+            'POST', '/rpc',
+            {'method': 'session-stats'},
+            {'Referer': 'https://nas.example/plugin/u1/transmission/console/index.html?t=bad.token'},
+        )
+        self.assertEqual(403, status)
+
     def test_console_serves_files_from_config_webui(self):
         self.prepare_console()
         cookie = self.console_cookie()

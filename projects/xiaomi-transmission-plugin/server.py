@@ -124,15 +124,22 @@ class Handler(BaseHTTPRequestHandler):
         return token if self.token_valid(token) else None
 
     def console_allowed(self):
-        """控制台的闸门：设备所有者，或插件页令牌/控制台 Cookie。
+        """控制台的闸门：设备所有者，或插件页令牌 / 控制台 Cookie。
 
-        控制台是第三方页面（twc），它自己的 XHR 带不上插件的自定义头，所以静态页与
-        RPC 都靠签名 Cookie；同时接受 X-TR-Session 头，便于插件页直接用 fetch 进入。
+        控制台是第三方页面（twc），它自己的 XHR 既带不上插件的自定义头，也常拿不到
+        HttpOnly Cookie（App 内置 WebView、Windows 本机代理都会丢）。所以除了 Cookie，
+        还允许用同源 Referer 上的 `?t=<插件会话令牌>` 授权——控制台页就是从带令牌的
+        地址打开的，页面内所有 RPC 请求的 Referer 都带着它。令牌校验仍然必需。
         """
         if self.trusted():
             return True
         if self.session():
             return True
+        referer = self.headers.get('Referer', '')
+        if referer:
+            token = parse_qs(urlsplit(referer).query).get('t', [''])[0]
+            if token and self.token_valid(token):
+                return True
         jar = SimpleCookie()
         try:
             jar.load(self.headers.get('Cookie', ''))
@@ -194,23 +201,16 @@ class Handler(BaseHTTPRequestHandler):
         self.send(status, body, mime, out, csp=CONSOLE_CSP)
 
     def trusted(self):
-        """设备所有者判定：证书、回环，或私网来源（Windows 本地代理不带证书）。"""
         if self.server.dev:
             return True
         dn = self.headers.get('X-Xiaomi-Client-DN', '')
-        verify = self.headers.get('X-Xiaomi-Client-Verify', '').upper()
-        if verify == 'SUCCESS' and re.search(
+        if self.headers.get('X-Xiaomi-Client-Verify') == 'SUCCESS' and re.search(
                 r'CN=nas\.' + re.escape(self.server.user.lstrip('u')) + r'\.', dn):
             return True
         try:
-            address = ipaddress.ip_address(self.headers.get('X-Real-IP', ''))
+            return ipaddress.ip_address(self.headers.get('X-Real-IP', '')).is_loopback
         except ValueError:
             return False
-        if address.is_loopback:
-            return True
-        # Windows 客户端经本机代理访问时没有设备证书（ssl_client_verify=NONE），
-        # 来源是电脑的局域网地址；此时仍签发会话，否则插件页与控制台都打不开。
-        return address.is_private and verify in ('NONE', 'FAILED', 'EXPIRED', 'SUCCESS', '')
 
     def require(self, write=False):
         token = self.session()
