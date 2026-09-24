@@ -21,7 +21,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-from engine import Engine, Error, PORT, installed_version, tr_rpc_probe, webui_path
+from engine import (
+    Engine, Error, PORT, installed_version, tr_rpc_probe, webui_path, tr_call,
+)
 
 WEB = Path(__file__).resolve().parent / 'web'
 TTL = 86400
@@ -267,6 +269,70 @@ class Handler(BaseHTTPRequestHandler):
                 return ''
         return 'http://' + host + ':' + str(PORT)
 
+    def rpc_creds(self):
+        engine = self.server.engine
+        return ((engine.config or {}).get('username', ''), engine.saved_password())
+
+    def engine_snapshot_torrents(self):
+        """自研控制台数据：任务列表 + 当前速度（走 Transmission JSON-RPC）。"""
+        username, password = self.rpc_creds()
+        if not username or not password:
+            raise Error('请先完成初始化，已保存的 WebUI 账号缺失')
+        fields = ['id', 'name', 'hashString', 'percentDone', 'status',
+                  'rateDownload', 'rateUpload', 'totalSize', 'downloadDir', 'errorString']
+        listing = tr_call('torrent-get', username, password, {'fields': fields})
+        stats = tr_call('session-stats', username, password)
+        cur = stats.get('current-stats') or {}
+        torrents = listing.get('torrents') or []
+        items = []
+        for t in torrents:
+            if not isinstance(t, dict):
+                continue
+            items.append({
+                'id': t.get('id'),
+                'name': t.get('name') or '',
+                'progress': float(t.get('percentDone') or 0),
+                'status': int(t.get('status') or 0),
+                'dlspeed': int(t.get('rateDownload') or 0),
+                'upspeed': int(t.get('rateUpload') or 0),
+                'size': int(t.get('totalSize') or 0),
+                'error': t.get('errorString') or '',
+            })
+        return {
+            'items': items,
+            'transfer': {
+                'dlspeed': int(stats.get('downloadSpeed') or 0),
+                'upspeed': int(stats.get('uploadSpeed') or 0),
+                'downloaded': int(cur.get('downloadedBytes') or 0),
+            },
+        }
+
+    def tr_action(self, action, data):
+        username, password = self.rpc_creds()
+        if not username or not password:
+            raise Error('请先完成初始化')
+        if action == 'start':
+            tr_call('torrent-start', username, password, {'ids': [int(data.get('id'))]})
+        elif action == 'stop':
+            tr_call('torrent-stop', username, password, {'ids': [int(data.get('id'))]})
+        elif action == 'remove':
+            tr_call('torrent-remove', username, password,
+                    {'ids': [int(data.get('id'))], 'delete-local-data': False})
+        elif action == 'magnet':
+            url = data.get('url', '')
+            if not isinstance(url, str) or not url.startswith('magnet:') or len(url) > 16384:
+                raise Error('磁力链接无效')
+            if '\n' in url or '\r' in url:
+                raise Error('磁力链接无效')
+            tr_call('torrent-add', username, password, {'filename': url})
+        elif action == 'torrent':
+            # 种子文件由调用方 base64 传入，这里直接作为 filename 不支持；
+            # Transmission 需要 multipart 上传，简单做法：写临时文件再用 filename= 本地路径
+            # —— 但 daemon 在容器里，本机路径不可见。改为要求调用方给磁力或种子 URL。
+            raise Error('当前控制台暂不支持上传种子文件，请使用磁力链接')
+        else:
+            raise Error('不支持此操作')
+
     def do_GET(self):
         route = urlsplit(self.path)
         if route.path == '/healthz':
@@ -306,6 +372,8 @@ class Handler(BaseHTTPRequestHandler):
                 result['address'] = self.address()
             elif route.path == '/api/browse':
                 result = {'items': self.server.engine.browse(query.get('path', [''])[0])}
+            elif route.path == '/api/torrents':
+                result = self.server.engine_snapshot_torrents()
             elif route.path == '/api/health':
                 password = self.server.engine.saved_password()
                 username = (self.server.engine.config or {}).get('username', '')
@@ -375,10 +443,13 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(data, dict):
                 raise Error('请求格式无效')
             action = urlsplit(self.path).path.removeprefix('/api/')
-            if not action.startswith('service/'):
-                raise Error('不支持此操作')
-            self.server.engine.launch(action.split('/')[1], data)
-            self.send(202, {'ok': True})
+            if action.startswith('service/'):
+                self.server.engine.launch(action.split('/')[1], data)
+                return self.send(202, {'ok': True})
+            if action in ('start', 'stop', 'remove', 'magnet'):
+                self.tr_action(action, data)
+                return self.send(200, {'ok': True})
+            raise Error('不支持此操作')
         except (Error, ValueError, OSError) as exc:
             self.send(400, {'ok': False, 'error': str(exc) if isinstance(exc, Error) else '操作失败，请检查输入'})
         finally:

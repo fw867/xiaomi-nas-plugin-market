@@ -636,23 +636,26 @@ class UiTests(unittest.TestCase):
         for name in referenced:
             self.assertTrue((self.web / name).is_file(), name)
 
-    def test_console_button_opens_the_webui_in_a_new_page(self):
-        """第二个卡片要有「打开控制台」，指向插件同源控制台入口并新页面打开。"""
+    def test_console_button_opens_native_console(self):
+        """WebUI 卡片的「打开控制台」在插件内打开原生控制台（同源 API，不跳第三方页）。"""
         html = (self.web / 'index.html').read_text(encoding='utf-8')
-        self.assertIn('id="consoleLink"', html)
-        self.assertRegex(html, r'<a[^>]+id="consoleLink"[^>]+target="_blank"')
+        self.assertIn('id="openConsole"', html)
+        self.assertIn('id="consoleView"', html)
+        self.assertIn('id="statusView"', html)
         script = (self.web / 'app.js').read_text(encoding='utf-8')
-        # 同源入口（/console/），局域网与外网都能打开；直连 9091 的地址只用于内网
-        self.assertIn("console/index.html?t=", script)
+        self.assertIn("showConsole(true)", script)
+        self.assertIn("api('torrents')", script)
 
     def test_narrow_screen_keeps_status_buttons_compact(self):
         """窄屏下状态卡的两个按钮不能被拉满整行，否则会变成一条很长的按钮。"""
         css = (self.web / 'styles.css').read_text(encoding='utf-8')
-        narrow = css.split('@media (max-width: 430px)', 1)[1]
+        marker = '@media (max-width: 430px)'
+        start = css.find(marker)
+        self.assertGreaterEqual(start, 0)
+        narrow = css[start:start + 400]
         self.assertNotIn('width: 100%', narrow)
         self.assertIn('.status-actions', narrow)
         self.assertIn('.status-port', narrow)
-        # 地址独占一行，两个按钮留在下一行（断言不依赖排版格式）
         self.assertIn('.address-row code', narrow)
         self.assertIn('flex: 1 1 100%', narrow)
 

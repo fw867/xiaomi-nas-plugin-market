@@ -405,3 +405,84 @@ dialog::backdrop { background: rgba(29, 41, 61, .45); }
   /* 地址先独占一行，两个按钮留在下一行，避免地址被挤成一两个字宽 */
   .address-row code { flex: 1 1 100%; }
 }
+
+/* ---------- 原生控制台（参照 qB） ---------- */
+.console-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 2px 0 10px;
+}
+.stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  text-align: center;
+  margin-bottom: 10px;
+}
+.stats > div { min-width: 0; }
+.stats small { display: block; color: var(--muted); font-size: 11.5px; }
+.stats strong {
+  display: block;
+  margin-top: 2px;
+  color: var(--green);
+  font-size: 16px;
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.toolbar .btn,
+.toolbar input[type=search],
+.toolbar select { height: 36px; min-height: 36px; }
+.toolbar .btn { flex: 0 0 auto; padding: 0 12px; }
+.toolbar input[type=search] { flex: 1 1 auto; min-width: 0; }
+.toolbar select { flex: 0 0 auto; width: auto; min-width: 92px; }
+.tasks { border-top: 1px solid var(--line); }
+.task {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--line);
+}
+.task-body { min-width: 0; }
+.task-name {
+  display: block;
+  width: 100%;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.task small { display: block; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+progress {
+  display: block;
+  width: 100%;
+  height: 6px;
+  margin: 8px 0 6px;
+  border: 0;
+  border-radius: 3px;
+  background: #e7ecf1;
+  accent-color: var(--green);
+}
+progress::-webkit-progress-bar { border-radius: 3px; background: #e7ecf1; }
+progress::-webkit-progress-value { border-radius: 3px; background: var(--green); }
+.task-actions { display: flex; gap: 2px; }
+.task-actions button {
+  width: 38px;
+  height: 38px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  cursor: pointer;
+}
+.task-actions button img { display: block; width: 18px; height: 18px; margin: 0 auto; object-fit: contain; }
+.task-actions button:active { background: #eef2f6; }
+#empty { padding: 40px 0; color: var(--muted); font-size: 13.5px; text-align: center; }

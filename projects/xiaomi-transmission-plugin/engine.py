@@ -576,8 +576,11 @@ class Engine:
         self.worker.start()
 
 
-def tr_rpc(method, username=None, password=None, session_id='', timeout=15):
-    """调一次 Transmission RPC；返回 (状态码, body, session-id 头)。"""
+def tr_rpc(method, username=None, password=None, session_id='', timeout=15, arguments=None):
+    """调一次 Transmission RPC；返回 (状态码, body, session-id 头)。
+
+    daemon 首次（或 session 过期）会回 409 并带 X-Transmission-Session-Id，需带着重试。
+    """
     connection = http.client.HTTPConnection('127.0.0.1', PORT, timeout=timeout)
     headers = {'Content-Type': 'application/json'}
     if username and password:
@@ -585,16 +588,42 @@ def tr_rpc(method, username=None, password=None, session_id='', timeout=15):
         headers['Authorization'] = 'Basic ' + token
     if session_id:
         headers['X-Transmission-Session-Id'] = session_id
-    body = json.dumps({'method': method}).encode('utf-8')
+    payload = {'method': method}
+    if arguments is not None:
+        payload['arguments'] = arguments
+    body = json.dumps(payload).encode('utf-8')
     try:
         connection.request('POST', '/transmission/rpc', body, headers)
         response = connection.getresponse()
-        data = response.read(2 * 1024 * 1024 + 1)
+        data = response.read(4 * 1024 * 1024 + 1)
         return response.status, data, response.getheader('X-Transmission-Session-Id', '')
     except (OSError, http.client.HTTPException) as exc:
         raise Error('Transmission 未运行或尚未就绪') from exc
     finally:
         connection.close()
+
+
+def tr_call(method, username, password, arguments=None, timeout=15):
+    """带 409 会话握手的 RPC 调用，成功返回 arguments 字典。"""
+    sid = ''
+    code, body, sid = tr_rpc(method, username=username, password=password, session_id='', timeout=timeout, arguments=arguments)
+    if code == 409 and sid:
+        code, body, _ = tr_rpc(method, username=username, password=password, session_id=sid, timeout=timeout, arguments=arguments)
+    if code == 401:
+        raise Error('WebUI 账号密码错误，或 Transmission 未开启 RPC 鉴权')
+    if code not in (200, 409):
+        raise Error('Transmission RPC 拒绝操作（HTTP ' + str(code) + '）')
+    try:
+        data = json.loads(body)
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise Error('Transmission RPC 返回了非 JSON 响应') from exc
+    if not isinstance(data, dict):
+        raise Error('Transmission RPC 响应格式无效')
+    result = data.get('result')
+    if result and result != 'success':
+        raise Error('Transmission RPC：' + str(result)[:200])
+    args = data.get('arguments')
+    return args if isinstance(args, dict) else {}
 
 
 def tr_rpc_probe(username=None, password=None):

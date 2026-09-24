@@ -21,7 +21,7 @@
             <button id="refresh" class="icon-button" title="刷新" aria-label="刷新"><img data-icon="reload" alt=""></button>
         </header>
 
-        <main>
+        <main id="statusView">
             <section class="card status-card">
                 <div class="status-main">
                     <span class="status-dot" id="statusDot" aria-hidden="true"></span>
@@ -100,9 +100,9 @@
                 <div class="address-row">
                     <code id="address">—</code>
                     <button id="copyAddress" type="button" class="btn small">复制</button>
-                    <a id="consoleLink" class="btn small primary" href="#" target="_blank" rel="noopener">打开控制台</a>
+                    <button id="openConsole" type="button" class="btn small primary">打开控制台</button>
                 </div>
-                <p class="muted">「打开控制台」走插件同源路径，局域网与外网都能用；局域网设备也可直接打开上面的地址（更快、无需中转）。两个入口都用安装时设置的 WebUI 用户名和密码登录。</p>
+                <p class="muted">「打开控制台」在插件内直接管理任务（同源 API，不依赖第三方页面）。局域网也可打开上面的 9091 地址使用官方 WebUI。</p>
             </section>
 
             <details class="card fold fold-card" id="notes">
@@ -110,13 +110,40 @@
                 <ul>
                     <li>容器 <code>xiaomi-plugin-transmission</code> 只挂载所选的配置、下载、监控目录，不挂载 Docker socket，不使用 privileged 或 host 网络。</li>
                     <li>WebUI 端口 9091（TCP）对局域网开放；BT 入站端口 51413（TCP/UDP）已映射，公网入站仍需在路由器转发。</li>
-                    <li>「控制台」默认安装 Transmission Web Control，文件放在所选配置目录的 <code>webui/</code> 下；想换成别的 WebUI，把文件替换进该目录（保证 <code>index.html</code> 在根）后重启服务即可。</li>
-                    <li>「打开控制台」走插件同源路径，局域网与外网都能开；它只对设备所有者开放（所有者证书，或用插件页令牌换来的 Cookie）。卡片里的 9091 地址是局域网直连入口，更快但外网打不开。</li>
+                    <li>「打开控制台」为插件内置界面，通过 Transmission JSON-RPC 拉取任务；卡片里的 9091 地址是官方 WebUI 直连入口。</li>
                     <li>停止或卸载插件只停止容器，配置与已下载文件都会保留。</li>
                 </ul>
             </details>
 
             <footer>Transmission 下载 · __PLUGIN_VERSION__</footer>
+        </main>
+
+        <main id="consoleView" hidden>
+            <div class="console-head">
+                <button id="backToStatus" type="button" class="btn small">← 返回</button>
+                <span class="muted" id="count"></span>
+            </div>
+            <div id="consoleBody">
+                <section class="card stats">
+                    <div><small>下载速度</small><strong id="downSpeed">—</strong></div>
+                    <div><small>上传速度</small><strong id="upSpeed">—</strong></div>
+                    <div><small>本次已下载</small><strong id="downloaded">—</strong></div>
+                </section>
+                <section class="card">
+                    <div class="toolbar">
+                        <button id="add" class="btn small" title="添加磁力" aria-label="添加磁力"><img data-icon="plus" alt="">添加</button>
+                        <input id="search" type="search" placeholder="搜索任务" aria-label="搜索任务">
+                        <select id="filter" aria-label="任务状态">
+                            <option value="all">全部</option>
+                            <option value="downloading">下载中</option>
+                            <option value="completed">已完成</option>
+                            <option value="stopped">已停止</option>
+                        </select>
+                    </div>
+                    <div id="tasks" class="tasks"></div>
+                    <p id="empty" hidden>暂无下载任务</p>
+                </section>
+            </div>
         </main>
 
         <dialog id="browse">
@@ -132,6 +159,20 @@
             <div class="dialog-actions">
                 <button id="selectFolder" class="btn primary" type="button">选择此目录</button>
             </div>
+        </dialog>
+
+        <dialog id="addDialog">
+            <div class="dialog-head">
+                <h2>添加磁力链接</h2>
+                <button class="dialog-close" data-close="addDialog" aria-label="关闭"><img data-icon="close" alt=""></button>
+            </div>
+            <form id="addForm">
+                <div class="field">
+                    <span class="field-label">磁力链接</span>
+                    <textarea name="magnet" rows="3" placeholder="magnet:?xt=urn:btih:…" style="width:100%;min-height:84px;padding:10px 12px;border:1px solid #ccd5df;border-radius:9px;font:inherit;"></textarea>
+                </div>
+                <button type="submit" class="btn primary block">开始下载</button>
+            </form>
         </dialog>
 
         <div id="toast" role="status" hidden></div>

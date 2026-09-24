@@ -6,8 +6,6 @@
     const loaded = document.currentScript?.src
       || [...document.scripts].map((s) => s.src).find((src) => /\/app(?:\.bundle)?\.js(?:$|\?)/.test(src));
     if (loaded) {
-      // Windows 客户端 location/script 可能带盘符（/D:/plugin/...）；
-      // 绝对基址必须去掉盘符，否则拼出的 /D:/plugin/... 会打到 nginx 400（见 1fb9047）。
       const url = new URL(loaded);
       const cleanPath = url.pathname.replace(/^\/[A-Za-z]:/, '');
       return new URL(cleanPath.replace(/[^/]*$/, ''), url.origin).href;
@@ -31,8 +29,20 @@
   const escape = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const icon = (name) => `<img src="${icons[name]}" alt="">`;
   root.querySelectorAll('[data-icon]').forEach(el => el.src = icons[el.dataset.icon]);
-  let state, browsePath = '', browseTarget = '', toastTimer, polling = false, generation = 0;
+  let state, items = [], browsePath = '', browseTarget = '', toastTimer, polling = false, generation = 0;
   const fieldIds = { download: '#downloadPath', config: '#configPath', watch: '#watchPath' };
+  const bytes = (n) => {
+    n = Number(n || 0);
+    const u = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+    let i = 0;
+    while (n >= 1024 && i < 4) { n /= 1024; i++; }
+    return n.toFixed(i ? 1 : 0) + ' ' + u[i];
+  };
+  const TR_STATUS_LABEL = {
+    0: '已停止', 1: '等待校验', 2: '校验中', 3: '等待下载', 4: '等待做种',
+    5: '下载中', 6: '下载中', 7: '做种中', 8: '做种中',
+  };
+  const isStopped = (s) => s === 0;
 
   function toast(message) {
     $('#toast').textContent = message;
@@ -64,6 +74,15 @@
     button.disabled = true;
     try { await fn(); } catch (e) { toast(e.message); } finally { button.disabled = false; }
   }
+  function showConsole(on) {
+    $('#statusView').hidden = on;
+    $('#consoleView').hidden = !on;
+    if (on) {
+      if (location.hash !== '#console') location.hash = 'console';
+    } else if (location.hash === '#console') {
+      history.replaceState(null, '', location.pathname + location.search);
+    }
+  }
   function stateLabel(current) {
     if (current.busy) return '正在处理，请稍候';
     if (!current.configured) return '未初始化';
@@ -84,11 +103,7 @@
     $('#serviceActions').hidden = !current.configured;
     const live = current.configured && current.running;
     $('#access').hidden = !live;
-    const address = current.address || '';
-    $('#address').textContent = address || '（请从设备所有者的小米客户端打开插件以获取地址）';
-    // 控制台走插件同源路径（/console/index.html?t=…），直接带令牌、不依赖 302 与 Cookie；
-    // 上面的 9091 地址是局域网直连用的，更快但外网打不开。
-    $('#consoleLink').href = assetUrl('console/index.html?t=' + encodeURIComponent(session));
+    $('#address').textContent = current.address || '（请从设备所有者的小米客户端打开插件以获取地址）';
     $('#toggleService').disabled = current.busy;
     $('#toggleService').textContent = current.running ? '停止服务' : '启动服务';
     $('#downloadDir').textContent = current.download ? '/' + current.download : '—';
@@ -98,7 +113,6 @@
     renderPortState(current);
     if (!current.busy) showError(current.error);
   }
-  // BT 端口只显示上一次「测试端口」的结果，避免每次轮询都去访问外部检测服务
   function renderPortState(current) {
     const port = current.port || {};
     const value = port.peerPort || 51413;
@@ -110,6 +124,32 @@
     }
     $('#portState').textContent = current.busy ? '正在测试端口…' : text;
     $('#testPort').disabled = current.busy || !current.configured || !current.running;
+  }
+  function renderTasks() {
+    const search = $('#search').value.toLowerCase();
+    const filter = $('#filter').value;
+    const visible = items.filter(item => {
+      const name = String(item.name || '').toLowerCase();
+      if (search && !name.includes(search)) return false;
+      if (filter === 'downloading') return !isStopped(item.status) && item.progress < 1;
+      if (filter === 'completed') return item.progress >= 1;
+      if (filter === 'stopped') return isStopped(item.status);
+      return true;
+    });
+    $('#count').textContent = `${visible.length} 个任务`;
+    $('#empty').hidden = visible.length > 0;
+    $('#tasks').innerHTML = visible.map(item => {
+      const stopped = isStopped(item.status);
+      const label = TR_STATUS_LABEL[item.status] || ('状态 ' + item.status);
+      return `<article class="task"><div class="task-body">
+        <strong class="task-name">${escape(item.name)}</strong>
+        <progress max="1" value="${Math.max(0, Math.min(1, Number(item.progress) || 0))}" aria-label="下载进度"></progress>
+        <small>${(Number(item.progress || 0) * 100).toFixed(1)}% · ${bytes(item.size)} · ${escape(label)} · ↓ ${bytes(item.dlspeed)}/s · ↑ ${bytes(item.upspeed)}/s${item.error ? ' · ' + escape(item.error) : ''}</small>
+      </div><div class="task-actions">
+        <button title="${stopped ? '继续' : '暂停'}" aria-label="${stopped ? '继续' : '暂停'}" data-action="${stopped ? 'start' : 'stop'}" data-id="${item.id}">${icon(stopped ? 'play' : 'stop')}</button>
+        <button title="移除任务，保留文件" aria-label="移除任务，保留文件" data-action="remove" data-id="${item.id}">${icon('trash')}</button>
+      </div></article>`;
+    }).join('');
   }
   async function browse(path) {
     browsePath = path;
@@ -136,6 +176,16 @@
       const current = await api('status');
       state = current;
       render(current);
+      const inConsole = location.hash === '#console';
+      if (current.running && inConsole) {
+        const result = await api('torrents');
+        items = result.items || [];
+        const t = result.transfer || {};
+        $('#downSpeed').textContent = bytes(t.dlspeed) + '/s';
+        $('#upSpeed').textContent = bytes(t.upspeed) + '/s';
+        $('#downloaded').textContent = bytes(t.downloaded);
+        renderTasks();
+      }
     } catch (e) {
       showError(e.message);
     } finally {
@@ -151,6 +201,13 @@
       browseTarget = button.dataset.target;
       $('#browse').showModal();
       browse($(fieldIds[browseTarget]).value);
+      return;
+    }
+    if (button.dataset.action && button.dataset.id) {
+      busy(button, async () => {
+        await api(button.dataset.action, { id: Number(button.dataset.id) });
+        await refresh();
+      });
     }
   });
   $('#refresh').onclick = () => busy($('#refresh'), refresh);
@@ -197,6 +254,25 @@
     await api('service/' + (state && state.running ? 'stop' : 'start'), {});
     await refresh();
   });
+  $('#openConsole').onclick = () => { showConsole(true); busy($('#openConsole'), refresh); };
+  $('#backToStatus').onclick = () => showConsole(false);
+  $('#search').oninput = renderTasks;
+  $('#filter').onchange = renderTasks;
+  $('#add').onclick = () => { $('#addForm').reset(); $('#addDialog').showModal(); };
+  $('#addForm').onsubmit = e => {
+    e.preventDefault();
+    const form = e.target;
+    const magnet = form.elements.magnet.value.trim();
+    if (!magnet) { toast('请填写磁力链接'); return; }
+    busy(form.querySelector('[type=submit]'), async () => {
+      await api('magnet', { url: magnet });
+      $('#addDialog').close();
+      await refresh();
+      toast('任务已添加');
+    });
+  };
+  window.addEventListener('hashchange', () => showConsole(location.hash === '#console'));
+  if (location.hash === '#console') showConsole(true);
   async function tick() {
     if (!root.isConnected) return;
     if (!document.hidden) await refresh();
