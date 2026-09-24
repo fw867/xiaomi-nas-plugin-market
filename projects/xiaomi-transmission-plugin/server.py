@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import hmac
+import http.client
 import ipaddress
 import json
 import mimetypes
@@ -14,14 +16,27 @@ import socket
 import tempfile
 import threading
 import time
+from http.cookies import CookieError, SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-from engine import Engine, Error, PORT, installed_version, tr_rpc_probe
+from engine import Engine, Error, PORT, installed_version, tr_rpc_probe, webui_path
 
 WEB = Path(__file__).resolve().parent / 'web'
 TTL = 86400
+
+# 同源控制台：插件页点「打开控制台」→ /console/?t=<插件会话令牌> 换一个签名 Cookie
+# → twc 静态页（装在 <配置目录>/webui/）→ 它的 rpcpath='../rpc' 打到 /rpc，由插件转发给容器。
+# 走同源路径而不是直连 9091，才能在局域网之外（客户端的远程通道）也能打开。
+CONSOLE_PATH = '/console'
+CONSOLE_COOKIE = 'tr_console'
+CONSOLE_RPC_PATH = '/rpc'
+CONSOLE_TOKEN_TTL = 12 * 3600
+MAX_RPC_BYTES = 4 * 1024 * 1024
+# 控制台是第三方页面（twc），允许它自己的内联脚本，其余仍限同源
+CONSOLE_CSP = ("default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+               "script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'")
 
 
 class Server(ThreadingHTTPServer):
@@ -47,7 +62,7 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-    def send(self, code, data, mime='application/json; charset=utf-8'):
+    def send(self, code, data, mime='application/json; charset=utf-8', headers=None, csp=None):
         if not isinstance(data, bytes):
             data = json.dumps(data, ensure_ascii=False).encode()
         self.send_response(code)
@@ -58,7 +73,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Referrer-Policy', 'no-referrer')
         self.send_header(
             'Content-Security-Policy',
-            "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'")
+            csp or "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'")
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         try:
             self.wfile.write(data)
@@ -68,15 +85,85 @@ class Handler(BaseHTTPRequestHandler):
     def sign(self, text):
         return hmac.new(self.server.key, text.encode(), hashlib.sha256).hexdigest()
 
-    def session(self):
-        token = self.headers.get('X-TR-Session', '')
+    def token_valid(self, token):
+        """校验插件签发的令牌（<到期时间>.<随机串>.<签名>）。"""
         try:
             payload, signature = token.rsplit('.', 1)
             if len(token) > 200 or int(payload.split('.')[0]) < time.time():
-                return None
-            return token if secrets.compare_digest(signature, self.sign(payload)) else None
-        except (ValueError, UnicodeError):
-            return None
+                return False
+            return secrets.compare_digest(signature, self.sign(payload))
+        except (ValueError, UnicodeError, AttributeError):
+            return False
+
+    def mint_token(self, seconds):
+        payload = str(int(time.time()) + seconds) + '.' + secrets.token_hex(16)
+        return payload + '.' + self.sign(payload)
+
+    def session(self):
+        token = self.headers.get('X-TR-Session', '')
+        return token if self.token_valid(token) else None
+
+    def console_allowed(self):
+        """控制台的闸门：设备所有者证书/回环，或从插件页带令牌换来的 Cookie。
+
+        控制台页面是第三方页面（twc），它自己的 XHR 带不上插件的自定义头，所以只能靠 Cookie；
+        而插件转发 RPC 时会代填 WebUI 账号，这道闸门不在就等于把 Transmission 的控制权
+        开放给任何能访问到该路径的设备。
+        """
+        if self.trusted():
+            return True
+        jar = SimpleCookie()
+        try:
+            jar.load(self.headers.get('Cookie', ''))
+        except CookieError:
+            return False
+        morsel = jar.get(CONSOLE_COOKIE)
+        return bool(morsel and self.token_valid(morsel.value))
+
+    def serve_console(self, relative):
+        """把 <配置目录>/webui/ 下的控制台文件按同源路径发出去。"""
+        folder = (self.server.engine.config or {}).get('config')
+        if not folder:
+            return self.send(409, {'ok': False, 'error': '请先在插件页完成初始化，再打开控制台'})
+        root = webui_path(Path(folder)).resolve()
+        if not (root / 'index.html').is_file():
+            return self.send(409, {'ok': False, 'error': '控制台文件缺失，应位于 ' + str(root)})
+        candidate = (root / (relative or 'index.html')).resolve()
+        if candidate != root and root not in candidate.parents:
+            return self.send(403, {'ok': False, 'error': 'forbidden'})
+        if not candidate.is_file():
+            return self.send(404, {'ok': False, 'error': 'not found'})
+        mime = mimetypes.guess_type(candidate.name)[0] or 'application/octet-stream'
+        return self.send(200, candidate.read_bytes(), mime, csp=CONSOLE_CSP)
+
+    def proxy_console_rpc(self, payload):
+        """把控制台的 RPC 请求转发给容器里的 transmission，并代填 WebUI 账号。"""
+        engine = self.server.engine
+        username = (engine.config or {}).get('username', '')
+        password = engine.saved_password()
+        headers = {'Content-Type': 'application/json'}
+        if username and password:
+            token = base64.b64encode((username + ':' + password).encode('utf-8')).decode('ascii')
+            headers['Authorization'] = 'Basic ' + token
+        sid = self.headers.get('X-Transmission-Session-Id')
+        if sid:
+            headers['X-Transmission-Session-Id'] = sid
+        connection = http.client.HTTPConnection('127.0.0.1', PORT, timeout=15)
+        try:
+            connection.request('POST', '/transmission/rpc', body=payload, headers=headers)
+            response = connection.getresponse()
+            body = response.read()
+            status = response.status
+            out = {}
+            session = response.getheader('X-Transmission-Session-Id')
+            if session:
+                out['X-Transmission-Session-Id'] = session
+            mime = response.getheader('Content-Type') or 'application/json'
+        except (OSError, http.client.HTTPException) as error:
+            return self.send(502, {'ok': False, 'error': 'transmission 未就绪：' + str(error)})
+        finally:
+            connection.close()
+        self.send(status, body, mime, out, csp=CONSOLE_CSP)
 
     def trusted(self):
         if self.server.dev:
@@ -133,6 +220,8 @@ class Handler(BaseHTTPRequestHandler):
             if not file.is_file():
                 return self.send(404, {'ok': False, 'error': 'not found'})
             return self.send(200, file.read_bytes(), 'image/png')
+        if route.path == CONSOLE_PATH or route.path.startswith(CONSOLE_PATH + '/'):
+            return self.handle_console(route)
         token = self.require()
         if not token:
             return
@@ -161,7 +250,36 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             self.server.request_slots.release()
 
+    def handle_console(self, route):
+        """控制台入口：/console（用令牌换 Cookie 后跳到 /console/）与 /console/ 下的静态文件。"""
+        entry = route.path.rstrip('/') == CONSOLE_PATH
+        query_token = parse_qs(route.query).get('t', [''])[0]
+        if entry and query_token and self.token_valid(query_token):
+            # 令牌只出现在首次跳转的地址上，随后 302 到不带令牌的地址（相对路径才不丢 nginx 前缀）
+            target = 'console/' if route.path == CONSOLE_PATH else './'
+            return self.send(302, b'', 'text/plain; charset=utf-8', {
+                'Location': target,
+                'Set-Cookie': (CONSOLE_COOKIE + '=' + self.mint_token(CONSOLE_TOKEN_TTL)
+                               + '; Path=/; HttpOnly; SameSite=Strict'),
+            })
+        if not self.console_allowed():
+            return self.send(403, {'ok': False, 'error': '请从插件页点「打开控制台」进入'})
+        if entry:
+            return self.serve_console('index.html')
+        return self.serve_console(route.path[len(CONSOLE_PATH) + 1:])
+
     def do_POST(self):
+        route = urlsplit(self.path)
+        if route.path == CONSOLE_RPC_PATH:
+            if not self.console_allowed():
+                return self.send(403, {'ok': False, 'error': '请从插件页点「打开控制台」进入'})
+            try:
+                length = int(self.headers.get('Content-Length', '0'))
+            except ValueError:
+                length = 0
+            if not 0 < length <= MAX_RPC_BYTES:
+                return self.send(413, {'ok': False, 'error': '请求体过大'})
+            return self.proxy_console_rpc(self.rfile.read(length))
         token = self.require(True)
         if not token:
             return

@@ -388,10 +388,11 @@ dialog::backdrop { background: rgba(29, 41, 61, .45); }
   #toast { background: #2b3a4d; }
 }
 
-/* 窄屏：状态卡的按钮换到下一行占满宽度，避免挤压服务状态文案 */
+/* 窄屏：状态文案与按钮分两行，但按钮保持自身宽度——拉满整行会变成一条很长的按钮 */
 @media (max-width: 430px) {
   .status-main { flex-wrap: wrap; }
-  .status-actions { width: 100%; }
-  .status-actions .btn { width: 100%; }
-  .status-port .btn { width: 100%; }
+  .status-actions { margin-left: auto; }
+  .status-port .btn { margin-left: auto; }
+  /* 地址先独占一行，两个按钮留在下一行，避免地址被挤成一两个字宽 */
+  .address-row code { flex: 1 1 100%; }
 }

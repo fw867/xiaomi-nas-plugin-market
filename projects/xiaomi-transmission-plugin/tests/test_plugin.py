@@ -1,3 +1,4 @@
+import base64
 import http.client
 import io
 import json
@@ -5,6 +6,7 @@ import os
 import re
 import tempfile
 import threading
+import types
 import unittest
 import zipfile
 from pathlib import Path
@@ -425,6 +427,34 @@ class HTTPTests(unittest.TestCase):
             'Content-Type': 'application/json',
         }
 
+    def request_full(self, method, route, data=None, headers=None):
+        conn = http.client.HTTPConnection('127.0.0.1', self.server.server_port)
+        try:
+            conn.request(method, route, json.dumps(data) if data is not None else None, headers or {})
+            response = conn.getresponse()
+            return response.status, dict(response.getheaders()), response.read()
+        finally:
+            conn.close()
+
+    def prepare_console(self):
+        """造一个已初始化的插件：配置目录下有 webui/index.html，并保存了 WebUI 口令。"""
+        config = Path(self.tmp.name) / 'config'
+        webui = config / 'webui'
+        (webui / 'tr-web-control').mkdir(parents=True)
+        (webui / 'index.html').write_text('<html>console</html>', encoding='utf-8')
+        (webui / 'tr-web-control' / 'app.js').write_text('// twc', encoding='utf-8')
+        self.engine.config = {'owner': 'owner-token', 'config': str(config), 'username': 'admin'}
+        self.engine.credentialfile.write_text(
+            json.dumps({'username': 'admin', 'password': 'Example123'}), encoding='utf-8')
+        return webui
+
+    def console_cookie(self):
+        """走一次入口换 Cookie，模拟插件页点「打开控制台」。"""
+        status, headers, _ = self.request_full('GET', '/console?t=' + self.token)
+        self.assertEqual(status, 302)
+        self.assertEqual(headers.get('Location'), 'console/')
+        return {'Cookie': headers['Set-Cookie'].split(';')[0]}
+
     def test_unauthenticated_reads_denied(self):
         self.assertEqual(self.request('GET', '/api/status')[0], 401)
 
@@ -456,6 +486,92 @@ class HTTPTests(unittest.TestCase):
             code, body = self.request('GET', '/api/status', headers=self.auth())
         self.assertEqual(code, 200)
         self.assertEqual(json.loads(body)['address'], 'http://192.168.1.15:' + str(PORT))
+
+    def test_console_entry_issues_cookie_and_redirects(self):
+        """入口收插件令牌换 Cookie，并跳到带斜杠的地址（twc 的相对路径要按目录算）。"""
+        self.server.dev = False
+        self.prepare_console()
+        self.assertIn('tr_console=', self.console_cookie()['Cookie'])
+
+    def test_console_entry_accepts_trailing_slash(self):
+        """插件页生成的是 console/?t=...，入口必须接受带斜杠的形式，否则第一次点开会 403。"""
+        self.server.dev = False
+        self.prepare_console()
+        status, headers, _ = self.request_full('GET', '/console/?t=' + self.token)
+        self.assertEqual(status, 302)
+        self.assertEqual(headers.get('Location'), './')
+        self.assertIn('tr_console=', headers['Set-Cookie'])
+
+    def test_console_rejects_requests_without_credential(self):
+        """插件会代填 WebUI 账号，所以没有证书/令牌时必须挡住，否则同网段设备可直接控制。"""
+        self.server.dev = False
+        self.prepare_console()
+        self.assertEqual(self.request('GET', '/console/')[0], 403)
+        self.assertEqual(self.request('GET', '/console?t=bad.token')[0], 403)
+        self.assertEqual(self.request('POST', '/rpc', {'method': 'session-stats'})[0], 403)
+
+    def test_console_serves_files_from_config_webui(self):
+        self.prepare_console()
+        cookie = self.console_cookie()
+        status, _, body = self.request_full('GET', '/console/', headers=cookie)
+        self.assertEqual(status, 200)
+        self.assertEqual(body, b'<html>console</html>')
+        status, _, body = self.request_full('GET', '/console/tr-web-control/app.js', headers=cookie)
+        self.assertEqual(status, 200)
+        self.assertEqual(body, b'// twc')
+
+    def test_console_refuses_path_traversal(self):
+        self.prepare_console()
+        cookie = self.console_cookie()
+        self.assertEqual(self.request_full('GET', '/console/../engine.py', headers=cookie)[0], 403)
+
+    def test_console_reports_missing_files(self):
+        self.engine.config = {'owner': 'owner-token', 'config': str(Path(self.tmp.name) / 'nope')}
+        cookie = self.console_cookie()
+        status, _, body = self.request_full('GET', '/console/', headers=cookie)
+        self.assertEqual(status, 409)
+        self.assertIn('webui', json.loads(body)['error'])
+
+    def test_console_rpc_forwards_with_credentials(self):
+        """RPC 转发要带上插件保存的 WebUI 账号，并透传 session id 与响应。"""
+        self.prepare_console()
+        cookie = self.console_cookie()
+        captured = {}
+
+        class FakeResponse:
+            status = 200
+            def read(self):
+                return b'{"result":"success"}'
+            def getheader(self, name):
+                if name.lower() == 'x-transmission-session-id':
+                    return 'session-42'
+                return 'application/json'
+
+        class FakeConnection:
+            def __init__(self, host, port, timeout=None):
+                captured['host'], captured['port'] = host, port
+            def request(self, method, path, body=None, headers=None):
+                captured['method'], captured['path'], captured['headers'] = method, path, headers or {}
+            def getresponse(self):
+                return FakeResponse()
+            def close(self):
+                pass
+
+        with patch('server.http', types.SimpleNamespace(
+                client=types.SimpleNamespace(HTTPConnection=FakeConnection,
+                                             HTTPException=http.client.HTTPException))):
+            status, headers, body = self.request_full(
+                'POST', '/rpc', {'method': 'session-stats'},
+                {**cookie, 'X-Transmission-Session-Id': 'incoming', 'Content-Type': 'application/json'})
+        self.assertEqual(status, 200)
+        self.assertEqual(headers.get('X-Transmission-Session-Id'), 'session-42')
+        self.assertEqual(body, b'{"result":"success"}')
+        self.assertEqual(captured['host'], '127.0.0.1')
+        self.assertEqual(captured['port'], PORT)
+        self.assertEqual(captured['path'], '/transmission/rpc')
+        self.assertEqual(captured['headers']['X-Transmission-Session-Id'], 'incoming')
+        self.assertEqual(captured['headers']['Authorization'],
+                         'Basic ' + base64.b64encode(b'admin:Example123').decode())
 
 
 class UiTests(unittest.TestCase):
@@ -492,6 +608,26 @@ class UiTests(unittest.TestCase):
         self.assertTrue(referenced)
         for name in referenced:
             self.assertTrue((self.web / name).is_file(), name)
+
+    def test_console_button_opens_the_webui_in_a_new_page(self):
+        """第二个卡片要有「打开控制台」，指向插件同源控制台入口并新页面打开。"""
+        html = (self.web / 'index.html').read_text(encoding='utf-8')
+        self.assertIn('id="consoleLink"', html)
+        self.assertRegex(html, r'<a[^>]+id="consoleLink"[^>]+target="_blank"')
+        script = (self.web / 'app.js').read_text(encoding='utf-8')
+        # 同源入口（/console/），局域网与外网都能打开；直连 9091 的地址只用于内网
+        self.assertIn("assetUrl('console/?t=' + encodeURIComponent(session))", script)
+
+    def test_narrow_screen_keeps_status_buttons_compact(self):
+        """窄屏下状态卡的两个按钮不能被拉满整行，否则会变成一条很长的按钮。"""
+        css = (self.web / 'styles.css').read_text(encoding='utf-8')
+        narrow = css.split('@media (max-width: 430px)', 1)[1]
+        self.assertNotIn('width: 100%', narrow)
+        self.assertIn('.status-actions', narrow)
+        self.assertIn('.status-port', narrow)
+        # 地址独占一行，两个按钮留在下一行（断言不依赖排版格式）
+        self.assertIn('.address-row code', narrow)
+        self.assertIn('flex: 1 1 100%', narrow)
 
     def test_bundle_is_built_from_source(self):
         import base64

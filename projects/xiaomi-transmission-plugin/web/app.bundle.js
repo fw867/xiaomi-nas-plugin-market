@@ -78,7 +78,11 @@ const assetUrl = (path) => new URL(path, pluginAssetBase()).href;
     $('#serviceActions').hidden = !current.configured;
     const live = current.configured && current.running;
     $('#access').hidden = !live;
-    $('#address').textContent = current.address || '（请从设备所有者的小米客户端打开插件以获取地址）';
+    const address = current.address || '';
+    $('#address').textContent = address || '（请从设备所有者的小米客户端打开插件以获取地址）';
+    // 控制台走插件同源路径（/console/），局域网与外网（客户端远程通道）都能打开；
+    // 上面的 9091 地址是局域网直连用的，更快但外网打不开。
+    $('#consoleLink').href = assetUrl('console/?t=' + encodeURIComponent(session));
     $('#toggleService').disabled = current.busy;
     $('#toggleService').textContent = current.running ? '停止服务' : '启动服务';
     $('#downloadDir').textContent = current.download ? '/' + current.download : '—';
