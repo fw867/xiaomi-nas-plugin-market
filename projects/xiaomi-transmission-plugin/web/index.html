@@ -102,7 +102,6 @@
                     <button id="copyAddress" type="button" class="btn small">复制</button>
                     <button id="openConsole" type="button" class="btn small primary">打开控制台</button>
                 </div>
-                <p class="muted">「打开控制台」在插件内直接管理任务（同源 API，不依赖第三方页面）。局域网也可打开上面的 9091 地址使用官方 WebUI。</p>
             </section>
 
             <details class="card fold fold-card" id="notes">
@@ -131,7 +130,7 @@
                 </section>
                 <section class="card">
                     <div class="toolbar">
-                        <button id="add" class="btn small" title="添加磁力" aria-label="添加磁力"><img data-icon="plus" alt="">添加</button>
+                        <button id="add" class="btn small" title="添加种子" aria-label="添加种子"><img data-icon="plus" alt="">添加</button>
                         <input id="search" type="search" placeholder="搜索任务" aria-label="搜索任务">
                         <select id="filter" aria-label="任务状态">
                             <option value="all">全部</option>
@@ -163,14 +162,19 @@
 
         <dialog id="addDialog">
             <div class="dialog-head">
-                <h2>添加磁力链接</h2>
+                <h2>添加种子</h2>
                 <button class="dialog-close" data-close="addDialog" aria-label="关闭"><img data-icon="close" alt=""></button>
             </div>
             <form id="addForm">
                 <div class="field">
-                    <span class="field-label">磁力链接</span>
-                    <textarea name="magnet" rows="3" placeholder="magnet:?xt=urn:btih:…" style="width:100%;min-height:84px;padding:10px 12px;border:1px solid #ccd5df;border-radius:9px;font:inherit;"></textarea>
+                    <span class="field-label">种子文件</span>
+                    <input type="file" name="file" accept=".torrent,application/x-bittorrent">
                 </div>
+                <div class="field">
+                    <span class="field-label">或种子地址</span>
+                    <input name="url" type="text" maxlength="2048" placeholder="https://example.com/file.torrent 或 magnet:?xt=…">
+                </div>
+                <p class="muted">二选一：上传 .torrent，或填写可访问的种子/磁力地址。</p>
                 <button type="submit" class="btn primary block">开始下载</button>
             </form>
         </dialog>

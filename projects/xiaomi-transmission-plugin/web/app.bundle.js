@@ -283,10 +283,22 @@
   if (addForm) addForm.onsubmit = e => {
     e.preventDefault();
     const form = e.target;
-    const magnet = form.elements.magnet.value.trim();
-    if (!magnet) { toast('请填写磁力链接'); return; }
+    const file = form.elements.file.files[0];
+    const url = (form.elements.url.value || '').trim();
+    if (!!file === !!url) { toast('请选择种子文件，或填写种子/磁力地址'); return; }
     busy(form.querySelector('[type=submit]'), async () => {
-      await api('magnet', { url: magnet });
+      if (file) {
+        if (file.size > 4 * 1024 * 1024) throw new Error('种子文件不能超过 4 MiB');
+        const content = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+          reader.onerror = () => reject(new Error('读取种子文件失败'));
+          reader.readAsDataURL(file);
+        });
+        await api('add', { content });
+      } else {
+        await api('add', { url });
+      }
       $('#addDialog').close();
       await refresh();
       toast('任务已添加');

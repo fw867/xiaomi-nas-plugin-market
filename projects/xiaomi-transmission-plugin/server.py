@@ -318,18 +318,33 @@ class Handler(BaseHTTPRequestHandler):
         elif action == 'remove':
             tr_call('torrent-remove', username, password,
                     {'ids': [int(data.get('id'))], 'delete-local-data': False})
-        elif action == 'magnet':
+        elif action == 'add':
+            # 种子文件（base64 metainfo）或种子/磁力 URL（filename）
+            content = data.get('content')
+            if isinstance(content, str) and content:
+                try:
+                    raw = base64.b64decode(content, validate=True)
+                except (ValueError, TypeError) as exc:
+                    raise Error('种子文件编码无效') from exc
+                if not 1 <= len(raw) <= 4 * 1024 * 1024:
+                    raise Error('种子文件须为 1–4 MiB')
+                if not raw.startswith(b'd'):
+                    raise Error('种子文件内容无效（不是 bencode torrent）')
+                tr_call('torrent-add', username, password,
+                        {'metainfo': base64.b64encode(raw).decode('ascii')})
+                return
             url = data.get('url', '')
-            if not isinstance(url, str) or not url.startswith('magnet:') or len(url) > 16384:
-                raise Error('磁力链接无效')
-            if '\n' in url or '\r' in url:
-                raise Error('磁力链接无效')
+            if not isinstance(url, str) or not url.strip():
+                raise Error('请上传种子文件或填写种子/磁力地址')
+            url = url.strip()
+            if '\n' in url or '\r' in url or len(url) > 4096:
+                raise Error('种子地址无效')
+            ok = (url.startswith('magnet:')
+                  or url.startswith('http://') or url.startswith('https://')
+                  or url.startswith('data:application/x-bittorrent;base64,'))
+            if not ok:
+                raise Error('仅支持种子文件、http(s) 种子地址或 magnet 链接')
             tr_call('torrent-add', username, password, {'filename': url})
-        elif action == 'torrent':
-            # 种子文件由调用方 base64 传入，这里直接作为 filename 不支持；
-            # Transmission 需要 multipart 上传，简单做法：写临时文件再用 filename= 本地路径
-            # —— 但 daemon 在容器里，本机路径不可见。改为要求调用方给磁力或种子 URL。
-            raise Error('当前控制台暂不支持上传种子文件，请使用磁力链接')
         else:
             raise Error('不支持此操作')
 
@@ -447,7 +462,7 @@ class Handler(BaseHTTPRequestHandler):
             if action.startswith('service/'):
                 self.server.engine.launch(action.split('/')[1], data)
                 return self.send(202, {'ok': True})
-            if action in ('start', 'stop', 'remove', 'magnet'):
+            if action in ('start', 'stop', 'remove', 'add'):
                 self.tr_action(action, data)
                 return self.send(200, {'ok': True})
             raise Error('不支持此操作')
