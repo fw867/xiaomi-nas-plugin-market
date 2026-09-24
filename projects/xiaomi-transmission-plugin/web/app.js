@@ -2,20 +2,26 @@
   'use strict';
 // Windows 客户端 location 可能带盘符（/D:/plugin/...），相对 fetch 会 400。
 // 以当前 script URL 为绝对基址（与 aliyundrive/115 插件一致）。
-function pluginAssetBase() {
-  const loaded = document.currentScript?.src
-    || [...document.scripts].map((s) => s.src).find((src) => /\/app(?:\.bundle)?\.js(?:$|\?)/.test(src));
-  if (loaded) return new URL('./', loaded).href;
-  const route = window.__MICRO_APP_BASE_ROUTE__;
-  if (typeof route === 'string' && route) {
-    const cleaned = route.replace(/^\/[A-Za-z]:/, '') || route;
-    const normalized = cleaned.endsWith('/') ? cleaned : `${cleaned}/`;
-    return new URL(normalized, window.location.origin).href;
+  function pluginAssetBase() {
+    const loaded = document.currentScript?.src
+      || [...document.scripts].map((s) => s.src).find((src) => /\/app(?:\.bundle)?\.js(?:$|\?)/.test(src));
+    if (loaded) {
+      // Windows 客户端 location/script 可能带盘符（/D:/plugin/...）；
+      // 绝对基址必须去掉盘符，否则拼出的 /D:/plugin/... 会打到 nginx 400（见 1fb9047）。
+      const url = new URL(loaded);
+      const cleanPath = url.pathname.replace(/^\/[A-Za-z]:/, '');
+      return new URL(cleanPath.replace(/[^/]*$/, ''), url.origin).href;
+    }
+    const route = window.__MICRO_APP_BASE_ROUTE__;
+    if (typeof route === 'string' && route) {
+      const cleaned = route.replace(/^\/[A-Za-z]:/, '') || route;
+      const normalized = cleaned.endsWith('/') ? cleaned : `${cleaned}/`;
+      return new URL(normalized, window.location.origin).href;
+    }
+    const dir = window.location.pathname.replace(/^\/[A-Za-z]:/, '').replace(/[^/]*$/, '');
+    return new URL(dir || '/', window.location.origin).href;
   }
-  const dir = window.location.pathname.replace(/^\/[A-Za-z]:/, '').replace(/[^/]*$/, '');
-  return new URL(dir || '/', window.location.origin).href;
-}
-const assetUrl = (path) => new URL(path, pluginAssetBase()).href;
+  const assetUrl = (path) => new URL(path, pluginAssetBase()).href;
 
   const icons = __ICON_ASSETS__;
   const root = document.querySelector('#tr-app');

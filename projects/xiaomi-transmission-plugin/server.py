@@ -82,7 +82,7 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-    def send(self, code, data, mime='application/json; charset=utf-8', headers=None, csp=None):
+    def send(self, code, data, mime='application/json; charset=utf-8', headers=None, csp=None, referrer=None):
         if not isinstance(data, bytes):
             data = json.dumps(data, ensure_ascii=False).encode()
         self.send_response(code)
@@ -90,7 +90,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Length', str(len(data)))
         self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Content-Type-Options', 'nosniff')
-        self.send_header('Referrer-Policy', 'no-referrer')
+        # 控制台页必须允许同源页面带 Referer（其 RPC 用 Referer 上的令牌鉴权）。
+        # 其余接口仍默认 no-referrer。
+        self.send_header('Referrer-Policy', referrer or 'no-referrer')
         self.send_header(
             'Content-Security-Policy',
             csp or "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'self'; base-uri 'none'")
@@ -165,11 +167,46 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(404, {'ok': False, 'error': 'not found'})
         mime = CONSOLE_MIME.get(candidate.suffix.lower()) or \
             mimetypes.guess_type(candidate.name)[0] or 'application/octet-stream'
+        data = candidate.read_bytes()
         headers = {}
         cookie = getattr(self, '_console_cookie', '')
         if cookie:
             headers['Set-Cookie'] = cookie
-        return self.send(200, candidate.read_bytes(), mime, headers, csp=CONSOLE_CSP)
+        # 页面用 same-origin 的 Referer 携带令牌给 /rpc；同时把 twc 的相对 rpcpath
+        # 改成绝对路径，避免 Windows 客户端 location 带盘符时相对解析成 /D:/plugin/.../rpc。
+        if candidate.suffix.lower() == '.html':
+            data = self._patch_console_html(data)
+            return self.send(200, data, mime, headers, csp=CONSOLE_CSP, referrer='same-origin')
+        return self.send(200, data, mime, headers, csp=CONSOLE_CSP, referrer='same-origin')
+
+    @staticmethod
+    def _patch_console_html(data: bytes) -> bytes:
+        """在 twc 页面上补一段脚本：把 transmission.rpcpath 固定成绝对路径。
+
+        传输层 Web RPC 的约定是 POST JSON 到 rpc 端点，未带 X-Transmission-Session-Id
+        时 daemon 回 409 并带上该头，客户端重试。只要 rpc 指到同源 /transmission/rpc，
+        这条链路与直连 9091 完全一致。
+        """
+        patch = (
+            b'<script>(function(){function fix(){try{'
+            b'var t=window.transmission;if(!t||t.rpcpath===undefined)return;'
+            b'var p=location.pathname.replace(/[?#].*$/,\'\');'
+            b'p=p.replace(/^\\/[A-Za-z]:/,\'\');'
+            b'p=p.replace(/\\/console\\/(?:index\\.html)?$/i,\'/\');'
+            b'if(!/\\/$/.test(p))p=p.replace(/\\/[^/]*$/,\'/\');'
+            b't.rpcpath=p+"rpc";'
+            b'}catch(e){}}'
+            b'if(document.readyState==="loading")document.addEventListener("DOMContentLoaded",fix);'
+            b'else fix();'
+            b'window.addEventListener("load",fix);'
+            b'})();</script>'
+        )
+        lowered = data.lower()
+        for closing in (b'</body>', b'</html>'):
+            idx = lowered.rfind(closing)
+            if idx != -1:
+                return data[:idx] + patch + b'\n' + data[idx:]
+        return data + b'\n' + patch
 
     def proxy_console_rpc(self, payload):
         """把控制台的 RPC 请求转发给容器里的 transmission，并代填 WebUI 账号。"""
