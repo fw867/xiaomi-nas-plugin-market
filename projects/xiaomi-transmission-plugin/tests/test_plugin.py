@@ -481,6 +481,14 @@ class HTTPTests(unittest.TestCase):
         self.assertNotIn('__PLUGIN_VERSION__', text)
         self.assertIn('Transmission 下载 · ' + installed_version(), text)
 
+    def test_torrents_endpoint_calls_handler_method(self):
+        """/api/torrents 必须调 Handler.engine_snapshot_torrents，不能挂到 Server 上。"""
+        with patch('server.Handler.engine_snapshot_torrents',
+                   return_value={'items': [], 'transfer': {}}) as mocked:
+            code, body = self.request('GET', '/api/torrents', headers=self.auth())
+        self.assertEqual(code, 200)
+        self.assertTrue(mocked.called)
+
     def test_status_reports_lan_address(self):
         with patch('server.lan_ip', return_value='192.168.1.15'):
             code, body = self.request('GET', '/api/status', headers=self.auth())

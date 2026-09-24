@@ -373,7 +373,8 @@ class Handler(BaseHTTPRequestHandler):
             elif route.path == '/api/browse':
                 result = {'items': self.server.engine.browse(query.get('path', [''])[0])}
             elif route.path == '/api/torrents':
-                result = self.server.engine_snapshot_torrents()
+                # 方法在 Handler 上，不要写成 self.server.xxx（Server 上没有）
+                result = self.engine_snapshot_torrents()
             elif route.path == '/api/health':
                 password = self.server.engine.saved_password()
                 username = (self.server.engine.config or {}).get('username', '')
