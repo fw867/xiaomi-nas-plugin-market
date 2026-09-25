@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "name": "小米智能存储应用商店",
-  "generatedAt": 1790240284,
+  "generatedAt": 1790354347,
   "repository": "fw867/xiaomi-nas-plugin-market",
   "branch": "main",
   "store": {
@@ -214,6 +214,25 @@
       "author": "community",
       "pluginId": 11010,
       "port": 18180
+    },
+    {
+      "id": "disksleep",
+      "name": "硬盘休眠",
+      "version": "0.1.0",
+      "summary": "与系统休眠开关联动，可自定义休眠时间并查看休眠/唤醒日志",
+      "description": "系统设置的硬盘休眠只有开关且固定 30 分钟。本插件沿用同一个开关，用 systemd drop-in 覆盖 hdidle 的时长，并提供休眠/唤醒事件与 hdidle 原始日志。",
+      "bundle": "apps/disksleep-0.1.0.zip",
+      "sha256": "352eaf748b71b7f086564983c8b95eba932686417a1c9fcca36161dec204e8c8",
+      "size": 265704,
+      "icon": "apps/icons/disksleep.png",
+      "channel": "stable",
+      "tags": [
+        "tool",
+        "system"
+      ],
+      "author": "community",
+      "pluginId": 11011,
+      "port": 18160
     }
   ]
 }
