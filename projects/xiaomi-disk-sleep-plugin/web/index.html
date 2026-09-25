@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>硬盘休眠</title>
+    <link rel="stylesheet" href="styles.css?v=0.1.0">
+</head>
+<body>
+    <div id="ds-app">
+        <header class="topbar">
+            <button id="back" class="icon-button" title="返回" aria-label="返回">&#8249;</button>
+            <strong>硬盘休眠</strong>
+            <button id="refresh" class="icon-button" title="刷新" aria-label="刷新">&#8635;</button>
+        </header>
+
+        <main>
+            <section class="card status-card">
+                <div class="status-main">
+                    <span class="status-dot" id="statusDot" aria-hidden="true"></span>
+                    <div class="status-copy">
+                        <strong id="serviceState" role="status">正在读取</strong>
+                        <small id="serviceInfo"></small>
+                    </div>
+                    <div class="status-actions">
+                        <button id="toggleSleep" class="btn">开启休眠</button>
+                    </div>
+                </div>
+                <div class="status-timeout">
+                    <span class="muted" id="timeoutState">休眠时间读取中…</span>
+                    <button id="restoreOfficial" class="btn" hidden>恢复官方 30 分钟</button>
+                </div>
+            </section>
+
+            <p id="error" class="alert" role="alert" hidden></p>
+
+            <section class="card">
+                <h2>休眠时间</h2>
+                <p class="muted">系统默认 30 分钟且不可改；这里设置后会覆盖官方 unit，开关仍由系统设置控制。</p>
+                <div class="presets" id="presets"></div>
+                <div class="field-row">
+                    <input id="minutes" type="number" min="5" max="720" step="5" inputmode="numeric" aria-label="自定义分钟数">
+                    <button id="saveMinutes" class="btn primary">保存</button>
+                </div>
+                <p class="muted" id="minutesHint">可设 5 到 720 分钟。</p>
+            </section>
+
+            <section class="card">
+                <h2>硬盘状态</h2>
+                <div id="disks" class="disks"></div>
+            </section>
+
+            <details class="card fold fold-card" id="logCard">
+                <summary>休眠与唤醒日志</summary>
+                <div class="log-actions">
+                    <div class="segmented" role="tablist">
+                        <button type="button" class="seg selected" data-log="events">事件</button>
+                        <button type="button" class="seg" data-log="hdidle">hdidle 原始</button>
+                    </div>
+                    <button type="button" id="copyLog" class="btn">复制</button>
+                </div>
+                <pre id="logBox" class="log">读取中…</pre>
+            </details>
+
+            <details class="card fold fold-card" id="notes">
+                <summary>说明与限制</summary>
+                <ul>
+                    <li>开关跟随系统设置里的「硬盘休眠」（uci <code>system.disk.hibernate</code>），两边改都会同步。</li>
+                    <li>休眠时间通过 systemd drop-in 覆盖官方 <code>hdidle.service</code> 的 30 分钟；点「恢复官方 30 分钟」或卸载插件即回到官方行为。</li>
+                    <li>事件日志来自插件每 20 秒查询一次 <code>hdparm -C</code> 的状态跃迁；该查询不会把硬盘唤醒。</li>
+                    <li>「hdidle 原始」是守护进程写进系统日志的原文，可看到每次检测到的读写活动。</li>
+                </ul>
+            </details>
+
+            <footer>硬盘休眠 · __PLUGIN_VERSION__</footer>
+        </main>
+        <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    </div>
+    <script src="app.js?v=0.1.0"></script>
+</body>
+</html>

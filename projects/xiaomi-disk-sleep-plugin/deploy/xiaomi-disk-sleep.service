@@ -1,0 +1,22 @@
+[Unit]
+Description=Xiaomi Disk Sleep Plugin
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/data/plugin/disk-sleep/current
+Environment=HOST=127.0.0.1
+Environment=PORT=18160
+Environment=DATA_DIR=/data/plugin/disk-sleep/data
+Environment=WEB_DIR=/data/plugin/disk-sleep/current/web
+ExecStart=/usr/bin/python3 /data/plugin/disk-sleep/current/server.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+# 需要写 uci 配置与 hdidle 的 systemd drop-in，其余路径保持只读
+ReadWritePaths=/etc/config /etc/systemd/system /data/plugin/disk-sleep
+
+[Install]
+WantedBy=multi-user.target

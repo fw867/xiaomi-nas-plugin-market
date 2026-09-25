@@ -77,6 +77,7 @@ NAS_USER_ID=u123456 bash -c "$(curl -fsSL https://raw.githubusercontent.com/fw86
 | [DPanel 容器管理](projects/xiaomi-dpanel-plugin) | 0.1.0 | 轻量 Docker 面板；挂载 docker.sock 与配置目录，端口 8807；需要 Docker |
 | [Jellyfin](projects/xiaomi-jellyfin-plugin) | 0.1.0 | 开源媒体服务器；配置/缓存/媒体持久化，端口 8097；需要 Docker |
 | [内网穿透](projects/xiaomi-fwclient-plugin) | 0.1.1 | fwclient 隧道；可配服务器/令牌，显示版本并支持升级 |
+| [硬盘休眠](projects/xiaomi-disk-sleep-plugin) | 0.1.0 | 与系统休眠开关联动，自定义休眠时长（官方固定 30 分钟），可查休眠/唤醒日志 |
 | 应用商店（本体） | 0.2.21 | 浏览、安装、更新上述插件；见 [xiaomi-community-app-store](projects/xiaomi-community-app-store) |
 | 夸克网盘 | 未发布 | 目前没有可用实现 |
 

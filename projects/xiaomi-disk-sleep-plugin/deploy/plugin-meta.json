@@ -1,0 +1,16 @@
+{
+  "plugin": "disksleep",
+  "name": "硬盘休眠",
+  "id": 11011,
+  "desc": "与系统设置的休眠开关联动，并可自定义休眠时间、查看休眠与唤醒日志",
+  "tags": [
+    "tool",
+    "system"
+  ],
+  "developer": "community",
+  "publisher": "community",
+  "system": false,
+  "type": "standard",
+  "service": "xiaomi-disk-sleep.service",
+  "uiKey": "disksleep"
+}

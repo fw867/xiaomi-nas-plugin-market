@@ -535,6 +535,52 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
             "info": {"tags": ["tool", "network"], "publisher": "community", "ext": {"admin": True}},
         },
     },
+    {
+        "id": "disksleep",
+        "name": "硬盘休眠",
+        "version": "0.1.0",
+        "summary": "与系统休眠开关联动，可自定义休眠时间并查看休眠/唤醒日志",
+        "description": "系统设置的硬盘休眠只有开关且固定 30 分钟。本插件沿用同一个开关，"
+                       "用 systemd drop-in 覆盖 hdidle 的时长，并提供休眠/唤醒事件与 hdidle 原始日志。",
+        "project": "xiaomi-disk-sleep-plugin",
+        "pluginId": 11011,
+        "port": 18160,
+        "releaseRoot": "/data/plugin/disk-sleep",
+        "uiKey": "disksleep",
+        "iconSource": "web/assets/disk-sleep-icon.png",
+        "iconName": "disk-sleep.icon",
+        "runtime": {
+            "server.py": "server.py",
+            "engine.py": "engine.py",
+            "web": "web",
+            "README.md": "README.md",
+        },
+        "ui": "web",
+        "serviceSource": "deploy/xiaomi-disk-sleep.service",
+        "service": "xiaomi-disk-sleep.service",
+        "nginxSource": "deploy/xiaomi-disk-sleep.nginx.conf",
+        "nginx": "xiaomi-disk-sleep.conf",
+        "healthPath": "/healthz",
+        "tags": ["tool", "system"],
+        "author": "community",
+        "registry": {
+            "icon": "/icon/disk-sleep.icon?v=0.1.0",
+            "frontend": {
+                "title": "硬盘休眠",
+                "desc": "休眠时间与日志",
+                "type": "url",
+                "permission": ["admin"],
+                "dev_type": [1, 2, 3, 4],
+                "url": [
+                    {"dev_type": [1], "url": "/index.html#/diskSleep_app"},
+                    {"dev_type": [2, 3, 4], "url": "/index.html#/diskSleep_pc"},
+                ],
+                "sortid": 11011,
+                "widget": [],
+            },
+            "info": {"tags": ["tool", "system"], "publisher": "community", "ext": {"admin": True}},
+        },
+    },
 ]
 
 
