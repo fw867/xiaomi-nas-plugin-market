@@ -86,6 +86,7 @@ function render(state) {
   const info = [];
   if (state.serverVersion) info.push('Emby ' + state.serverVersion);
   if (state.imageVersion) info.push('镜像 ' + state.imageVersion);
+  if (state.healthcheckOff) info.push('健康检查已关，不会定时唤醒硬盘');
   if (state.preview) info.push('预览模式，不会操作 Docker');
   $('serverInfo').textContent = info.join(' · ');
   $('serverInfo').hidden = !info.length;

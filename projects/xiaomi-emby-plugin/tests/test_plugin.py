@@ -336,6 +336,97 @@ class EngineTests(unittest.TestCase):
             self.engine.setup('../etc')
 
 
+class HealthcheckTests(unittest.TestCase):
+    """容器健康检查必须显式关掉。
+
+    Emby 当前镜像没带 HEALTHCHECK，但一旦上游加上，它就会定时打 HTTP 接口，
+    让 Emby 反复读写 SQLite 的 -shm/-wal；媒体库与配置目录在机械盘上，
+    硬盘就再也进不了休眠（Jellyfin 已经踩过这个坑）。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name) / 'root'
+        self.root.mkdir()
+        (self.root / 'MiShare').mkdir()
+        (self.root / 'Cfg').mkdir()
+        self.engine = Engine(Path(self.tmp.name) / 'private', self.root)
+        self.engine.config = {
+            'owner': 'tok', 'enabled': True, 'uid': 1000, 'gid': 1000,
+            'relative': 'MiShare', 'media': str(self.root / 'MiShare'),
+            'config': str(self.root / 'Cfg'), 'config_relative': 'Cfg',
+        }
+
+    def test_container_is_created_without_healthcheck(self):
+        cfg = container_config({'owner': 'test', 'uid': 1000, 'gid': 1000,
+                                'media': '/test/media', 'config': '/test/config'})
+        self.assertEqual(cfg['Healthcheck'], {'Test': ['NONE']})
+
+    def test_inherited_healthcheck_detection(self):
+        cases = [
+            ({'Config': {}}, False),
+            ({'Config': {'Healthcheck': None}}, False),
+            ({'Config': {'Healthcheck': {'Test': []}}}, False),
+            ({'Config': {'Healthcheck': {'Test': ['NONE']}}}, False),
+            ({'Config': {'Healthcheck': {'Test': ['none']}}}, False),
+            ({'Config': {'Healthcheck': {'Test': ['CMD', 'curl x']}}}, True),
+        ]
+        for item, expected in cases:
+            with self.subTest(item=item):
+                self.assertEqual(Engine.inherited_healthcheck(item), expected)
+
+    def _run_start(self, item):
+        calls = []
+
+        def fake_api(method, path, body=None, timeout=30):
+            calls.append((method, path, body))
+            return 200, b'{}'
+
+        with patch.object(self.engine, 'owned', return_value=item), \
+                patch.object(self.engine, 'check_directory'), \
+                patch.object(self.engine, 'pull'), \
+                patch('engine.emby_info', return_value={}), \
+                patch('engine.docker_api', side_effect=fake_api):
+            self.engine.start()
+        return calls
+
+    def test_start_recreates_container_that_inherited_healthcheck(self):
+        item = {
+            'Config': {'Labels': {LABEL: 'tok'}, 'Healthcheck': {'Test': ['CMD', 'curl x']}},
+            'State': {'Running': True},
+        }
+        calls = self._run_start(item)
+        paths = [path for _, path, _ in calls]
+        self.assertIn('/containers/' + NAME + '/stop?t=30', paths)
+        self.assertIn('/containers/' + NAME, paths)                        # DELETE
+        self.assertIn('/containers/create?name=' + NAME, paths)
+        self.assertIn('/containers/' + NAME + '/start', paths)
+        self.assertLess(paths.index('/containers/' + NAME + '/stop?t=30'),
+                        paths.index('/containers/create?name=' + NAME))
+        create = next(body for _, path, body in calls if path.startswith('/containers/create'))
+        self.assertEqual(create['Healthcheck'], {'Test': ['NONE']})
+        settings = json.loads(self.engine.cfgfile.read_text(encoding='utf-8'))
+        self.assertTrue(settings['healthcheck_off'])
+        self.assertTrue(settings['enabled'])
+
+    def test_start_does_not_touch_container_without_healthcheck(self):
+        item = {
+            'Config': {'Labels': {LABEL: 'tok'}, 'Healthcheck': {'Test': ['NONE']}},
+            'State': {'Running': True},
+        }
+        calls = self._run_start(item)
+        self.assertEqual([path for _, path, _ in calls], [])
+        self.assertTrue(json.loads(self.engine.cfgfile.read_text(encoding='utf-8'))['healthcheck_off'])
+
+    def test_snapshot_reports_healthcheck_flag(self):
+        self.engine.config['healthcheck_off'] = True
+        with patch.object(self.engine, 'owned', return_value=None):
+            self.assertTrue(self.engine.snapshot()['healthcheckOff'])
+            self.engine.config['healthcheck_off'] = False
+            self.assertFalse(self.engine.snapshot()['healthcheckOff'])
+
+
 class HTTPTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

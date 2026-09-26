@@ -86,6 +86,7 @@ function render(s) {
   const info = [];
   if (s.serverVersion) info.push('Jellyfin ' + s.serverVersion);
   if (s.imageVersion) info.push('镜像 ' + s.imageVersion);
+  if (s.healthcheckOff) info.push('健康检查已关，不再每 30 秒唤醒硬盘');
   if (s.preview) info.push('预览模式，不会操作 Docker');
   $('serverInfo').textContent = info.join(' · ');
   $('serverInfo').hidden = !info.length;

@@ -33,6 +33,14 @@ PORT = 8096
 # 所以不能 subprocess 调 CLI，一律走 socket 上的 Engine API。
 DOCKER_SOCKET = os.environ.get('DOCKER_SOCKET', '/var/run/docker.sock')
 
+# 显式关掉容器健康检查。当前 Emby 镜像（emby/embyserver:4.10.0.40）本身没带
+# HEALTHCHECK，所以现在没有实际效果；写死它是为了防止上游镜像以后加上——
+# 一旦有健康检查，它就会定时打 HTTP 接口，让 Emby 反复读写 SQLite 的
+# -shm/-wal，而媒体库/配置目录在机械盘上，硬盘就再也进不了休眠。
+# 同类问题的完整定位过程见
+# projects/xiaomi-disk-sleep-plugin/tools/disk-activity-report.py。
+HEALTHCHECK_OFF = {'Test': ['NONE']}
+
 
 class Error(RuntimeError):
     pass
@@ -148,6 +156,8 @@ def container_config(config):
             'TZ=Asia/Shanghai',
         ],
         'Labels': {LABEL: config['owner']},
+        # 不要继承镜像可能自带的健康检查（见 HEALTHCHECK_OFF 的说明）。
+        'Healthcheck': dict(HEALTHCHECK_OFF),
         'HostConfig': {
             # 失败后自动重启，但限次：Emby 扫描媒体库时内存会明显上涨，撞到
             # 限额会被 cgroup 的 oom-killer 杀掉。限次可以避免在持续 OOM 时
@@ -264,7 +274,8 @@ class Engine:
                 'directory': self.config['relative'] if self.config else '',
                 'configDirectory': self.config.get('config_relative', '') if self.config else '',
                 'serverVersion': server_version, 'wizardCompleted': wizard,
-                'imageVersion': '4.10.0.40'}
+                'imageVersion': '4.10.0.40',
+                'healthcheckOff': bool(self.config and self.config.get('healthcheck_off'))}
 
     def setup(self, relative, config_relative=''):
         if self.config:
@@ -321,20 +332,49 @@ class Engine:
             if (cfg_stat.st_dev, cfg_stat.st_ino) != (self.config['config_device'], self.config['config_inode']):
                 raise Error('配置目录身份已变化，拒绝启动；请先检查存储挂载')
 
+    @staticmethod
+    def inherited_healthcheck(item):
+        """容器是否带着（镜像继承来的）健康检查。"""
+        tests = ((item.get('Config') or {}).get('Healthcheck') or {}).get('Test') or []
+        return bool(tests) and str(tests[0]).upper() != 'NONE'
+
+    def drop_inherited_healthcheck(self, item):
+        """旧容器带着健康检查时把它重建掉。
+
+        健康检查只能在创建容器时决定：Docker 20.10 的
+        `POST /containers/<id>/update` 虽然接受 Healthcheck 字段并返回 200，
+        但实际不生效。所以停容器 → 删除 → 交给 start() 按新配置重建。
+        /config 与 /mnt/media 都是 bind 挂载，配置和媒体库不受影响。
+        """
+        if not self.inherited_healthcheck(item):
+            return False
+        if item.get('State', {}).get('Running'):
+            self._call('POST', '/containers/' + NAME + '/stop?t=30', timeout=90)
+        self._call('DELETE', '/containers/' + NAME, ok=(200, 204, 404))
+        return True
+
     def start(self):
         if not self.config:
             raise Error('请先初始化')
         self.check_directory()
         item = self.owned()
-        if item:
-            if not item.get('State', {}).get('Running'):
-                self._call('POST', '/containers/' + NAME + '/start')
-        else:
+        if item and self.inherited_healthcheck(item):
+            # 去掉镜像自带的健康检查只能靠重建；升级插件后服务重启时自动完成。
+            self.drop_inherited_healthcheck(item)
+            item = None
+            self.check_directory()
+            self._call('POST', '/containers/create?name=' + NAME,
+                       body=container_config(self.config), timeout=120)
+            self._call('POST', '/containers/' + NAME + '/start')
+        elif item is None:
             self.pull()
             self.check_directory()
             self._call('POST', '/containers/create?name=' + NAME,
                        body=container_config(self.config), timeout=120)
             self._call('POST', '/containers/' + NAME + '/start')
+        elif not item.get('State', {}).get('Running'):
+            self._call('POST', '/containers/' + NAME + '/start')
+        self.config['healthcheck_off'] = True
         self.config['enabled'] = True
         atomic_json(self.cfgfile, self.config)
         # Emby 首次启动要初始化数据库，可能明显慢于 qB；超时只影响提示，容器仍在运行。

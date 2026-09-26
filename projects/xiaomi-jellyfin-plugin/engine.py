@@ -29,6 +29,16 @@ CONTAINER_HTTPS = 8920
 CONTAINER_DLNA = 7359
 DOCKER_SOCKET = os.environ.get('DOCKER_SOCKET', '/var/run/docker.sock')
 
+# 关掉容器健康检查。官方镜像自带一个 30 秒一次的健康检查
+# （`curl --noproxy localhost -Lk -fsS ${HEALTHCHECK_URL}`，指向 /health），
+# 而每打一次 /health，Jellyfin 都会重写 SQLite 的 -shm/-wal 文件。
+# 文件一改，系统的 findex 索引服务（fanotify）立刻写 /nas/sys，而 /nas/sys 建在
+# 跨两块盘的 RAID1（md0）上——两块机械盘因此每 30 秒被唤醒一次，永远进不了休眠，
+# 每天多出约 1.4 GB/盘的无谓写入。关掉健康检查不影响 Jellyfin 自身功能，
+# 只是不再主动"探活"；服务是否可用仍由插件页面的就绪状态反映。
+# 定位过程见 projects/xiaomi-disk-sleep-plugin/tools/disk-activity-report.py。
+HEALTHCHECK_OFF = {'Test': ['NONE']}
+
 
 class Error(RuntimeError):
     pass
@@ -127,6 +137,8 @@ def container_config(config):
             'JELLYFIN_PublishedServerUrl=http://__NAS_IP__:' + str(PORT),
         ],
         'Labels': {LABEL: config['owner']},
+        # 不要继承官方镜像的 30 秒健康检查（见 HEALTHCHECK_OFF 的说明）。
+        'Healthcheck': dict(HEALTHCHECK_OFF),
         'HostConfig': {
             'RestartPolicy': {'Name': 'no'},
             'Memory': 1024 * 1024 * 1024,
@@ -216,6 +228,29 @@ class Engine:
             raise Error('同名容器不属于本插件，拒绝接管')
         return item
 
+    @staticmethod
+    def inherited_healthcheck(item):
+        """容器是否还带着（镜像继承来的）健康检查。"""
+        tests = ((item.get('Config') or {}).get('Healthcheck') or {}).get('Test') or []
+        return bool(tests) and str(tests[0]).upper() != 'NONE'
+
+    def drop_inherited_healthcheck(self, item):
+        """把旧版本插件建出来的容器重建掉，去掉镜像自带的健康检查。
+
+        健康检查只能在创建容器时决定：Docker 20.10 的
+        `POST /containers/<id>/update` 虽然接受 Healthcheck 字段并返回 200，
+        但实际不生效（inspect 里仍是原值，State.Health 也照旧每 30 秒追加记录）。
+        所以这里停容器 → 删除 → 交给调用方按新配置重建。
+        /config、/cache、/media 都是 bind 挂载，配置与媒体库不受影响。
+        返回 True 表示已经把它删掉了。
+        """
+        if not self.inherited_healthcheck(item):
+            return False
+        if item.get('State', {}).get('Running'):
+            self._call('POST', '/containers/' + NAME + '/stop?t=30', timeout=90)
+        self._call('DELETE', '/containers/' + NAME, ok=(200, 204, 404))
+        return True
+
     def browse(self, relative):
         folder = confined(self.root, relative)
         return sorted([{'name': p.name, 'path': (relative + '/' if relative else '') + p.name}
@@ -255,6 +290,7 @@ class Engine:
             'serverVersion': server_version,
             'wizardCompleted': wizard,
             'imageVersion': IMAGE_VERSION,
+            'healthcheckOff': bool(self.config and self.config.get('healthcheck_off')),
         }
 
     def setup(self, media_relative, config_relative=''):
@@ -337,20 +373,32 @@ class Engine:
                     self.config['config_device'], self.config['config_inode']):
                 raise Error('配置目录身份已变化，拒绝启动；请先检查存储挂载')
 
+    def create_container(self):
+        """按当前配置建容器并启动；调用方保证镜像已在本地。"""
+        self.check_directories()
+        self._call('POST', '/containers/create?name=' + NAME,
+                   body=container_config(self.config), timeout=120)
+        self._call('POST', '/containers/' + NAME + '/start')
+
     def start(self):
         if not self.config:
             raise Error('请先初始化')
         self.check_directories()
         item = self.owned()
-        if item:
-            if not item.get('State', {}).get('Running'):
-                self._call('POST', '/containers/' + NAME + '/start')
-        else:
+        if item and self.inherited_healthcheck(item):
+            # 旧容器带着镜像自带的 30 秒健康检查，必须重建才能去掉（见方法说明）。
+            # 升级后插件服务重启、或用户点「启动服务」时都会走到这里。
+            self.drop_inherited_healthcheck(item)
+            item = None
+            self.create_container()
+        elif item is None:
             self.pull()
-            self.check_directories()
-            self._call('POST', '/containers/create?name=' + NAME,
-                       body=container_config(self.config), timeout=120)
+            self.create_container()
+        elif not item.get('State', {}).get('Running'):
             self._call('POST', '/containers/' + NAME + '/start')
+        # 到这里容器要么是新建的（配置里写死了健康检查 NONE），
+        # 要么本来就带着 NONE，所以可以标记为已关闭。
+        self.config['healthcheck_off'] = True
         self.config['enabled'] = True
         atomic_json(self.cfgfile, self.config)
         # 首次初始化数据库可能较慢，超时只影响提示。

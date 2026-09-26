@@ -111,6 +111,105 @@ class EngineTests(unittest.TestCase):
         self.assertFalse(json.loads(self.engine.cfgfile.read_text())['enabled'])
 
 
+class HealthcheckTests(unittest.TestCase):
+    """容器健康检查必须关掉：它每 30 秒打一次 /health，让 Jellyfin 重写 SQLite
+    的 -shm/-wal，再经 fanotify 触发系统索引写 /nas/sys（跨两块盘的 RAID1），
+    两块机械盘因此永远不休眠。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name) / 'root'
+        self.root.mkdir()
+        (self.root / 'Media').mkdir()
+        (self.root / 'Cfg').mkdir()
+        self.engine = Engine(Path(self.tmp.name) / 'private', self.root)
+        self.engine.config = {
+            'owner': 'tok', 'enabled': True, 'uid': 1000, 'gid': 1000,
+            'media': str(self.root / 'Media'), 'media_relative': 'Media',
+            'config': str(self.root / 'Cfg'), 'config_relative': 'Cfg',
+            'cache': str(self.root / 'Cache'),
+        }
+
+    def test_new_container_is_created_without_healthcheck(self):
+        cfg = container_config(self.engine.config)
+        self.assertEqual(cfg['Healthcheck'], {'Test': ['NONE']})
+
+    def test_inherited_healthcheck_detection(self):
+        cases = [
+            ({'Config': {}}, False),
+            ({'Config': {'Healthcheck': None}}, False),
+            ({'Config': {'Healthcheck': {'Test': []}}}, False),
+            ({'Config': {'Healthcheck': {'Test': ['NONE']}}}, False),
+            ({'Config': {'Healthcheck': {'Test': ['none']}}}, False),
+            ({'Config': {'Healthcheck': {'Test': ['CMD-SHELL', 'curl x']}}}, True),
+        ]
+        for item, expected in cases:
+            with self.subTest(item=item):
+                self.assertEqual(Engine.inherited_healthcheck(item), expected)
+
+    def _run_start(self, item):
+        calls = []
+
+        def fake_api(method, path, body=None, timeout=30):
+            calls.append((method, path, body))
+            return 200, b'{}'
+
+        with patch.object(self.engine, 'owned', return_value=item), \
+                patch.object(self.engine, 'check_directories'), \
+                patch.object(self.engine, 'pull'), \
+                patch('engine.jellyfin_info', return_value={}), \
+                patch('engine.docker_api', side_effect=fake_api):
+            self.engine.start()
+        return calls
+
+    def test_start_recreates_container_that_inherited_healthcheck(self):
+        item = {
+            'Config': {'Labels': {LABEL: 'tok'}, 'Healthcheck': {'Test': ['CMD-SHELL', 'curl x']}},
+            'State': {'Running': True},
+        }
+        calls = self._run_start(item)
+        paths = [path for _, path, _ in calls]
+        self.assertIn('/containers/' + NAME + '/stop?t=30', paths)
+        self.assertIn('/containers/' + NAME, paths)                       # DELETE
+        self.assertIn('/containers/create?name=' + NAME, paths)
+        self.assertIn('/containers/' + NAME + '/start', paths)
+        # 必须先删再建，否则 create 会撞名
+        self.assertLess(paths.index('/containers/' + NAME + '/stop?t=30'),
+                        paths.index('/containers/create?name=' + NAME))
+        create = next(body for _, path, body in calls if path.startswith('/containers/create'))
+        self.assertEqual(create['Healthcheck'], {'Test': ['NONE']})
+        settings = json.loads(self.engine.cfgfile.read_text(encoding='utf-8'))
+        self.assertTrue(settings['healthcheck_off'])
+        self.assertTrue(settings['enabled'])
+
+    def test_start_does_not_touch_container_without_healthcheck(self):
+        item = {
+            'Config': {'Labels': {LABEL: 'tok'}, 'Healthcheck': {'Test': ['NONE']}},
+            'State': {'Running': True},
+        }
+        calls = self._run_start(item)
+        paths = [path for _, path, _ in calls]
+        self.assertEqual(paths, [])                                       # 运行中就不该有 Docker 调用
+        self.assertTrue(json.loads(self.engine.cfgfile.read_text(encoding='utf-8'))['healthcheck_off'])
+
+    def test_start_starts_stopped_container_without_recreating(self):
+        item = {
+            'Config': {'Labels': {LABEL: 'tok'}, 'Healthcheck': {'Test': ['NONE']}},
+            'State': {'Running': False},
+        }
+        calls = self._run_start(item)
+        paths = [path for _, path, _ in calls]
+        self.assertEqual(paths, ['/containers/' + NAME + '/start'])
+
+    def test_snapshot_reports_healthcheck_flag(self):
+        self.engine.config['healthcheck_off'] = True
+        with patch.object(self.engine, 'owned', return_value=None):
+            self.assertTrue(self.engine.snapshot()['healthcheckOff'])
+            self.engine.config['healthcheck_off'] = False
+            self.assertFalse(self.engine.snapshot()['healthcheckOff'])
+
+
 class HTTPTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
