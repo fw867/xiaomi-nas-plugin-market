@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "name": "小米智能存储应用商店",
-  "generatedAt": 1790354347,
+  "generatedAt": 1790395986,
   "repository": "fw867/xiaomi-nas-plugin-market",
   "branch": "main",
   "store": {
@@ -144,12 +144,12 @@
     {
       "id": "emby",
       "name": "Emby",
-      "version": "0.1.12",
+      "version": "0.1.13",
       "summary": "在 NAS 上运行 Emby，向局域网设备串流个人影音",
       "description": "官方 Emby 镜像的受限容器；媒体目录读写挂载以便写回元数据，配置保存在插件私有目录，Emby 默认端口 8096 对局域网开放。",
-      "bundle": "apps/emby-0.1.12.zip",
-      "sha256": "d95e7d6d0ee935eb6a346e3c09f59f7750b2baa5ca1b8d18592a6faec4803c2c",
-      "size": 367483,
+      "bundle": "apps/emby-0.1.13.zip",
+      "sha256": "a888a88f1d01d0fce8d50c789a2a8cdb4df7437e625d95fc5f6161fed6639b8a",
+      "size": 368960,
       "icon": "apps/icons/emby.png",
       "channel": "stable",
       "tags": [
@@ -181,12 +181,12 @@
     {
       "id": "jellyfin",
       "name": "Jellyfin",
-      "version": "0.1.3",
+      "version": "0.1.4",
       "summary": "开源媒体服务器；配置/缓存/媒体持久化，HTTP 端口 8097 对局域网开放",
       "description": "官方 Jellyfin 镜像的受限容器；媒体目录、配置目录与缓存持久化，端口映射 8097/8920/7359，可与 Emby 同时安装。需要 Docker。",
-      "bundle": "apps/jellyfin-0.1.3.zip",
-      "sha256": "80d0b8a63b277f8cc3994cb7c47a407a4c477be070a41027c950217c8f3f332e",
-      "size": 131906,
+      "bundle": "apps/jellyfin-0.1.4.zip",
+      "sha256": "729c7c26887fd2f4083ede87752c943d0a9502764c0791f80475bdfebd461a12",
+      "size": 134201,
       "icon": "apps/icons/jellyfin.png",
       "channel": "stable",
       "tags": [
@@ -218,12 +218,12 @@
     {
       "id": "disksleep",
       "name": "硬盘休眠",
-      "version": "0.1.0",
+      "version": "0.1.2",
       "summary": "与系统休眠开关联动，可自定义休眠时间并查看休眠/唤醒日志",
       "description": "系统设置的硬盘休眠只有开关且固定 30 分钟。本插件沿用同一个开关，用 systemd drop-in 覆盖 hdidle 的时长，并提供休眠/唤醒事件与 hdidle 原始日志。",
-      "bundle": "apps/disksleep-0.1.0.zip",
-      "sha256": "352eaf748b71b7f086564983c8b95eba932686417a1c9fcca36161dec204e8c8",
-      "size": 265704,
+      "bundle": "apps/disksleep-0.1.2.zip",
+      "sha256": "32d682e31f88f764f02c72422c67700acadad292d824dbbabd7dd0678653638a",
+      "size": 284144,
       "icon": "apps/icons/disksleep.png",
       "channel": "stable",
       "tags": [
