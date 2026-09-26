@@ -59,10 +59,8 @@ PLUGIN_ROOT = Path(os.environ.get('PLUGIN_ROOT', '/data/plugin'))
 
 # 块设备计数的环形缓冲：15 个点 × 20 秒 = 最近 5 分钟
 ACTIVITY_SAMPLES = 15
-# 两次「读文件快照」之间的最短间隔；面板没人看的时候完全不扫目录
+# 连续两次「主动扫描」之间的最短间隔（防止连点「重新扫描」）
 ACTIVITY_SCAN_INTERVAL = 30
-# 认为「有人在看面板」的时间窗；超过就不再扫目录、不再读事件库
-ACTIVITY_VIEWER_WINDOW = 300
 # 归属映射（容器挂载 + 插件清单）的缓存时长
 ACTIVITY_OWNER_CACHE = 300
 # 系统索引事件库的缓存时长
@@ -99,7 +97,6 @@ _activity_events_note = ''
 _activity_owners: list[dict] = []
 _activity_owners_at = 0.0
 _activity_mountpoints: list[str] = []
-_activity_viewers_at = 0.0
 
 
 class Error(Exception):
@@ -226,13 +223,35 @@ def set_minutes(minutes: int) -> int:
     if not MIN_MINUTES <= minutes <= MAX_MINUTES:
         raise Error(f'休眠时间需在 {MIN_MINUTES} 到 {MAX_MINUTES} 分钟之间')
     with _lock:
-        apply_timeout(minutes)
         state = read_state()
         state['minutes'] = minutes
         write_state(state)
+        # 已经接管时才动 drop-in；还没接管就先记账，等开启接管时生效。
+        # 这样「保存时间」不会顺手把接管打开。
+        if managed():
+            apply_timeout(minutes)
     # add_event 自己会加锁，必须放在锁外，否则死锁
     add_event(None, 'config', f'休眠时间设为 {minutes} 分钟')
     return minutes
+
+
+def set_takeover(enabled: bool) -> None:
+    """一个开关同时管住「系统休眠开关」和「插件接管」。
+
+    打开：先把 drop-in 落地（用当前设置的分钟数），再打开 uci 开关并启动守护。
+    关闭：先停守护，再关 uci 开关，最后删掉 drop-in（交还官方 30 分钟）。
+    顺序不能反：开着守护却先删 drop-in，会有一瞬间按官方配置跑。
+    """
+    if not isinstance(enabled, bool):
+        raise Error('接管开关必须是布尔值')
+    with _lock:
+        if enabled:
+            apply_timeout(configured_minutes())
+            set_app_switch(True)
+        else:
+            set_app_switch(False)
+            restore_official()
+    add_event(None, 'switch', '开启插件接管' if enabled else '关闭插件接管')
 
 
 def hdidle_active() -> bool:
@@ -391,8 +410,9 @@ def start_sampler() -> None:
 # 为什么不用 iotop / pidstat：本机内核没开 CONFIG_TASK_IO_ACCOUNTING，
 # /proc/<pid>/io 根本不存在，进程级 I/O 统计拿不到任何数据。
 #
-# 重要：扫目录本身会产生元数据读取（可能触发 atime 回写），所以在没人看面板时
-# 完全不扫（ACTIVITY_VIEWER_WINDOW）。块设备计数是纯 /proc 读取，永远是免费的。
+# 重要：扫目录、读事件库都会读硬盘（可能唤醒它），所以这些只在用户主动打开
+# 「谁在写盘」或点「重新扫描」时做一次，绝不后台轮询。块设备计数是纯 /proc
+# 读取，永远是免费、也永远在采的。
 # ---------------------------------------------------------------------------
 
 def read_uptime() -> float:
@@ -568,20 +588,12 @@ def record_activity(min_gap: float = 0) -> None:
         _activity_samples.append((now, stats))
 
 
-def mark_viewer() -> None:
-    """有人请求了活动接口 → 接下来这段时间才做会碰硬盘的扫描。"""
-    global _activity_viewers_at
-    with _activity_lock:
-        _activity_viewers_at = time.time()
-
-
-def viewer_active() -> bool:
-    with _activity_lock:
-        return time.time() - _activity_viewers_at < ACTIVITY_VIEWER_WINDOW
-
-
 def refresh_writers(force: bool = False) -> None:
-    """扫一遍机械盘挂载点，和上一次比出被改动的文件。"""
+    """扫一遍机械盘挂载点，和上一次比出被改动的文件。
+
+    这一步会读硬盘目录的元数据（可能触发 atime 回写、把盘唤醒），所以只在
+    用户主动打开「谁在写盘」或点「重新扫描」时调用，绝不做后台轮询。
+    """
     global _activity_files, _activity_writers, _activity_writers_at
     now = time.time()
     with _activity_lock:
@@ -767,13 +779,12 @@ def plugin_labels() -> dict[str, str]:
 
 
 def activity_tick() -> None:
-    """采样线程每轮调一次：块设备计数永远记；扫描只在有人看面板时做。"""
+    """采样线程每轮调一次。
+
+    只记块设备计数——那是纯 /proc 读取，不碰硬盘。目录扫描和事件库读取
+    一律留给用户主动触发的请求，否则插件自己就会把盘弄醒。
+    """
     record_activity()
-    if not viewer_active():
-        return
-    refresh_owners()
-    refresh_writers()
-    refresh_events()
 
 
 def write_rate_summary() -> dict:
@@ -808,13 +819,21 @@ def write_rate_summary() -> dict:
 
 
 def activity_snapshot(force: bool = False) -> dict:
-    """「谁在写盘」面板的数据。"""
-    mark_viewer()
+    """「谁在写盘」面板的数据。
+
+    会读硬盘的两件事（扫目录、读事件库）只在 force（打开标签页 / 点重新扫描）
+    或还没有缓存时做一次；之后每 10 秒的自动刷新只读缓存，不产生磁盘 I/O，
+    免得用户把标签页开着就把盘一直弄醒。
+    """
     record_activity(min_gap=5)
-    # 展开面板就尽量立刻给结果；这几个 refresh 都有缓存，repeat 调用不会重复扫。
     refresh_owners()
-    refresh_writers(force=force)
-    refresh_events()
+    with _activity_lock:
+        writers_at = _activity_writers_at
+        events_at = _activity_events_at
+    if force or not writers_at:
+        refresh_writers(force=force)
+    if force or not events_at:
+        refresh_events(force=force)
     arrays = read_mdstat()
     mounts = read_mounts()
     hdd_mounts = [m for m in mounts if is_hdd_backed(m['name'], arrays)]
@@ -909,7 +928,7 @@ def activity_snapshot(force: bool = False) -> dict:
     if not hdd_mounts:
         notes.append('没有检测到机械盘挂载点。')
     if writers_at and time.time() - writers_at > ACTIVITY_SCAN_INTERVAL * 3:
-        notes.append('文件扫描结果可能已过期（打开本页才会刷新）。')
+        notes.append('文件清单是上次扫描的结果；点「重新扫描」才会重新读硬盘。')
 
     return {
         'ok': True,
@@ -917,7 +936,6 @@ def activity_snapshot(force: bool = False) -> dict:
         'windowSeconds': round(window, 1),
         'sampling': window <= 0,
         'sampleInterval': SAMPLE_INTERVAL,
-        'viewerWindow': ACTIVITY_VIEWER_WINDOW,
         'mounts': busy,
         'disks': disks,
         'mirrored': mirrored,
@@ -981,12 +999,16 @@ def disk_summary() -> list[dict]:
 
 def snapshot() -> dict:
     seconds = effective_seconds()
+    switch = app_switch()
+    managed_now = managed()
     return {
         'ok': True,
         'version': installed_version(),
-        'appSwitch': app_switch(),
+        'appSwitch': switch,
         'hdidleActive': hdidle_active(),
-        'managed': managed(),
+        'managed': managed_now,
+        # 页面上那个双态按钮的状态：系统开关和插件接管都开着才算「已接管」
+        'active': bool(switch and managed_now),
         'minutes': configured_minutes(),
         'effectiveMinutes': round(seconds / 60) if seconds else None,
         'officialMinutes': OFFICIAL_SECONDS // 60,

@@ -137,6 +137,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == '/api/switch':
                 engine.set_app_switch(bool(body.get('enabled')))
                 engine.add_event(None, 'switch', '开启休眠' if body.get('enabled') else '关闭休眠')
+            elif path == '/api/takeover':
+                # 页面上的主按钮：一个开关同时管系统开关与插件接管
+                engine.set_takeover(bool(body.get('enabled')))
             elif path == '/api/timeout':
                 engine.set_minutes(body.get('minutes'))
             elif path == '/api/restore':

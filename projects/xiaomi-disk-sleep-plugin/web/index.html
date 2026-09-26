@@ -18,6 +18,7 @@
         </header>
 
         <main>
+            <!-- 卡片一：状态 + 硬盘 + 主开关 -->
             <section class="card status-card">
                 <div class="status-main">
                     <span class="status-dot" id="statusDot" aria-hidden="true"></span>
@@ -26,79 +27,71 @@
                         <small id="serviceInfo"></small>
                     </div>
                 </div>
-                <button id="toggleSleep" class="btn primary block">开启休眠</button>
-                <div class="status-timeout">
-                    <span class="muted" id="timeoutState">休眠时间读取中…</span>
-                    <button id="restoreOfficial" class="btn" hidden>恢复官方 30 分钟</button>
-                </div>
+                <div id="disks" class="disks"></div>
+                <button id="toggleSleep" class="btn primary block">开启插件接管</button>
             </section>
 
             <p id="error" class="alert" role="alert" hidden></p>
 
+            <!-- 卡片二：只留一个输入框和一个保存按钮 -->
             <section class="card">
                 <h2>休眠时间</h2>
-                <p class="muted">系统默认 30 分钟且不可改；这里设置后会覆盖官方 unit，开关仍由系统设置控制。</p>
-                <div class="presets" id="presets"></div>
                 <div class="field-row">
-                    <input id="minutes" type="number" min="5" max="720" step="5" inputmode="numeric" aria-label="自定义分钟数">
+                    <input id="minutes" type="number" min="5" max="720" step="5" inputmode="numeric" aria-label="休眠分钟数">
                     <button id="saveMinutes" class="btn primary">保存</button>
                 </div>
-                <p class="muted" id="minutesHint">可设 5 到 720 分钟。</p>
             </section>
 
-            <section class="card">
-                <h2>硬盘状态</h2>
-                <div id="disks" class="disks"></div>
-            </section>
-
-            <details class="card fold-card" id="activityCard">
-                <summary>
-                    <span class="summary-text">谁在写盘</span>
-                    <span class="badge" id="activityBadge" hidden></span>
-                </summary>
-                <p class="muted">
-                    展开后插件才会扫硬盘目录、读系统索引事件库（两者都会短暂唤醒硬盘），
-                    收起或离开页面就停止扫描。分区速率是纯 <code>/proc</code> 读取，一直免费。
-                </p>
-                <div id="activityNotes" class="notes"></div>
-
-                <h3 class="sub">分区写入速率</h3>
-                <div id="activityMounts" class="rate-list"><p class="muted">采样中…</p></div>
-
-                <h3 class="sub">这段时间被改动的文件</h3>
-                <div id="activityWriters" class="file-list"><p class="muted">尚未扫描</p></div>
-
-                <h3 class="sub">系统索引记录到的改动</h3>
-                <div id="activityEvents" class="file-list"><p class="muted">尚未读取</p></div>
-
-                <button type="button" id="refreshActivity" class="btn block">重新扫描</button>
-            </details>
-
+            <!-- 日志：三个标签页，「谁在写盘」并进来 -->
             <details class="card fold-card" id="logCard">
                 <summary>休眠与唤醒日志</summary>
                 <div class="log-actions">
                     <div class="segmented" role="tablist">
-                        <button type="button" class="seg selected" data-log="events">事件</button>
-                        <button type="button" class="seg" data-log="hdidle">hdidle 原始</button>
+                        <button type="button" class="seg selected" data-tab="events">事件</button>
+                        <button type="button" class="seg" data-tab="hdidle">hdidle 日志</button>
+                        <button type="button" class="seg" data-tab="activity">
+                            谁在写盘<span class="tab-dot" id="activityDot" hidden></span>
+                        </button>
                     </div>
                     <button type="button" id="copyLog" class="btn">复制</button>
                 </div>
                 <pre id="logBox" class="log">读取中…</pre>
+                <div id="activityPanel" class="activity" hidden>
+                    <p class="muted hint-line">打开本标签页会读一次硬盘（会短暂唤醒它），之后不会持续扫描；
+                        点「重新扫描」才会再读一次。</p>
+                    <div id="activityNotes" class="notes"></div>
+                    <h3 class="sub">分区写入速率</h3>
+                    <div id="activityMounts" class="rate-list"></div>
+                    <h3 class="sub">这段时间被改动的文件</h3>
+                    <div id="activityWriters" class="file-list"></div>
+                    <h3 class="sub">系统索引记录到的改动</h3>
+                    <div id="activityEvents" class="file-list"></div>
+                    <button type="button" id="refreshActivity" class="btn block">重新扫描</button>
+                </div>
             </details>
 
+            <!-- 所有说明集中在这里 -->
             <details class="card fold-card" id="notes">
                 <summary>说明与限制</summary>
                 <ul>
-                    <li>开关跟随系统设置里的「硬盘休眠」（uci <code>system.disk.hibernate</code>），两边改都会同步。</li>
-                    <li>休眠时间通过 systemd drop-in 覆盖官方 <code>hdidle.service</code> 的 30 分钟；点「恢复官方 30 分钟」或卸载插件即回到官方行为。</li>
-                    <li>事件日志来自插件每 20 秒查询一次 <code>hdparm -C</code> 的状态跃迁；该查询不会把硬盘唤醒。</li>
-                    <li>「hdidle 原始」是守护进程写进系统日志的原文，可看到每次检测到的读写活动。</li>
-                    <li>「谁在写盘」只在展开时采集：本机内核未开 <code>CONFIG_TASK_IO_ACCOUNTING</code>，
-                        <code>iotop</code>/<code>pidstat -d</code> 都拿不到数据，所以改走「文件 mtime 增量 + 系统 fanotify 事件库」。</li>
+                    <li>主按钮是双态的：点「开启插件接管」会同时打开系统休眠开关并写入插件配置；
+                        点「关闭插件接管」会停掉守护、关闭系统开关，并把休眠时间交还官方 30 分钟。</li>
+                    <li>休眠时间可设 5 到 720 分钟。系统默认 30 分钟且不可改，插件用 systemd drop-in
+                        覆盖官方 <code>hdidle.service</code> 的时长；没接管时按官方 30 分钟。
+                        保存时间不会自动开启接管，开启接管时才生效。</li>
+                    <li>开关跟随系统设置里的「硬盘休眠」（uci <code>system.disk.hibernate</code>），
+                        在小米 App 里改也会同步过来，卡片上的「系统开关」显示它的真实状态。</li>
+                    <li>事件日志来自插件每 20 秒查询一次 <code>hdparm -C</code> 的状态跃迁；
+                        该查询不会把硬盘唤醒。</li>
+                    <li>「hdidle 日志」是守护进程写进系统日志的原文，可看到每次检测到的读写活动。</li>
+                    <li>「谁在写盘」需要读硬盘才能诊断，所以只在打开这个标签页或点「重新扫描」时读一次，
+                        不会后台轮询——插件自己不应该成为唤醒硬盘的那个程序。本机内核未开
+                        <code>CONFIG_TASK_IO_ACCOUNTING</code>，<code>iotop</code>/<code>pidstat -d</code>
+                        都拿不到数据，这里改走「文件 mtime 增量 + 系统 fanotify 事件库」两条路。</li>
                 </ul>
             </details>
 
-            <footer>硬盘休眠 · __PLUGIN_VERSION__</footer>
+            <footer>硬盘休眠 · <span id="version">—</span></footer>
         </main>
         <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
     </div>

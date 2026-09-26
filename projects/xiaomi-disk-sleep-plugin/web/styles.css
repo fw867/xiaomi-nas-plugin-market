@@ -114,14 +114,6 @@ main {
 .status-copy { flex: 1 1 auto; min-width: 0; }
 .status-copy strong { display: block; font-size: 16px; font-weight: 650; }
 .status-copy small { display: block; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
-.status-timeout {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  border-top: 1px solid var(--line);
-  padding-top: 12px;
-}
-.status-timeout .muted { margin: 0; }
 
 /* 按钮：触摸目标 ≥ 44px */
 .btn {
@@ -143,23 +135,7 @@ main {
 .btn.primary:active { background: #2a76dd; }
 .btn.block { display: block; width: 100%; }
 
-/* 预设 */
-.presets { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0 4px; }
-.preset {
-  min-height: 38px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: #fff;
-  color: var(--ink);
-  padding: 8px 14px;
-  font-size: 13px;
-  font-family: inherit;
-  cursor: pointer;
-  touch-action: manipulation;
-}
-.preset.selected { border-color: var(--blue); color: var(--blue); background: rgba(47, 132, 246, .08); font-weight: 600; }
-
-.field-row { display: flex; gap: 10px; align-items: stretch; margin-top: 10px; }
+.field-row { display: flex; gap: 10px; align-items: stretch; margin-top: 2px; }
 .field-row input {
   flex: 1 1 auto;
   min-width: 0;
@@ -174,14 +150,49 @@ main {
 }
 .field-row .btn { flex: 0 0 auto; padding-inline: 20px; }
 
-/* 硬盘 */
-.disks { display: flex; flex-direction: column; gap: 10px; margin-top: 4px; }
-.disk { border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
-.disk-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.disk-head strong { font-size: 15px; }
-.disk-head em { font-style: normal; font-size: 13px; color: var(--green); }
-.disk-head em.is-standby { color: var(--blue); }
-.disk .muted { overflow-wrap: anywhere; }
+/* 硬盘：一行一块盘，尽量少字 */
+.disks { display: flex; flex-direction: column; margin-top: 2px; }
+.disk-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 9px 0;
+  border-top: 1px solid var(--line);
+}
+.disk-row:first-child { border-top: 0; padding-top: 2px; }
+.disk-name { font-size: 14.5px; font-weight: 650; letter-spacing: .02em; }
+.disk-state { font-size: 13.5px; color: var(--green); }
+.disk-state.is-standby { color: var(--blue); }
+.disk-since { margin-left: auto; color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+
+/* 标签页 */
+.segmented { display: flex; flex-wrap: wrap; gap: 6px; }
+.seg {
+  flex: 1 1 auto;
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--muted);
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.seg.selected { border-color: var(--blue); color: var(--blue); background: rgba(47, 132, 246, .08); font-weight: 600; }
+.tab-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--warn);
+}
+.tab-dot.quiet { background: var(--muted); }
 
 /* 折叠卡 */
 .fold-card summary {
@@ -287,22 +298,10 @@ main {
 
 /* 日志 */
 .log-actions { display: flex; flex-direction: column; gap: 10px; margin: 12px 0 8px; }
-.segmented { display: flex; gap: 6px; }
-.seg {
-  flex: 1 1 0;
-  min-height: 38px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: #fff;
-  color: var(--muted);
-  padding: 8px 12px;
-  font-size: 13px;
-  font-family: inherit;
-  cursor: pointer;
-  touch-action: manipulation;
-}
-.seg.selected { border-color: var(--blue); color: var(--blue); background: rgba(47, 132, 246, .08); font-weight: 600; }
 .log-actions .btn { width: 100%; }
+.activity { display: flex; flex-direction: column; }
+.activity > .notes { margin-top: 0; }
+.hint-line { margin: 0 0 10px; }
 .log {
   margin: 0;
   max-height: 46vh;
@@ -352,13 +351,11 @@ footer { text-align: center; color: var(--muted); font-size: 12.5px; margin-top:
   text-align: center;
 }
 
-/* 宽屏：把状态卡的两栏摊开，日志动作横排 */
+/* 宽屏：日志动作横排，标签页按内容宽度 */
 @media (min-width: 480px) {
-  .status-timeout { flex-direction: row; align-items: center; justify-content: space-between; }
-  .status-timeout .btn { flex: 0 0 auto; }
   .log-actions { flex-direction: row; align-items: center; justify-content: space-between; }
   .log-actions .btn { width: auto; }
-  .seg { flex: 0 0 auto; }
+  .seg { flex: 0 0 auto; padding-inline: 14px; }
   .rate-meta { flex: 0 1 auto; }
 }
 
@@ -375,8 +372,8 @@ footer { text-align: center; color: var(--muted); font-size: 12.5px; margin-top:
   body { background: var(--bg); }
   .topbar { background: rgba(27, 35, 48, .94); }
   .icon-button:active { background: #232d3b; }
-  .btn, .preset, .seg, .field-row input, .file { background: #1b2330; color: var(--ink); border-color: #333f4f; }
-  .btn:active, .preset:active, .file:active { background: #232d3b; }
+  .btn, .seg, .field-row input, .file { background: #1b2330; color: var(--ink); border-color: #333f4f; }
+  .btn:active, .file:active { background: #232d3b; }
   .btn.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
   .log { background: var(--field); color: #cfd8e3; }
   code, .rate-chip { background: #232d3b; }

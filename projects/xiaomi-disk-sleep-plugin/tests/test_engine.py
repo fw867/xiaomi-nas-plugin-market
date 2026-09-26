@@ -188,5 +188,90 @@ class DiskSleepEngineTests(unittest.TestCase):
         self.assertEqual(data['officialMinutes'], 30)
 
 
+    # -- 接管开关 ---------------------------------------------------------
+    def _uci_run(self, calls, initial='1'):
+        """模拟 uci：记住 hibernate 的值，这样 app_switch() 会跟着变。"""
+        state = {'hibernate': initial}
+
+        def fake_run(command, timeout=15):
+            calls.append(command)
+            if command[:2] == [engine.UCI, 'get']:
+                return type('R', (), {'returncode': 0, 'stdout': state['hibernate'] + '\n'})()
+            if command[:2] == [engine.UCI, 'set'] and '=' in command[2]:
+                state['hibernate'] = command[2].split('=', 1)[1]
+            return type('R', (), {'returncode': 0, 'stdout': ''})()
+
+        return fake_run
+
+    def test_set_minutes_alone_does_not_take_over(self) -> None:
+        """保存时间不应该顺手把接管打开。"""
+        calls: list[list[str]] = []
+        with patch.object(engine, 'run', side_effect=self._uci_run(calls, initial='0')):
+            engine.set_minutes(45)
+        self.assertFalse(self.dropin.exists())
+        self.assertEqual(json.loads(self.state_file.read_text(encoding='utf-8'))['minutes'], 45)
+
+    def test_set_minutes_updates_dropin_when_already_taken_over(self) -> None:
+        self.dropin.parent.mkdir(parents=True, exist_ok=True)
+        self.dropin.write_text('[Service]\n', encoding='utf-8')
+        calls: list[list[str]] = []
+        with patch.object(engine, 'run', side_effect=self._uci_run(calls, initial='1')):
+            engine.set_minutes(90)
+        self.assertIn(f'{engine.HDIDLE} -n -i 5400', self.dropin.read_text(encoding='utf-8'))
+        self.assertIn(['systemctl', 'restart', engine.HDIDLE_UNIT], calls)
+
+    def test_set_takeover_on_writes_dropin_before_switch(self) -> None:
+        calls: list[list[str]] = []
+        with patch.object(engine, 'run', side_effect=self._uci_run(calls, initial='0')):
+            engine.set_takeover(True)
+        text = self.dropin.read_text(encoding='utf-8')
+        self.assertIn('system.disk.hibernate', text)          # 仍由官方开关控制启停
+        self.assertIn([engine.UCI, 'set', 'system.disk.hibernate=1'], calls)
+        self.assertIn(['systemctl', 'start', engine.HDIDLE_UNIT], calls)
+        # 先落地 drop-in，再启动守护；反了会有一瞬间按官方 30 分钟跑
+        self.assertLess(calls.index([engine.UCI, 'set', 'system.disk.hibernate=1']),
+                        calls.index(['systemctl', 'start', engine.HDIDLE_UNIT]))
+
+    def test_set_takeover_off_stops_then_restores(self) -> None:
+        self.dropin.parent.mkdir(parents=True, exist_ok=True)
+        self.dropin.write_text('[Service]\n', encoding='utf-8')
+        calls: list[list[str]] = []
+        with patch.object(engine, 'run', side_effect=self._uci_run(calls, initial='1')):
+            engine.set_takeover(False)
+        self.assertFalse(self.dropin.exists())
+        self.assertIn([engine.UCI, 'set', 'system.disk.hibernate=0'], calls)
+        self.assertIn(['systemctl', 'stop', engine.HDIDLE_UNIT], calls)
+        # 先停守护，再撤 drop-in；停完开关后不该再重启服务
+        self.assertLess(calls.index(['systemctl', 'stop', engine.HDIDLE_UNIT]),
+                        calls.index(['systemctl', 'daemon-reload']))
+        self.assertNotIn(['systemctl', 'restart', engine.HDIDLE_UNIT], calls)
+
+    def test_set_takeover_rejects_non_boolean(self) -> None:
+        with self.assertRaises(engine.Error):
+            engine.set_takeover('yes')
+
+    def test_snapshot_active_needs_switch_and_dropin(self) -> None:
+        show = 'ExecStart={ argv[]=/usr/bin/hdidle -n -i 600 ; }'
+
+        def fake_run(command, timeout=15):
+            if command[:2] == [engine.UCI, 'get']:
+                return type('R', (), {'returncode': 0, 'stdout': '1\n'})()
+            if command[:2] == ['systemctl', 'show']:
+                return type('R', (), {'returncode': 0, 'stdout': show})()
+            return type('R', (), {'returncode': 0, 'stdout': ''})()
+
+        with patch.object(engine, 'run', side_effect=fake_run), \
+                patch.object(engine, 'disk_summary', return_value=[]):
+            data = engine.snapshot()
+            self.assertTrue(data['appSwitch'])
+            self.assertFalse(data['managed'])
+            self.assertFalse(data['active'])                  # 开关开但没接管
+            self.dropin.parent.mkdir(parents=True, exist_ok=True)
+            self.dropin.write_text('[Service]\n', encoding='utf-8')
+            data = engine.snapshot()
+        self.assertTrue(data['managed'])
+        self.assertTrue(data['active'])
+
+
 if __name__ == '__main__':
     unittest.main()

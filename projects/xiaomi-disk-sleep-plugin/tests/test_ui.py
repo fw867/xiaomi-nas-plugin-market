@@ -27,11 +27,21 @@ class AssetTests(unittest.TestCase):
     def test_activity_panel_ids_match_script(self):
         html = (WEB / 'index.html').read_text(encoding='utf-8')
         script = (WEB / 'app.js').read_text(encoding='utf-8')
-        for name in ('activityCard', 'activityBadge', 'activityNotes', 'activityMounts',
+        for name in ('activityPanel', 'activityDot', 'activityNotes', 'activityMounts',
                      'activityWriters', 'activityEvents', 'refreshActivity'):
             with self.subTest(name=name):
                 self.assertIn('id="%s"' % name, html)
                 self.assertIn("$('%s')" % name, script)
+
+    def test_activity_is_a_tab_of_the_log_card(self):
+        """「谁在写盘」并进日志卡片的标签页，不再单独占一张卡片。"""
+        html = (WEB / 'index.html').read_text(encoding='utf-8')
+        self.assertNotIn('id="activityCard"', html)
+        log_card = html.split('id="logCard"')[1].split('</details>')[0]
+        self.assertIn('data-tab="activity"', log_card)
+        self.assertIn('id="activityPanel"', log_card)
+        self.assertIn('data-tab="events"', log_card)
+        self.assertIn('data-tab="hdidle"', log_card)
 
     def test_script_calls_activity_api_relative(self):
         script = (WEB / 'app.js').read_text(encoding='utf-8')
@@ -57,9 +67,36 @@ class AssetTests(unittest.TestCase):
         self.assertIn('touch-action: manipulation', css)
         self.assertIn('prefers-color-scheme: dark', css)
 
-    def test_version_placeholder_present_in_template(self):
+    def test_version_is_filled_from_api_not_placeholder(self):
+        """nginx 直接 alias 出 index.html，服务端没机会替换占位符。
+
+        所以页面不能依赖 __PLUGIN_VERSION__，必须由脚本用 /api/status 的
+        version 字段填到 id="version" 里。
+        """
         html = (WEB / 'index.html').read_text(encoding='utf-8')
-        self.assertEqual(html.count('__PLUGIN_VERSION__'), 1)
+        script = (WEB / 'app.js').read_text(encoding='utf-8')
+        self.assertNotIn('__PLUGIN_VERSION__', html)
+        self.assertIn('id="version"', html)
+        self.assertIn("$('version').textContent", script)
+
+    def test_card_text_is_minimal(self):
+        """卡片上不放长说明；说明集中在最下面的「说明与限制」里。"""
+        html = (WEB / 'index.html').read_text(encoding='utf-8')
+        cards = html.split('<details class="card fold-card" id="notes">')[0]
+        self.assertNotIn('drop-in', cards)
+        self.assertNotIn('hdparm', cards)
+        notes = html.split('<details class="card fold-card" id="notes">')[1]
+        for phrase in ('drop-in', 'hdparm', 'CONFIG_TASK_IO_ACCOUNTING'):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, notes)
+
+    def test_presets_were_removed(self):
+        html = (WEB / 'index.html').read_text(encoding='utf-8')
+        script = (WEB / 'app.js').read_text(encoding='utf-8')
+        css = (WEB / 'styles.css').read_text(encoding='utf-8')
+        self.assertNotIn('presets', html)
+        self.assertNotIn("$('presets')", script)
+        self.assertNotIn('.preset', css)
 
 
 class ServeTests(unittest.TestCase):
@@ -91,12 +128,23 @@ class ServeTests(unittest.TestCase):
         finally:
             connection.close()
 
-    def test_index_substitutes_installed_version(self):
+    def test_index_has_no_server_side_placeholder(self):
         status, body = self.get('/')
         text = body.decode('utf-8')
         self.assertEqual(status, 200)
         self.assertNotIn('__PLUGIN_VERSION__', text)
-        self.assertIn('硬盘休眠 · ' + engine.installed_version(), text)
+        self.assertIn('id="version"', text)
+
+    def test_status_reports_installed_version(self):
+        # Windows 上没有 uci/systemctl，把这些外部命令打桩后再问状态接口
+        import json as _json
+        fake = type('R', (), {'returncode': 0, 'stdout': ''})()
+        with patch.object(engine, 'run', return_value=fake):
+            status, body = self.get('/api/status')
+        self.assertEqual(status, 200)
+        data = _json.loads(body)
+        self.assertEqual(data['version'], engine.installed_version())
+        self.assertIn('active', data)
 
     def test_static_assets_served(self):
         for name in ('styles.css', 'app.js'):

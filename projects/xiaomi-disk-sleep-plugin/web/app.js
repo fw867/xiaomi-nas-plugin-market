@@ -1,9 +1,8 @@
 'use strict';
 const $ = (id) => document.getElementById(id);
 let state = null;
-let logMode = 'events';
+let logTab = 'events';
 let polling = false;
-let activityOpen = false;
 let activityBusy = false;
 let toastTimer = null;
 
@@ -75,6 +74,18 @@ function formatTime(seconds) {
   return `${date.getMonth() + 1}/${date.getDate()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+// 同一分钟内只说 HH:MM，跨天补上日期
+function formatSince(seconds) {
+  if (!seconds) return '';
+  const date = new Date(seconds * 1000);
+  const now = new Date();
+  const pad = (value) => String(value).padStart(2, '0');
+  const clock = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  const sameDay = date.getFullYear() === now.getFullYear()
+    && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
+  return sameDay ? clock : `${date.getMonth() + 1}/${date.getDate()} ${clock}`;
+}
+
 function formatRate(kbps) {
   const value = Number(kbps) || 0;
   if (value >= 1024) return `${(value / 1024).toFixed(2)} MB/s`;
@@ -101,65 +112,38 @@ const EVENT_LABEL = { standby: '进入休眠', wake: '被唤醒', config: '修�
 
 function render(current) {
   state = current;
-  $('statusDot').className = `status-dot ${current.appSwitch && current.hdidleActive ? 'on' : 'off'}`;
-  $('serviceState').textContent = current.appSwitch ? '休眠已开启' : '休眠已关闭';
-  const parts = [`系统开关 ${current.appSwitch ? '开' : '关'}`];
-  parts.push(current.hdidleActive ? '守护运行中' : '守护未运行');
-  if (current.effectiveMinutes) parts.push(`生效 ${current.effectiveMinutes} 分钟`);
+  const active = Boolean(current.active);
+  $('statusDot').className = `status-dot ${active ? 'on' : 'off'}`;
+  $('serviceState').textContent = active ? '插件接管中' : '未接管';
+  const minutes = current.effectiveMinutes || current.minutes || current.officialMinutes;
+  $('serviceInfo').textContent = [
+    `系统开关 ${current.appSwitch ? '开' : '关'}`,
+    current.hdidleActive ? '守护运行中' : '守护未运行',
+    `${minutes} 分钟`,
+  ].join(' · ');
+
+  $('version').textContent = current.version || '—';
+
+  $('toggleSleep').textContent = active ? '关闭插件接管' : '开启插件接管';
+
+  $('disks').replaceChildren(...(current.disks.length ? current.disks.map((disk) => {
+    const row = element('div', 'disk-row');
+    row.append(element('span', 'disk-name', disk.device.toUpperCase()));
+    const standby = Boolean(disk.standby);
+    row.append(element('span', `disk-state${standby ? ' is-standby' : ''}`, standby ? '休眠中' : '活动'));
+    const since = formatSince(standby ? disk.lastStandby : disk.lastWake);
+    if (since) row.append(element('span', 'disk-since', `${since} 起`));
+    return row;
+  }) : [element('p', 'muted', '未检测到硬盘')]));
+
+  const dot = $('activityDot');
   const activity = current.activity || {};
-  if (activity.hasWrites && activity.summary) parts.push(`正在写盘：${activity.summary}`);
-  $('serviceInfo').textContent = parts.join(' · ');
-
-  const badge = $('activityBadge');
-  if (activity.sampling) {
-    badge.hidden = false;
-    badge.className = 'badge';
-    badge.textContent = '采样中';
-  } else if (activity.hasWrites) {
-    badge.hidden = false;
-    badge.className = 'badge';
-    badge.textContent = '有写入';
-  } else {
-    badge.hidden = false;
-    badge.className = 'badge quiet';
-    badge.textContent = '安静';
-  }
-
-  $('toggleSleep').textContent = current.appSwitch ? '关闭休眠' : '开启休眠';
-
-  const managed = current.managed;
-  const effective = current.effectiveMinutes;
-  $('timeoutState').textContent = managed
-    ? (effective ? `插件已接管：${effective} 分钟（官方默认 ${current.officialMinutes}）` : `插件已接管：${current.minutes} 分钟`)
-    : `官方默认 ${current.officialMinutes} 分钟，未自定义`;
-  $('restoreOfficial').hidden = !managed;
+  dot.hidden = !(activity.hasWrites || activity.sampling);
+  if (!dot.hidden) dot.classList.toggle('quiet', Boolean(activity.sampling) && !activity.hasWrites);
 
   $('minutes').min = current.minMinutes;
   $('minutes').max = current.maxMinutes;
   if (document.activeElement !== $('minutes')) $('minutes').value = current.minutes;
-  $('minutesHint').textContent = `可设 ${current.minMinutes} 到 ${current.maxMinutes} 分钟，保存后立即生效。`;
-
-  $('presets').replaceChildren(...current.presets.map((minutes) => {
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = `preset ${minutes === current.minutes ? 'selected' : ''}`;
-    button.textContent = minutes >= 60 && minutes % 60 === 0 ? `${minutes / 60} 小时` : `${minutes} 分钟`;
-    button.addEventListener('click', () => { $('minutes').value = minutes; saveMinutes(minutes); });
-    return button;
-  }));
-
-  $('disks').replaceChildren(...(current.disks.length ? current.disks.map((disk) => {
-    const article = document.createElement('article');
-    article.className = 'disk';
-    const head = element('div', 'disk-head');
-    head.append(element('strong', '', disk.device.toUpperCase()));
-    head.append(element('em', disk.standby ? 'is-standby' : 'is-active', disk.standby ? '休眠中' : '活动'));
-    article.append(head);
-    article.append(element('p', 'muted', `${disk.model || '型号未知'} · ${disk.state}`));
-    article.append(element('p', 'muted',
-      `最近休眠 ${formatTime(disk.lastStandby)} · 最近唤醒 ${formatTime(disk.lastWake)}`));
-    return article;
-  }) : [element('p', 'muted', '未检测到硬盘')]));
 }
 
 async function refresh() {
@@ -176,7 +160,7 @@ async function refresh() {
 }
 
 // ---------------------------------------------------------------------------
-// 谁在写盘
+// 谁在写盘（日志卡片里的第三个标签页）
 // ---------------------------------------------------------------------------
 
 function renderNotes(notes) {
@@ -245,9 +229,8 @@ function renderActivity(data) {
       if (item.heldBy && item.heldBy.length) bits.push(`被 ${item.heldBy.join('、')} 打开`);
       return bits.join(' · ');
     });
-  const eventsEmpty = data.eventsNote || '系统索引还没有记录到文件改动';
   renderFiles($('activityEvents'), data.events,
-    eventsEmpty,
+    data.eventsNote || '系统索引还没有记录到文件改动',
     (item) => {
       const bits = [`最近 300 条记录里出现 ${item.count} 次`];
       if (item.owner) bits.push(item.owner);
@@ -255,8 +238,12 @@ function renderActivity(data) {
     });
 }
 
+function activityVisible() {
+  return $('logCard').open && logTab === 'activity';
+}
+
 async function loadActivity(force) {
-  if (activityBusy) return;
+  if (activityBusy || !activityVisible()) return;
   activityBusy = true;
   const button = $('refreshActivity');
   button.disabled = true;
@@ -270,21 +257,20 @@ async function loadActivity(force) {
   }
 }
 
-async function saveMinutes(minutes) {
-  const value = Number(minutes);
-  if (!Number.isInteger(value)) { toast('请输入整数分钟'); return; }
-  try {
-    render(await call('timeout', { minutes: value }));
-    toast(`休眠时间已设为 ${value} 分钟`);
-  } catch (error) {
-    toast(error.message);
-  }
-}
-
 async function loadLog() {
+  if (logTab === 'activity') {
+    $('logBox').hidden = true;
+    $('activityPanel').hidden = false;
+    $('copyLog').hidden = true;
+    await loadActivity(true);
+    return;
+  }
+  $('activityPanel').hidden = true;
+  $('logBox').hidden = false;
+  $('copyLog').hidden = false;
   $('logBox').textContent = '读取中…';
   try {
-    if (logMode === 'events') {
+    if (logTab === 'events') {
       const data = await call('events?limit=200');
       const lines = data.events.map((item) => {
         const label = EVENT_LABEL[item.kind] || item.kind;
@@ -303,43 +289,43 @@ async function loadLog() {
   }
 }
 
+async function saveMinutes(minutes) {
+  const value = Number(minutes);
+  if (!Number.isInteger(value)) { toast('请输入整数分钟'); return; }
+  try {
+    const next = await call('timeout', { minutes: value });
+    render(next);
+    toast(next.active ? `休眠时间已设为 ${value} 分钟` : `已记为 ${value} 分钟，开启接管后生效`);
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+function selectTab(button) {
+  logTab = button.dataset.tab;
+  document.querySelectorAll('.seg').forEach((item) => item.classList.toggle('selected', item === button));
+  if ($('logCard').open) loadLog();
+}
+
 $('back').onclick = leavePlugin;
 $('refresh').onclick = () => {
   refresh();
   if ($('logCard').open) loadLog();
-  if (activityOpen) loadActivity(true);
 };
 $('saveMinutes').onclick = () => saveMinutes($('minutes').value);
 $('toggleSleep').onclick = async () => {
-  const target = !state.appSwitch;
+  const target = !state.active;
   try {
-    render(await call('switch', { enabled: target }));
-    toast(target ? '已开启休眠' : '已关闭休眠');
-  } catch (error) {
-    toast(error.message);
-  }
-};
-$('restoreOfficial').onclick = async () => {
-  try {
-    render(await call('restore', {}));
-    toast('已恢复官方 30 分钟');
+    render(await call('takeover', { enabled: target }));
+    toast(target ? '已开启插件接管' : '已关闭插件接管，交还官方 30 分钟');
   } catch (error) {
     toast(error.message);
   }
 };
 document.querySelectorAll('.seg').forEach((button) => {
-  button.addEventListener('click', () => {
-    logMode = button.dataset.log;
-    document.querySelectorAll('.seg').forEach((item) => item.classList.toggle('selected', item === button));
-    loadLog();
-  });
+  button.addEventListener('click', () => selectTab(button));
 });
 $('logCard').addEventListener('toggle', () => { if ($('logCard').open) loadLog(); });
-// 面板只在展开时才采集：收起后插件就不再扫目录、不再读事件库。
-$('activityCard').addEventListener('toggle', () => {
-  activityOpen = $('activityCard').open;
-  if (activityOpen) loadActivity(true);
-});
 $('refreshActivity').onclick = () => loadActivity(true);
 $('copyLog').onclick = async () => {
   const text = $('logBox').textContent;
@@ -351,5 +337,5 @@ refresh();
 setInterval(() => {
   if (document.hidden) return;
   refresh();
-  if (activityOpen) loadActivity();
+  if (activityVisible()) loadActivity();
 }, 10000);

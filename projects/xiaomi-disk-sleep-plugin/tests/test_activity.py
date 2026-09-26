@@ -222,10 +222,40 @@ class ActivitySnapshotTests(ActivityTestCase):
             data = engine.activity_snapshot()
         self.assertEqual(data['mirrored'], [])
 
-    def test_viewer_marker_controls_scanning(self):
-        self.assertFalse(engine.viewer_active())
-        engine.mark_viewer()
-        self.assertTrue(engine.viewer_active())
+    def test_automatic_refresh_does_not_scan(self):
+        """扫描会读硬盘，所以只有 force（打开标签页/点重新扫描）或首次才做。"""
+        calls = {'writers': 0, 'events': 0}
+
+        def fake_writers(force=False):
+            calls['writers'] += 1
+            with engine._activity_lock:
+                engine._activity_writers_at = time.time()
+
+        def fake_events(force=False):
+            calls['events'] += 1
+            with engine._activity_lock:
+                engine._activity_events_at = time.time()
+
+        with patch.object(engine, 'refresh_writers', side_effect=fake_writers), \
+                patch.object(engine, 'refresh_events', side_effect=fake_events), \
+                patch.object(engine, 'refresh_owners'):
+            engine.activity_snapshot()                      # 还没有缓存 → 扫一次
+            self.assertEqual(calls, {'writers': 1, 'events': 1})
+            engine.activity_snapshot()                      # 已有缓存 → 不再扫
+            engine.activity_snapshot()
+            self.assertEqual(calls, {'writers': 1, 'events': 1})
+            engine.activity_snapshot(force=True)            # 主动重扫
+            self.assertEqual(calls, {'writers': 2, 'events': 2})
+
+    def test_activity_tick_only_records_block_stats(self):
+        """采样线程绝不做会读硬盘的事。"""
+        with patch.object(engine, 'record_activity') as record, \
+                patch.object(engine, 'refresh_writers') as writers, \
+                patch.object(engine, 'refresh_events') as events:
+            engine.activity_tick()
+        self.assertEqual(record.call_count, 1)
+        self.assertEqual(writers.call_count, 0)
+        self.assertEqual(events.call_count, 0)
 
     def feed(self, first, second, seconds=10.0):
         self.write_diskstats({
