@@ -105,10 +105,11 @@ def atomic_json(path, value):
 
 
 def settings_document():
-    """写入 /config/transmission-daemon/settings.json 的非鉴权配置。
+    """首次初始化（或键缺失）时补进 <配置目录>/settings.json 的非鉴权配置。
 
     WebUI 账号密码走 LinuxServer 的 USER/PASS 环境变量，不要写进
     settings.json，否则 s6 可能无法干净停掉 transmission-daemon。
+    这些值只在键不存在时补进已有配置，不会覆盖用户自己改过的值。
     """
     return {
         'download-dir': '/downloads',
@@ -133,26 +134,101 @@ def settings_document():
     }
 
 
-def settings_path(config_folder):
-    """LinuxServer 镜像以 `-g /config` 启动 daemon，读写的就是这个文件。
+# 镜像每次启动都会重写这几个键（s6 的 init-transmission-config 用 jq 写回）：账号、
+# 鉴权开关、白名单、BT 端口、umask 都由容器环境变量决定，直接改 settings.json 不生效。
+IMAGE_MANAGED_KEYS = frozenset({
+    'rpc-authentication-required', 'rpc-username', 'rpc-password',
+    'rpc-whitelist', 'rpc-whitelist-enabled',
+    'rpc-host-whitelist', 'rpc-host-whitelist-enabled',
+    'peer-port', 'peer-port-random-on-start', 'umask',
+})
+# 和容器端口映射绑死（9091/tcp 固定、控制台也按 9091 转发）：值不对 WebUI 与插件
+# 控制台都打不开，所以每次启动都纠正这三个键。其余键一律不覆盖。
+REQUIRED_SETTINGS = {'rpc-enabled': True, 'rpc-port': PORT, 'rpc-bind-address': '0.0.0.0'}
+# 旧版原生插件把 daemon 配置写在 <配置目录>/transmission-daemon/settings.json；
+# Docker 版镜像写死 `transmission-daemon -g /config`，只读 <配置目录>/settings.json。
+LEGACY_SETTINGS_FOLDER = 'transmission-daemon'
+LEGACY_BACKUP_SUFFIX = '.legacy'
+# 迁移旧配置时不动这些键：路径、端口、绑定、脚本文件名都和容器挂载/端口映射绑定，
+# 照搬过来会让下载目录或 WebUI 直接失效。
+MIGRATION_SKIP_KEYS = IMAGE_MANAGED_KEYS | frozenset({
+    'download-dir', 'incomplete-dir', 'incomplete-dir-enabled',
+    'watch-dir', 'watch-dir-enabled',
+    'rpc-enabled', 'rpc-port', 'rpc-bind-address', 'rpc-url', 'rpc-socket-mode',
+    'peer-port-random-high', 'peer-port-random-low',
+    'bind-address-ipv4', 'bind-address-ipv6', 'pidfile', 'proxy_url',
+    'script-torrent-done-filename', 'script-torrent-added-filename',
+    'script-torrent-done-seeding-filename',
+})
 
-    写成 `<配置目录>/transmission-daemon/settings.json`（原生版的路径）不会被读取，
-    daemon 会回落到镜像默认值——其中 `rpc-bind-address` 是 `[::]`，在没有 IPv6 的
-    容器里绑不上 9091，Web 界面永远起不来。
+
+def settings_path(config_folder):
+    """daemon 真正读写的配置文件：<配置目录>/settings.json（容器内 /config/settings.json）。
+
+    镜像是 `transmission-daemon -g /config` 启动的（写死在镜像的 s6 run 脚本里，
+    没有环境变量可改），写成 `<配置目录>/transmission-daemon/settings.json`（原生版
+    的路径）不会被读取，daemon 会回落到镜像默认值——其中 `rpc-bind-address` 默认是
+    `[::]`，在没有 IPv6 的容器里绑不上 9091，Web 界面永远起不来。
     """
     return config_folder / 'settings.json'
 
 
-def write_settings(config_folder, uid, gid):
-    payload = json.dumps(settings_document(), ensure_ascii=False, indent=2) + '\n'
-    path = settings_path(config_folder)
+def legacy_settings_path(config_folder):
+    """旧版原生插件留下的配置路径；Docker 版的 daemon 不会读它。"""
+    return config_folder / LEGACY_SETTINGS_FOLDER / 'settings.json'
+
+
+def read_settings(path):
+    """读 settings.json；文件不存在或内容不是 JSON 对象时返回空字典。"""
+    try:
+        value = json.loads(Path(path).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def write_settings_file(path, settings, uid, gid):
+    """原子写入配置文件（0600，属主为所选目录的 NAS 用户）。"""
     tmp = path.with_suffix('.tmp')
+    payload = json.dumps(settings, ensure_ascii=False, indent=2) + '\n'
     with tmp.open('w', encoding='utf-8') as stream:
         os.chmod(tmp, 0o600)
         stream.write(payload)
     os.chown(tmp, uid, gid)
     tmp.replace(path)
     return path
+
+
+def merge_settings(config_folder, uid, gid, document=None):
+    """把默认配置合并进现有 settings.json：只补缺失键 + 纠正 REQUIRED_SETTINGS。
+
+    返回 (是否改动, 文件路径)。用户已经写下的值一律保留——旧实现只要发现任一托管键
+    和默认值不同，就把整个文件重写成那 20 个默认键，用户调过的缓存、连接数、限速、
+    DHT/PEX、队列等全部丢失，表现就是「每次启动配置都恢复成默认」。
+    """
+    document = settings_document() if document is None else document
+    path = settings_path(config_folder)
+    merged = read_settings(path)
+    try:
+        unreadable = not merged and path.stat().st_size > 0
+    except OSError:
+        unreadable = False
+    if unreadable:
+        # 文件存在但解析不出 JSON 对象：先留一份，再写默认值，避免内容被直接抹掉
+        path.replace(path.with_name(path.name + '.invalid'))
+        merged = {}
+    changed = False
+    for key, value in document.items():
+        if key not in merged:
+            merged[key] = value
+            changed = True
+    for key, value in REQUIRED_SETTINGS.items():
+        if merged.get(key) != value:
+            merged[key] = value
+            changed = True
+    if changed:
+        write_settings_file(path, merged, uid, gid)
+    return changed, path
 
 
 WEBUI_VERSION = 'v1.6.1-update1'
@@ -360,6 +436,11 @@ class Engine:
             'config': self.config.get('config_relative', '') if self.config else '',
             'watch': self.config.get('watch_relative', '') if self.config else '',
             'username': self.config.get('username', '') if self.config else '',
+            # daemon 真正读写的配置文件（页面用它告诉用户改哪里）
+            'settingsFile': str(settings_path(Path(self.config['config']))) if self.config else '',
+            'legacyFile': str(legacy_settings_path(Path(self.config['config']))) if self.config else '',
+            'legacySettings': bool(self.config) and legacy_settings_path(
+                Path(self.config['config'])).is_file(),
             # BT 端口是否对公网开放：只有点了「测试端口」才有值（port-test 会访问外部检测服务）
             'port': {'peerPort': BT_PORT, **self.port_state},
         }
@@ -395,7 +476,7 @@ class Engine:
         self._call('GET', '/info')
         if self.inspect() is not None:
             raise Error('同名容器已存在，拒绝覆盖')
-        write_settings(config_folder, uid, gid)
+        merge_settings(config_folder, uid, gid)
         install_webui(config_folder, uid, gid)
         stats = {key: path.stat() for key, path in
                  [('download', download), ('config', config_folder), ('watch', watch)]}
@@ -445,19 +526,49 @@ class Engine:
                 raise Error(label + '身份已变化，拒绝启动；请先检查存储挂载')
 
     def ensure_settings(self):
-        """把非鉴权配置写到 daemon 真正读取的位置，并修复旧版写错目录的安装。"""
+        """补上缺失的配置键，返回配置文件是否被改动。
+
+        绝不覆盖用户已经写下的值：改过缓存、连接数、限速、DHT/PEX 等键的配置
+        在插件重启后保持原样；只有键缺失（或 rpc-enabled / rpc-port /
+        rpc-bind-address 与容器映射不一致）时才会动文件。
+        """
+        changed, _ = merge_settings(Path(self.config['config']),
+                                    self.config['uid'], self.config['gid'])
+        return changed
+
+    def adopt_legacy_settings(self):
+        """一次性采用旧版原生插件遗留的可调配置，返回是否搬了东西。
+
+        旧版把 daemon 配置写在 <配置目录>/transmission-daemon/settings.json，而
+        Docker 版 daemon 只读 <配置目录>/settings.json（镜像写死 `-g /config`），
+        所以那份文件里调过的参数一直不生效，看起来也像「被默认值覆盖」。这里把其中
+        与容器挂载/端口映射无关的可调项并进真正生效的文件，并把旧文件改名成
+        `settings.json.legacy` 留在原处，避免下次又改错地方。只做一次。
+        """
         config_folder = Path(self.config['config'])
+        if self.config.get('settingsAdopted'):
+            return False
+        self.config['settingsAdopted'] = True
+        legacy = legacy_settings_path(config_folder)
+        if not legacy.is_file():
+            atomic_json(self.cfgfile, self.config)
+            return False
+        adopted = {key: value for key, value in read_settings(legacy).items()
+                   if key not in MIGRATION_SKIP_KEYS}
+        if adopted:
+            merged = read_settings(settings_path(config_folder))
+            merged.update(adopted)
+            write_settings_file(settings_path(config_folder), merged,
+                                self.config['uid'], self.config['gid'])
         try:
-            current = json.loads(settings_path(config_folder).read_text(encoding='utf-8'))
-        except (OSError, ValueError):
-            current = {}
-        if not isinstance(current, dict):
-            current = {}
-        document = settings_document()
-        stale = not current or any(current.get(key) != value for key, value in document.items())
-        if stale:
-            write_settings(config_folder, self.config['uid'], self.config['gid'])
-        return stale
+            backup = legacy.with_name(legacy.name + LEGACY_BACKUP_SUFFIX)
+            if backup.exists():
+                backup.unlink()
+            legacy.replace(backup)
+        except OSError:
+            pass
+        atomic_json(self.cfgfile, self.config)
+        return bool(adopted)
 
     def ensure_webui(self):
         """确保默认控制台已铺到 <配置目录>/webui；用户自己替换过的文件不动。"""
@@ -499,7 +610,8 @@ class Engine:
         if not self.config:
             raise Error('请先初始化')
         self.check_directories()
-        repaired = self.ensure_settings()
+        adopted = self.adopt_legacy_settings()
+        repaired = self.ensure_settings() or adopted
         self.ensure_webui()
         item = self.owned()
         if item and self.webui_env_stale(item):
@@ -512,8 +624,9 @@ class Engine:
             if not item.get('State', {}).get('Running'):
                 self._call('POST', '/containers/' + NAME + '/start')
             elif repaired:
-                # 旧版配置写错位置，daemon 用的是镜像默认的 rpc-bind-address=[::]；
-                # 容器没有 IPv6 时绑不上 9091，必须重启才能读到修正后的配置。
+                # daemon 只在启动时读一次 settings.json：刚补过键（或刚搬完旧版的
+                # 配置）就得重启，否则它用的还是旧值（比如 rpc-bind-address=[::]
+                # 在无 IPv6 的容器里绑不上 9091，Web 界面永远起不来）。
                 self._call('POST', '/containers/' + NAME + '/restart?t=15', timeout=120)
         else:
             password = self.saved_password()

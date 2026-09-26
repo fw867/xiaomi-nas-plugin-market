@@ -110,7 +110,17 @@
                     <li>容器 <code>xiaomi-plugin-transmission</code> 只挂载所选的配置、下载、监控目录，不挂载 Docker socket，不使用 privileged 或 host 网络。</li>
                     <li>WebUI 端口 9091（TCP）对局域网开放；BT 入站端口 51413（TCP/UDP）已映射，公网入站仍需在路由器转发。</li>
                     <li>「打开控制台」为插件内置界面，通过 Transmission JSON-RPC 拉取任务；卡片里的 9091 地址是官方 WebUI 直连入口。</li>
+                    <li>配置文件是 <code id="settingsFile">—</code>：容器里的 daemon 由镜像以
+                        <code>transmission-daemon -g /config</code> 启动，只读这个文件。改配置请先点「停止服务」，
+                        改完再「启动服务」——服务运行时改会被 daemon 退出时写回的值覆盖。</li>
+                    <li>插件不会覆盖你改过的值：启动时只补缺失的键，缓存、连接数、限速、DHT/PEX、队列等改了就是你的值；
+                        只会纠正 <code>rpc-enabled</code>、<code>rpc-port</code>、<code>rpc-bind-address</code>
+                        这三个与容器端口映射绑定的键。</li>
+                    <li>账号密码、白名单、BT 端口、umask 由镜像每次启动按容器环境变量重写，改 <code>settings.json</code>
+                        里的这些键无效（换账号密码需重新初始化插件）。</li>
                     <li>停止或卸载插件只停止容器，配置与已下载文件都会保留。</li>
+                    <li id="legacyHint" hidden>检测到旧版遗留配置 <code id="legacyPath">—</code>，daemon 不会读取它；
+                        请改上面的 <code>settings.json</code>。</li>
                 </ul>
             </details>
 

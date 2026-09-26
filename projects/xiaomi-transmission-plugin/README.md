@@ -43,11 +43,30 @@
     或用插件页令牌换来的签名 Cookie（12 小时有效，HttpOnly）；令牌只出现在首次跳转的地址上，
     随即 302 到不带令牌的地址。
   - 卡片里的 `http://<NAS-IP>:9091` 是**局域网直连**入口（更快、不经过插件中转），外网打不开。
-- **`settings.json` 必须写在所选配置目录的根下**（即容器内 `/config/settings.json`）：
-  镜像以 `transmission-daemon -g /config` 启动，写到 `transmission-daemon/` 子目录不会被读取，
-  daemon 会回落到镜像默认的 `rpc-bind-address=[::]`，在无 IPv6 的容器里绑不上 9091，Web 界面起不来
+- **配置文件**：只有 `<配置目录>/settings.json`（容器内 `/config/settings.json`）生效，
+  见下方「配置文件改哪里」
 - 停止/卸载插件只停止容器，不删除配置与下载文件
-- **旧版原生（Entware 随包二进制）配置不会自动迁移**，升级后需重新初始化
+
+## 配置文件改哪里
+
+- **只有 `<配置目录>/settings.json`**（即容器内 `/config/settings.json`）会被读取：镜像写死
+  `transmission-daemon -g /config`，没有环境变量能改这个位置。插件页的「配置目录」下方会显示
+  这个文件的完整路径。
+- **改配置的顺序是「停止服务」→ 改 `settings.json` → 「启动服务」**：daemon 只在启动时读一次
+  配置，而它在停止时会把内存里的配置写回文件——插件还在运行时改，改动会被它覆盖掉。
+  写在 `transmission-daemon/` 子目录里的配置不会被读取，daemon 会回落到镜像默认值
+  （例如 `rpc-bind-address` 的 `[::]` 在无 IPv6 的容器里绑不上 9091，Web 界面起不来）。
+- **插件不会覆盖你改过的值**：启动时只补「缺失」的键；另外把 `rpc-enabled`、`rpc-port`、
+  `rpc-bind-address` 纠正为容器映射要求的值（9091 固定，改这三个键会让 WebUI 和插件控制台都
+  打不开）。缓存、连接数、限速、DHT/PEX、队列、做种规则等键改了就一直是你的值。
+- **镜像每次启动都会重写下面这些键**（它们来自容器环境变量，改 `settings.json` 无效）：
+  `rpc-authentication-required`、`rpc-username`、`rpc-password`、`rpc-whitelist`、
+  `rpc-whitelist-enabled`、`rpc-host-whitelist`、`rpc-host-whitelist-enabled`、`peer-port`、
+  `peer-port-random-on-start`、`umask`。换 WebUI 账号密码需要重新初始化插件。
+- **旧版原生插件的配置会自动迁移一次**：`<配置目录>/transmission-daemon/settings.json` 是原生版
+  （Entware 随包二进制）的路径，Docker 版 daemon 不读它。升级后第一次启动时，插件把其中与容器
+  无关的可调项并进真正生效的 `settings.json`，并把旧文件改名成 `settings.json.legacy` 留在原处
+  （避免继续改一个不生效的文件）；路径、端口、账号、绑定、脚本文件名这类键不会搬过来。
 
 ## 镜像
 

@@ -113,6 +113,12 @@
     $('#configDir').textContent = current.config ? '/' + current.config : '—';
     $('#watchDir').textContent = current.watch ? '/' + current.watch : '—';
     $('#username').textContent = current.username || '—';
+    $('#settingsFile').textContent = current.settingsFile || '—';
+    const legacy = $('#legacyHint');
+    if (legacy) {
+      legacy.hidden = !current.legacySettings;
+      if (current.legacySettings) $('#legacyPath').textContent = current.legacyFile || '';
+    }
     renderPortState(current);
     if (!current.busy) showError(current.error);
   }

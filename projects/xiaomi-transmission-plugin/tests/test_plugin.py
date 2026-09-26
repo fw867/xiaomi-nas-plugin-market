@@ -14,8 +14,8 @@ from unittest.mock import patch
 
 from engine import (
     Engine, Error, IMAGE, NAME, LABEL, PORT, BT_PORT, VERSION, IMAGE_VERSION,
-    confined, container_config, installed_version, settings_document,
-    WEBUI_SUBDIR, webui_password, webui_username,
+    LEGACY_SETTINGS_FOLDER, confined, container_config, installed_version,
+    settings_document, settings_path, WEBUI_SUBDIR, webui_password, webui_username,
 )
 from server import Server
 
@@ -197,6 +197,129 @@ class EngineTests(unittest.TestCase):
         }
         with self.assertRaises(Error):
             self.engine.check_directories()
+
+    def test_ensure_settings_keeps_user_values(self):
+        """用户改过的键在插件启动时不再被默认值覆盖（旧实现会把整个文件重写）。"""
+        self.engine.config = self._identity_config()
+        path = self.root / 'Config/settings.json'
+        path.write_text(json.dumps({
+            'cache-size-mb': 256, 'dht-enabled': False, 'peer-limit-global': 1000,
+            'speed-limit-up': 10240, 'ratio-limit': 20,
+        }), encoding='utf-8')
+        with patch('engine.os.chown', create=True):
+            changed = self.engine.ensure_settings()
+        saved = json.loads(path.read_text(encoding='utf-8'))
+        self.assertTrue(changed)
+        self.assertEqual(saved['cache-size-mb'], 256)
+        self.assertFalse(saved['dht-enabled'])
+        self.assertEqual(saved['peer-limit-global'], 1000)
+        self.assertEqual(saved['speed-limit-up'], 10240)
+        self.assertEqual(saved['ratio-limit'], 20)
+        # 缺失的键补上，容器需要的键仍然正确
+        self.assertEqual(saved['watch-dir'], '/watch')
+        self.assertEqual(saved['rpc-bind-address'], '0.0.0.0')
+        # 第二次启动没有可补的键，文件不再被动过
+        with patch('engine.os.chown', create=True):
+            self.assertFalse(self.engine.ensure_settings())
+        self.assertEqual(saved, json.loads(path.read_text(encoding='utf-8')))
+
+    def test_ensure_settings_repairs_container_bound_keys(self):
+        """rpc-enabled / rpc-port / rpc-bind-address 绑死在容器映射上，必须纠正。"""
+        self.engine.config = self._identity_config()
+        path = self.root / 'Config/settings.json'
+        path.write_text(json.dumps({
+            'rpc-enabled': False, 'rpc-port': 9999, 'rpc-bind-address': '[::]',
+            'cache-size-mb': 256,
+        }), encoding='utf-8')
+        with patch('engine.os.chown', create=True):
+            self.assertTrue(self.engine.ensure_settings())
+        saved = json.loads(path.read_text(encoding='utf-8'))
+        self.assertTrue(saved['rpc-enabled'])
+        self.assertEqual(saved['rpc-port'], PORT)
+        self.assertEqual(saved['rpc-bind-address'], '0.0.0.0')
+        self.assertEqual(saved['cache-size-mb'], 256)
+
+    def test_ensure_settings_moves_unreadable_file_aside(self):
+        """文件存在但解析不出 JSON 时先留一份，再写默认值，不直接抹掉用户内容。"""
+        self.engine.config = self._identity_config()
+        path = self.root / 'Config/settings.json'
+        path.write_text('{ not json', encoding='utf-8')
+        with patch('engine.os.chown', create=True):
+            self.assertTrue(self.engine.ensure_settings())
+        self.assertTrue((self.root / 'Config/settings.json.invalid').is_file())
+        saved = json.loads(path.read_text(encoding='utf-8'))
+        self.assertEqual(saved['download-dir'], '/downloads')
+
+    def test_legacy_native_settings_adopted_once(self):
+        """旧版 transmission-daemon/settings.json 里的可调项搬进生效文件，且只搬一次。"""
+        self.engine.config = self._identity_config()
+        legacy_dir = self.root / 'Config' / LEGACY_SETTINGS_FOLDER
+        legacy_dir.mkdir()
+        legacy = legacy_dir / 'settings.json'
+        legacy.write_text(json.dumps({
+            'cache-size-mb': 256, 'dht-enabled': False, 'peer-limit-global': 1000,
+            # 下面这些和容器挂载/端口/账号绑定，不能搬
+            'download-dir': '/tmp/mnt/sda1/pt', 'watch-dir': '/tmp/watch',
+            'incomplete-dir': '/root/Downloads',
+            'rpc-username': 'someone', 'rpc-password': '{old}', 'peer-port': 50000,
+            'umask': '000',
+        }), encoding='utf-8')
+        path = self.root / 'Config/settings.json'
+        path.write_text(json.dumps({'download-dir': '/downloads', 'watch-dir': '/watch'}),
+                        encoding='utf-8')
+        with patch('engine.os.chown', create=True):
+            self.assertTrue(self.engine.adopt_legacy_settings())
+        saved = json.loads(path.read_text(encoding='utf-8'))
+        self.assertEqual(saved['cache-size-mb'], 256)
+        self.assertFalse(saved['dht-enabled'])
+        self.assertEqual(saved['peer-limit-global'], 1000)
+        self.assertEqual(saved['download-dir'], '/downloads')
+        self.assertEqual(saved['watch-dir'], '/watch')
+        self.assertNotIn('incomplete-dir', saved)
+        self.assertNotIn('rpc-username', saved)
+        self.assertNotIn('rpc-password', saved)
+        self.assertNotEqual(saved.get('peer-port'), 50000)
+        self.assertNotEqual(saved.get('umask'), '000')
+        # 旧文件改名留在原处，之后不再重复搬
+        self.assertFalse(legacy.is_file())
+        self.assertTrue((legacy_dir / 'settings.json.legacy').is_file())
+        with patch('engine.os.chown', create=True):
+            self.assertFalse(self.engine.adopt_legacy_settings())
+        self.assertTrue(json.loads(self.engine.cfgfile.read_text(encoding='utf-8'))['settingsAdopted'])
+
+    def test_start_keeps_user_edited_settings(self):
+        """回归：用户调过的配置在 start()（含重建容器）之后必须原样保留。"""
+        self.engine.config = self._identity_config()
+        self.engine.credentialfile.write_text(json.dumps({'password': 'Example123!'}), encoding='utf-8')
+        path = self.root / 'Config/settings.json'
+        path.write_text(json.dumps({
+            'cache-size-mb': 512, 'dht-enabled': False, 'pex-enabled': False,
+            'peer-limit-global': 900, 'download-dir': '/downloads', 'watch-dir': '/watch',
+        }), encoding='utf-8')
+
+        def fake_api(method, route, body=None, timeout=30):
+            if route == '/containers/' + NAME + '/json':
+                return 404, b'{"message":"No such container"}'
+            if route.startswith('/images/create'):
+                return 200, b'{}\n'
+            return 201, b'{}'
+
+        with patch('engine.docker_api', side_effect=fake_api), \
+                patch('engine.os.chown', create=True), \
+                patch('engine.fetch_bytes', return_value=self._webui_archive()), \
+                patch('engine.tr_rpc_probe', return_value=True):
+            self.engine.start()
+
+        saved = json.loads(path.read_text(encoding='utf-8'))
+        self.assertEqual(saved['cache-size-mb'], 512)
+        self.assertFalse(saved['dht-enabled'])
+        self.assertFalse(saved['pex-enabled'])
+        self.assertEqual(saved['peer-limit-global'], 900)
+        self.assertEqual(saved['rpc-bind-address'], '0.0.0.0')
+
+    def test_settings_file_path_is_config_root(self):
+        """daemon 以 -g /config 启动，生效的文件只能是 <配置目录>/settings.json。"""
+        self.assertEqual(settings_path(self.root / 'Config'), self.root / 'Config/settings.json')
 
     def test_foreign_container_not_stopped(self):
         self.engine.config = {'owner': 'mine'}
@@ -666,6 +789,18 @@ class UiTests(unittest.TestCase):
         self.assertIn('.status-port', narrow)
         self.assertIn('.address-row code', narrow)
         self.assertIn('flex: 1 1 100%', narrow)
+
+    def test_ui_shows_effective_settings_path(self):
+        """daemon 真正读取的 settings.json 要显示在底部「说明与限制」里，不占服务卡片。"""
+        html = (self.web / 'index.html').read_text(encoding='utf-8')
+        self.assertIn('id="settingsFile"', html)
+        self.assertIn('id="legacyHint"', html)
+        self.assertNotIn('id="settingsHint"', html)
+        self.assertLess(html.index('id="serviceActions"'), html.index('id="notes"'))
+        self.assertGreater(html.index('id="settingsFile"'), html.index('id="notes"'))
+        script = (self.web / 'app.js').read_text(encoding='utf-8')
+        self.assertIn('current.settingsFile', script)
+        self.assertIn('current.legacySettings', script)
 
     def test_bundle_is_built_from_source(self):
         import base64
