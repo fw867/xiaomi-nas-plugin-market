@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "name": "小米智能存储应用商店",
-  "generatedAt": 1790397017,
+  "generatedAt": 1790400669,
   "repository": "fw867/xiaomi-nas-plugin-market",
   "branch": "main",
   "store": {
@@ -181,12 +181,12 @@
     {
       "id": "jellyfin",
       "name": "Jellyfin",
-      "version": "0.1.5",
+      "version": "0.1.6",
       "summary": "开源媒体服务器；配置/缓存/媒体持久化，HTTP 端口 8097 对局域网开放",
       "description": "官方 Jellyfin 镜像的受限容器；媒体目录、配置目录与缓存持久化，端口映射 8097/8920/7359，可与 Emby 同时安装。需要 Docker。",
-      "bundle": "apps/jellyfin-0.1.5.zip",
-      "sha256": "d728a4371cf7be0975512bdeaa5946f8ce6d72d04e754fab02410f2adbfafe93",
-      "size": 134201,
+      "bundle": "apps/jellyfin-0.1.6.zip",
+      "sha256": "9ac3948f396ed1fb1d0a617ae747e5ea7cc2fa2b4412e8cb631ff696f0883ad1",
+      "size": 134471,
       "icon": "apps/icons/jellyfin.png",
       "channel": "stable",
       "tags": [
@@ -218,12 +218,12 @@
     {
       "id": "disksleep",
       "name": "硬盘休眠",
-      "version": "0.1.3",
+      "version": "0.1.4",
       "summary": "与系统休眠开关联动，可自定义休眠时间并查看休眠/唤醒日志",
       "description": "系统设置的硬盘休眠只有开关且固定 30 分钟。本插件沿用同一个开关，用 systemd drop-in 覆盖 hdidle 的时长，并提供休眠/唤醒事件与 hdidle 原始日志。",
-      "bundle": "apps/disksleep-0.1.3.zip",
-      "sha256": "d7a276330e127990174b0a1e7ae82ebd946602d6a6f5797ca312e33718a48380",
-      "size": 284144,
+      "bundle": "apps/disksleep-0.1.4.zip",
+      "sha256": "dd5d999f37252ef16dee0f41f0ed294ca8186b7b41e68cc3783311ecb782d525",
+      "size": 284292,
       "icon": "apps/icons/disksleep.png",
       "channel": "stable",
       "tags": [
