@@ -3,6 +3,9 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="light dark">
+    <meta name="theme-color" content="#f5f7fa" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#141b26" media="(prefers-color-scheme: dark)">
     <title>硬盘休眠</title>
     <link rel="stylesheet" href="styles.css?v=0.1.0">
 </head>
@@ -22,10 +25,8 @@
                         <strong id="serviceState" role="status">正在读取</strong>
                         <small id="serviceInfo"></small>
                     </div>
-                    <div class="status-actions">
-                        <button id="toggleSleep" class="btn">开启休眠</button>
-                    </div>
                 </div>
+                <button id="toggleSleep" class="btn primary block">开启休眠</button>
                 <div class="status-timeout">
                     <span class="muted" id="timeoutState">休眠时间读取中…</span>
                     <button id="restoreOfficial" class="btn" hidden>恢复官方 30 分钟</button>
@@ -50,7 +51,30 @@
                 <div id="disks" class="disks"></div>
             </section>
 
-            <details class="card fold fold-card" id="logCard">
+            <details class="card fold-card" id="activityCard">
+                <summary>
+                    <span class="summary-text">谁在写盘</span>
+                    <span class="badge" id="activityBadge" hidden></span>
+                </summary>
+                <p class="muted">
+                    展开后插件才会扫硬盘目录、读系统索引事件库（两者都会短暂唤醒硬盘），
+                    收起或离开页面就停止扫描。分区速率是纯 <code>/proc</code> 读取，一直免费。
+                </p>
+                <div id="activityNotes" class="notes"></div>
+
+                <h3 class="sub">分区写入速率</h3>
+                <div id="activityMounts" class="rate-list"><p class="muted">采样中…</p></div>
+
+                <h3 class="sub">这段时间被改动的文件</h3>
+                <div id="activityWriters" class="file-list"><p class="muted">尚未扫描</p></div>
+
+                <h3 class="sub">系统索引记录到的改动</h3>
+                <div id="activityEvents" class="file-list"><p class="muted">尚未读取</p></div>
+
+                <button type="button" id="refreshActivity" class="btn block">重新扫描</button>
+            </details>
+
+            <details class="card fold-card" id="logCard">
                 <summary>休眠与唤醒日志</summary>
                 <div class="log-actions">
                     <div class="segmented" role="tablist">
@@ -62,13 +86,15 @@
                 <pre id="logBox" class="log">读取中…</pre>
             </details>
 
-            <details class="card fold fold-card" id="notes">
+            <details class="card fold-card" id="notes">
                 <summary>说明与限制</summary>
                 <ul>
                     <li>开关跟随系统设置里的「硬盘休眠」（uci <code>system.disk.hibernate</code>），两边改都会同步。</li>
                     <li>休眠时间通过 systemd drop-in 覆盖官方 <code>hdidle.service</code> 的 30 分钟；点「恢复官方 30 分钟」或卸载插件即回到官方行为。</li>
                     <li>事件日志来自插件每 20 秒查询一次 <code>hdparm -C</code> 的状态跃迁；该查询不会把硬盘唤醒。</li>
                     <li>「hdidle 原始」是守护进程写进系统日志的原文，可看到每次检测到的读写活动。</li>
+                    <li>「谁在写盘」只在展开时采集：本机内核未开 <code>CONFIG_TASK_IO_ACCOUNTING</code>，
+                        <code>iotop</code>/<code>pidstat -d</code> 都拿不到数据，所以改走「文件 mtime 增量 + 系统 fanotify 事件库」。</li>
                 </ul>
             </details>
 

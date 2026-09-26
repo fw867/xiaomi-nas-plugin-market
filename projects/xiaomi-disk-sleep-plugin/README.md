@@ -37,6 +37,106 @@ ExecStart=/bin/sh -c 'if [ "$(uci get system.disk.hibernate 2>/dev/null)" = "1" 
 
 日志按时间倒序显示，可一键复制。
 
+## 排查：到底是谁在写盘
+
+插件页面里的「谁在写盘」折叠面板已经内置了这套排查，不用登 SSH；
+仓库里另有一份等价的独立脚本，方便在没有插件页面的机器上跑。
+
+hdidle 的日志只报整盘计数（`reads: / writes:`），看不出是哪个分区、哪个文件、
+哪个插件的写入。系统里跑着索引、相册、媒体库等一堆会周期性写库的服务，加上
+**`/nas/sys` 建在 md0 上，而 md0 是跨两块盘的 RAID1**——任何一次写 `/nas/sys`
+都会被镜像到两块盘，所以「有东西写阵列」就等于「所有盘都醒着」。
+
+### 页面面板
+
+展开「谁在写盘」后依次显示：结论提示、分区写入速率、这段时间被改动的文件、
+系统索引记录到的改动。每条文件都能点一下复制路径。
+
+设计上刻意把开销压在展开之后：
+
+- **块设备速率**是纯 `/proc/diskstats` 读取，一直免费，状态卡顶部也会显示
+  「正在写盘：…」，不用展开就知道有没有活动。
+- **目录扫描与事件库读取只在面板展开时进行**，收起或离开页面 5 分钟后自动停止
+  ——插件自己不希望成为唤醒硬盘的那个程序。面板上也写明了这一点。
+
+### 独立脚本
+
+在 NAS 上以 root 运行（只读，不改配置、不重启服务）：
+
+```bash
+python3 tools/disk-activity-report.py                # 采样 60 秒
+python3 tools/disk-activity-report.py --seconds 180  # 现象很稀疏时加大窗口
+python3 tools/disk-activity-report.py --depth 8      # 加大目录扫描深度
+```
+
+报告分 6 节，逐层收敛：
+
+| 节 | 回答 | 手段 |
+| --- | --- | --- |
+| 1 | 哪块盘、哪个分区在写 | `/proc/diskstats` 增量 + `/proc/mdstat`，并检测 RAID1 成员盘写入量是否对称 |
+| 2 | 哪些文件被改动 | 挂载点遍历，对比文件大小与 mtime |
+| 3 | 系统索引记录到的文件改动 | 读 `findexd` 的 fanotify 事件库 `/nas/sys/findex/*.db` |
+| 4 | 谁持有可写句柄 | 扫 `/proc/*/fd` + `fdinfo` 的 O_WRONLY/O_RDWR |
+| 5 | 这些文件属于哪个插件 | 用容器 bind 挂载反查（含 `/nas/pool0` → `/nas/mnt/pa*` 路径别名） |
+| 6 | 结论 | 按字节数和事件次数排序的来源清单 |
+
+### 为什么不用 iotop / pidstat
+
+本机内核没有开 `CONFIG_TASK_IO_ACCOUNTING`，`/proc/<pid>/io` 不存在，
+所以 `iotop`、`pidstat -d` 拿不到任何数据（`pidstat` 本身装了，但只会显示 0）。
+`blktrace` 在这个受限 shell 里起不了线程。因此脚本改走「文件 mtime 增量 +
+系统 fanotify 事件库」这两条不依赖进程 I/O 统计的路。
+
+### 一个真实案例（本机实测）
+
+`/nas/sys` 上 findexd 的 4 个 WAL 库每 30 秒原地重写一次，RAID1 成员 `sda1`
+与 `sdb1` 的写入量逐秒完全相等；触发源是 **Jellyfin 容器自带的健康检查**
+（镜像内置 `HEALTHCHECK_URL=http://localhost:8096/health`，`Interval=30s`）：
+每打一次 `/health`，Jellyfin 就会重写一次 `jellyfin.db-shm`（32768 B），
+fanotify 立刻把这个事件交给 findexd，findexd 再写 `/nas/sys`——一秒钟后两块盘
+同时出现写入。手动验证：
+
+```bash
+curl -s --noproxy localhost -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8097/health
+stat -c '%y' "/nas/mnt/pa1/u3943892/data/下载/JellyfinConfig/data/jellyfin.db-shm"
+```
+
+连续 10 次请求，10 次都改写了 `jellyfin.db-shm`；换成静态路径 `/web/` 则不变。
+
+停掉容器做 A/B（各阶段平均写入，KB/s）：
+
+| 设备 | A 运行中 | B 已停止 | C 恢复后 |
+| --- | --- | --- | --- |
+| `md0`（`/nas/sys`，RAID1） | 22.2 | **5.6** | 33.9 |
+| `sda1` / `sdb1` | 22.5 / 22.5 | **5.6 / 5.6** | 34.3 / 34.3 |
+| `sdb2`（`/nas/mnt/pa1`） | 14.0 | 4.5 | 16.8 |
+| 索引 WAL 被改次数 | 10 次/60 秒 | **0 次/180 秒** | 24 次/60 秒 |
+| `jellyfin.db-shm` 被改次数 | 2 次/60 秒 | **0** | 2 次/60 秒 |
+
+Jellyfin 一停，findexd 的 4 个 WAL 库从「每分钟被改 10 次」变成「3 分钟一次都没改」——
+说明 findexd 是在**响应** Jellyfin 的文件事件，而不是自己在跑独立定时器。
+Jellyfin 约占 `/nas/sys` 写入的 **75%**。
+
+但要注意：停掉后仍有约 **5.6 KB/s** 的残留写入来自系统自身。hdidle 是「10 分钟内
+无任何读写」才休眠，只要残留还是每几分钟写一次，盘依然睡不下去。所以：
+
+- 想让盘真的休眠：得同时处理系统索引/相册/媒体库这些常驻写库的服务，
+  或者把它们的库挪出机械盘。
+- 只想减少无谓写入、延长盘寿命：修 Jellyfin 的健康检查就能砍掉约 75% 的
+  `/nas/sys` 写入（约 1.4 GB/天/盘）。
+
+结论：**硬盘不休眠不是休眠插件的问题**。插件只负责时长与日志；真正持续写盘的是
+系统索引服务和「被插件触发的文件改动」。单靠调大休眠时间没有用。
+
+现在已经由 Jellyfin / Emby 插件在建容器时关掉健康检查（见各自 README），
+上面这条 30 秒心跳不会再出现。
+
+## 页面
+
+移动端优先：按钮与输入框都不小于 44px，输入框 16px（iOS 聚焦不会放大页面），
+顶栏与提示条避让刘海/Home 指示条（`viewport-fit=cover` + `env(safe-area-inset-*)`），
+日志区最大高度跟着视口走，深色模式跟随系统。
+
 ## 安装
 
 从应用商店安装，或在仓库根目录执行：
@@ -53,24 +153,31 @@ python3 scripts/build_apps.py --only disksleep
 deploy/plugin-meta.json      插件元数据（INFO 来源）
 deploy/control               规范要求的控制脚本
 deploy/xiaomi-disk-sleep.service / .nginx.conf
-engine.py                    业务逻辑（uci、drop-in、采样、日志）
+engine.py                    业务逻辑（uci、drop-in、采样、日志、写盘诊断）
 server.py                    只监听 127.0.0.1:18160 的本地服务
-web/                         插件页面
+web/                         插件页面（移动端优先）
+tools/disk-activity-report.py  只读体检脚本（不随插件打包，仅在仓库里用）
 ```
+
+`tools/` 不在 `scripts/build_apps.py` 的 `runtime` 清单里，所以不会进安装包。
 
 | 接口 | 方法 | 说明 |
 | --- | --- | --- |
-| `/api/status` | GET | 开关、生效时长、硬盘状态、是否已接管 |
+| `/api/status` | GET | 开关、生效时长、硬盘状态、是否已接管、当前写入速率摘要 |
 | `/api/events?limit=200` | GET | 休眠/唤醒事件（倒序） |
 | `/api/hdidle-log?limit=200` | GET | hdidle 原始日志（倒序） |
+| `/api/activity` | GET | 「谁在写盘」：分区速率、RAID 镜像提示、改动文件、事件库记录、归属 |
 | `/api/switch` | POST | `{"enabled": true/false}` 写回系统开关 |
 | `/api/timeout` | POST | `{"minutes": 45}` 设置休眠时长 |
 | `/api/restore` | POST | 删除 drop-in，恢复官方 30 分钟 |
 
+`/api/activity?force=1` 会跳过扫描节流（面板上的「重新扫描」用它）。
+
 ## 限制
 
 - 时长范围 5–720 分钟，与官方一致按「无读写活动」计时，实际休眠还取决于是否有
-  程序持续访问硬盘（SMB、Docker 容器、媒体库扫描等都会唤醒）。
+  程序持续访问硬盘（SMB、Docker 容器、媒体库扫描等都会唤醒）。已经不休眠时，
+  先用上面的[体检脚本](#排查到底是谁在写盘)定位写入来源，调长时间没有用。
 - 事件采样间隔 20 秒，短于该间隔的休眠—唤醒不会单独记录。
 - 需要 root 权限写 `/etc/config` 与 `/etc/systemd/system`（服务 unit 已用
   `ReadWritePaths` 限定范围）。

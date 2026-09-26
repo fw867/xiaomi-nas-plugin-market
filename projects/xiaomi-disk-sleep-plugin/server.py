@@ -70,6 +70,15 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/api/hdidle-log':
             self.json_out(HTTPStatus.OK, {'ok': True, 'entries': engine.hdidle_log(self._limit(query))})
             return
+        if path == '/api/activity':
+            # 「谁在写盘」：块设备计数一直在采；目录扫描与事件库只在有人打开
+            # 本页时才做（见 engine.activity_tick）。面板的「重新扫描」带 force。
+            try:
+                force = (query.get('force') or [''])[0] == '1'
+                self.json_out(HTTPStatus.OK, engine.activity_snapshot(force=force))
+            except (subprocess.SubprocessError, OSError, ValueError) as error:
+                self.fail(HTTPStatus.INTERNAL_SERVER_ERROR, f'读取写入活动失败：{error}')
+            return
         if path in ('/', '/index.html'):
             self.serve_static('index.html')
             return
@@ -95,6 +104,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         mime = mimetypes.guess_type(candidate.name)[0] or 'application/octet-stream'
         cache = 'no-store' if candidate.suffix in ('.html', '.js', '.css') else 'public, max-age=300'
+        if candidate.name == 'index.html':
+            # 页脚显示真实安装版本，而不是占位符（安装目录名里带着版本号）
+            html = candidate.read_text(encoding='utf-8').replace('__PLUGIN_VERSION__', engine.installed_version())
+            self.send_payload(HTTPStatus.OK, html.encode('utf-8'), mime, cache)
+            return
         self.send_payload(HTTPStatus.OK, candidate.read_bytes(), mime, cache)
 
     def do_POST(self) -> None:

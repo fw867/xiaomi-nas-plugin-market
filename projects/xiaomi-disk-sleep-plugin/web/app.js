@@ -3,6 +3,8 @@ const $ = (id) => document.getElementById(id);
 let state = null;
 let logMode = 'events';
 let polling = false;
+let activityOpen = false;
+let activityBusy = false;
 let toastTimer = null;
 
 // Windows 客户端 location 可能带盘符（/D:/plugin/...），相对 fetch 会 400。
@@ -73,6 +75,28 @@ function formatTime(seconds) {
   return `${date.getMonth() + 1}/${date.getDate()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+function formatRate(kbps) {
+  const value = Number(kbps) || 0;
+  if (value >= 1024) return `${(value / 1024).toFixed(2)} MB/s`;
+  return `${value.toFixed(1)} KB/s`;
+}
+
+function element(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined && text !== null) node.textContent = text;
+  return node;
+}
+
+async function copyText(text, okMessage) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast(okMessage);
+  } catch {
+    toast('当前客户端不支持剪贴板，请长按选择复制');
+  }
+}
+
 const EVENT_LABEL = { standby: '进入休眠', wake: '被唤醒', config: '修改设置', switch: '开关变更' };
 
 function render(current) {
@@ -82,7 +106,24 @@ function render(current) {
   const parts = [`系统开关 ${current.appSwitch ? '开' : '关'}`];
   parts.push(current.hdidleActive ? '守护运行中' : '守护未运行');
   if (current.effectiveMinutes) parts.push(`生效 ${current.effectiveMinutes} 分钟`);
+  const activity = current.activity || {};
+  if (activity.hasWrites && activity.summary) parts.push(`正在写盘：${activity.summary}`);
   $('serviceInfo').textContent = parts.join(' · ');
+
+  const badge = $('activityBadge');
+  if (activity.sampling) {
+    badge.hidden = false;
+    badge.className = 'badge';
+    badge.textContent = '采样中';
+  } else if (activity.hasWrites) {
+    badge.hidden = false;
+    badge.className = 'badge';
+    badge.textContent = '有写入';
+  } else {
+    badge.hidden = false;
+    badge.className = 'badge quiet';
+    badge.textContent = '安静';
+  }
 
   $('toggleSleep').textContent = current.appSwitch ? '关闭休眠' : '开启休眠';
 
@@ -110,15 +151,15 @@ function render(current) {
   $('disks').replaceChildren(...(current.disks.length ? current.disks.map((disk) => {
     const article = document.createElement('article');
     article.className = 'disk';
-    article.innerHTML = `
-      <div class="disk-head">
-        <strong>${disk.device.toUpperCase()}</strong>
-        <em class="${disk.standby ? 'is-standby' : 'is-active'}">${disk.standby ? '休眠中' : '活动'}</em>
-      </div>
-      <p class="muted">${disk.model || '型号未知'} · ${disk.state}</p>
-      <p class="muted">最近休眠 ${formatTime(disk.lastStandby)} · 最近唤醒 ${formatTime(disk.lastWake)}</p>`;
+    const head = element('div', 'disk-head');
+    head.append(element('strong', '', disk.device.toUpperCase()));
+    head.append(element('em', disk.standby ? 'is-standby' : 'is-active', disk.standby ? '休眠中' : '活动'));
+    article.append(head);
+    article.append(element('p', 'muted', `${disk.model || '型号未知'} · ${disk.state}`));
+    article.append(element('p', 'muted',
+      `最近休眠 ${formatTime(disk.lastStandby)} · 最近唤醒 ${formatTime(disk.lastWake)}`));
     return article;
-  }) : [Object.assign(document.createElement('p'), { className: 'muted', textContent: '未检测到硬盘' })]));
+  }) : [element('p', 'muted', '未检测到硬盘')]));
 }
 
 async function refresh() {
@@ -131,6 +172,101 @@ async function refresh() {
     showError(error.message);
   } finally {
     polling = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 谁在写盘
+// ---------------------------------------------------------------------------
+
+function renderNotes(notes) {
+  const box = $('activityNotes');
+  if (!notes || !notes.length) { box.replaceChildren(); return; }
+  box.replaceChildren(...notes.map((text) => {
+    const calm = /采样中|本来就应该能休眠|已经过期/.test(text);
+    return element('div', calm ? 'note calm' : 'note', text);
+  }));
+}
+
+function renderMounts(mounts, disks, windowSeconds) {
+  const box = $('activityMounts');
+  if (!mounts || !mounts.length) {
+    box.replaceChildren(element('p', 'muted file-empty', '没有检测到机械盘挂载点'));
+    return;
+  }
+  const rows = mounts.map((mount) => {
+    const row = element('article', mount.busy ? 'rate busy' : 'rate');
+    const head = element('div', 'rate-head');
+    head.append(element('span', 'rate-name', mount.mountpoint));
+    if (mount.array) {
+      head.append(element('span', 'rate-chip raid', `${mount.array} ${mount.level}：${mount.members.join('+')}`));
+    }
+    row.append(head);
+    row.append(element('span', 'rate-value', formatRate(mount.writeKBps)));
+    row.append(element('span', 'rate-meta muted',
+      `${mount.device} · 读 ${formatRate(mount.readKBps)}`
+      + (mount.mirrored ? ' · RAID1 镜像写入，每块成员盘都要写一次' : '')));
+    return row;
+  });
+  if (disks && disks.length) {
+    rows.push(element('p', 'muted file-empty',
+      `整盘合计：${disks.map((d) => `${d.device} 写 ${formatRate(d.writeKBps)}`).join(' · ')}`
+      + (windowSeconds ? `（采样窗口 ${windowSeconds} 秒）` : '')));
+  }
+  box.replaceChildren(...rows);
+}
+
+function renderFiles(box, items, emptyText, metaOf) {
+  if (!items || !items.length) {
+    box.replaceChildren(element('p', 'muted file-empty', emptyText));
+    return;
+  }
+  box.replaceChildren(...items.map((item) => {
+    const row = element('button', 'file');
+    row.type = 'button';
+    row.append(element('span', 'file-path', item.path));
+    row.append(element('span', 'file-meta', metaOf(item)));
+    row.addEventListener('click', () => copyText(item.path, '路径已复制'));
+    return row;
+  }));
+}
+
+function renderActivity(data) {
+  renderNotes(data.notes);
+  renderMounts(data.mounts, data.disks, data.windowSeconds);
+  renderFiles($('activityWriters'), data.writers,
+    data.writersAt ? '这段时间没有扫到被改动的文件（写入可能只在文件系统元数据上）' : '尚未扫描',
+    (item) => {
+      const bits = [];
+      if (item.kind === 'new') bits.push('新增');
+      else if (item.delta) bits.push(`${item.delta > 0 ? '+' : ''}${item.delta} B`);
+      else bits.push('mtime 变化');
+      if (item.owner) bits.push(item.owner);
+      if (item.heldBy && item.heldBy.length) bits.push(`被 ${item.heldBy.join('、')} 打开`);
+      return bits.join(' · ');
+    });
+  const eventsEmpty = data.eventsNote || '系统索引还没有记录到文件改动';
+  renderFiles($('activityEvents'), data.events,
+    eventsEmpty,
+    (item) => {
+      const bits = [`最近 300 条记录里出现 ${item.count} 次`];
+      if (item.owner) bits.push(item.owner);
+      return bits.join(' · ');
+    });
+}
+
+async function loadActivity(force) {
+  if (activityBusy) return;
+  activityBusy = true;
+  const button = $('refreshActivity');
+  button.disabled = true;
+  try {
+    renderActivity(await call(force ? 'activity?force=1' : 'activity'));
+  } catch (error) {
+    $('activityNotes').replaceChildren(element('div', 'note', error.message));
+  } finally {
+    activityBusy = false;
+    button.disabled = false;
   }
 }
 
@@ -168,7 +304,11 @@ async function loadLog() {
 }
 
 $('back').onclick = leavePlugin;
-$('refresh').onclick = () => { refresh(); if ($('logCard').open) loadLog(); };
+$('refresh').onclick = () => {
+  refresh();
+  if ($('logCard').open) loadLog();
+  if (activityOpen) loadActivity(true);
+};
 $('saveMinutes').onclick = () => saveMinutes($('minutes').value);
 $('toggleSleep').onclick = async () => {
   const target = !state.appSwitch;
@@ -195,16 +335,21 @@ document.querySelectorAll('.seg').forEach((button) => {
   });
 });
 $('logCard').addEventListener('toggle', () => { if ($('logCard').open) loadLog(); });
+// 面板只在展开时才采集：收起后插件就不再扫目录、不再读事件库。
+$('activityCard').addEventListener('toggle', () => {
+  activityOpen = $('activityCard').open;
+  if (activityOpen) loadActivity(true);
+});
+$('refreshActivity').onclick = () => loadActivity(true);
 $('copyLog').onclick = async () => {
   const text = $('logBox').textContent;
   if (!text || text === '读取中…') { toast('暂无可复制的日志'); return; }
-  try {
-    await navigator.clipboard.writeText(text);
-    toast('日志已复制');
-  } catch {
-    toast('当前客户端不支持剪贴板，请长按选择复制');
-  }
+  await copyText(text, '日志已复制');
 };
 
 refresh();
-setInterval(() => { if (!document.hidden) refresh(); }, 10000);
+setInterval(() => {
+  if (document.hidden) return;
+  refresh();
+  if (activityOpen) loadActivity();
+}, 10000);
