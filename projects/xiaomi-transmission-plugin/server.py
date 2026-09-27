@@ -303,7 +303,10 @@ class Handler(BaseHTTPRequestHandler):
             'transfer': {
                 'dlspeed': int(stats.get('downloadSpeed') or 0),
                 'upspeed': int(stats.get('uploadSpeed') or 0),
+                # current-stats = daemon 本次启动以来的累计（不是历史总量）
                 'downloaded': int(cur.get('downloadedBytes') or 0),
+                'uploaded': int(cur.get('uploadedBytes') or 0),
+                'secondsActive': int(cur.get('secondsActive') or 0),
             },
         }
 
@@ -362,6 +365,10 @@ class Handler(BaseHTTPRequestHandler):
             html = html.replace('__CSRF_TOKEN__', self.sign('csrf:' + token) if token else '')
             html = html.replace('__PLUGIN_VERSION__', installed_version())
             return self.send(200, html.encode(), 'text/html; charset=utf-8')
+        if route.path == '/widget.html':
+            # 首页小组件用的极简统计页：不带会话令牌，也不含任何密钥，
+            # 页面自己再调 /api/torrents 取数（走同一条客户端校验链路）。
+            return self.send(200, (WEB / 'widget.html').read_bytes(), 'text/html; charset=utf-8')
         if route.path in ('/app.bundle.js', '/styles.css'):
             file = WEB / route.path[1:]
             return self.send(200, file.read_bytes(), mimetypes.guess_type(file.name)[0])

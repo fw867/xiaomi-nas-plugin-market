@@ -845,6 +845,81 @@ class PortPublishTests(unittest.TestCase):
         self.assertEqual(data['ports']['missing'], [])
 
 
+class WidgetPageTests(unittest.TestCase):
+    """首页小组件用的极简统计页：不带会话令牌也要能取，页面自己再调 /api/torrents。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name) / 'root'
+        root.mkdir()
+        self.engine = Engine(Path(self.tmp.name) / 'data', root, dev=True)
+        self.server = Server(('127.0.0.1', 0), self.engine, 'u123456', dev=True)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self._close)
+
+    def _close(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join()
+
+    def get(self, route):
+        conn = http.client.HTTPConnection('127.0.0.1', self.server.server_port)
+        try:
+            conn.request('GET', route)
+            response = conn.getresponse()
+            return response.status, dict(response.getheaders()), response.read()
+        finally:
+            conn.close()
+
+    def test_widget_page_is_public(self):
+        status, headers, body = self.get('/widget.html')
+        self.assertEqual(status, 200)
+        self.assertIn('text/html', headers.get('Content-Type', ''))
+        text = body.decode('utf-8')
+        self.assertIn('下载', text)
+        self.assertIn('做种', text)
+
+    def test_widget_page_has_no_secrets(self):
+        _, _, body = self.get('/widget.html')
+        text = body.decode('utf-8')
+        self.assertNotIn('__SESSION_TOKEN__', text)
+        self.assertNotIn('__CSRF_TOKEN__', text)
+        self.assertNotIn('csrf-token', text)
+
+    def test_widget_page_reads_the_stats_api(self):
+        _, _, body = self.get('/widget.html')
+        text = body.decode('utf-8')
+        self.assertIn("api/torrents", text)
+        for field in ('dlspeed', 'upspeed', 'downloaded', 'uploaded'):
+            with self.subTest(field=field):
+                self.assertIn(field, text)
+
+    def test_still_requires_auth_for_api(self):
+        status, _, _ = self.get('/api/torrents')
+        self.assertEqual(status, 401)
+
+    def test_widget_page_file_ships_with_the_plugin(self):
+        page = Path(__file__).resolve().parents[1] / 'web' / 'widget.html'
+        self.assertTrue(page.is_file())
+
+
+class WidgetSourceTests(unittest.TestCase):
+    """统计页只在仓库源码里维护，部署时随 web/ 一起走。"""
+
+    def test_transfer_reports_session_totals(self):
+        source = (Path(__file__).resolve().parents[1] / 'server.py').read_text(encoding='utf-8')
+        self.assertIn("'uploaded': int(cur.get('uploadedBytes')", source)
+        self.assertIn("'secondsActive': int(cur.get('secondsActive')", source)
+
+    def test_widget_page_counts_torrent_states(self):
+        page = (Path(__file__).resolve().parents[1] / 'web' / 'widget.html').read_text(encoding='utf-8')
+        # 3/4 下载中与排队下载，5/6 做种中与排队做种
+        self.assertIn('status === 4 || status === 3', page)
+        self.assertIn('status === 6 || status === 5', page)
+
+
 class UiTests(unittest.TestCase):
     def setUp(self):
         self.web = Path(__file__).resolve().parents[1] / 'web'

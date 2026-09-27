@@ -88,6 +88,22 @@ transmission: 入站端口未监听 51413/tcp，重启容器修复
 仍然缺的话，插件页面的端口那一行下方会显示「入站端口未发布：…」，接口
 `/api/status` 的 `ports` 字段里也有 `published` / `missing` / `repaired`。
 
+## 小组件统计页
+
+`web/widget.html` 是一个**给 app 首页小组件用的极简统计页**：下载/上传实时速度、
+做种与下载中的任务数、以及 daemon 本次启动以来的累计上传/下载量。特点：
+
+- 背景透明、字大、内容少，3 秒自刷新（页面隐藏时不刷）
+- 不带会话令牌，也不需要密钥；页面自己调同目录的 `api/torrents` 取数
+  （走的是同一条客户端校验链路，所以仍然只有通过 app 才能访问）
+- `/api/torrents` 的 `transfer` 段为此补充了 `uploaded` 与 `secondsActive`
+  （`downloaded`/`uploaded` 取的是 `current-stats`，即本次启动以来，不是历史总量）
+
+**能不能挂到 app 首页**：registry 的 `frontend.widget` 字段客户端是认的——实测把
+widget 声明写进去后，app 的「小组件 → 应用」里会出现 `Transmission 下载`，点开能看到
+对应的卡片可以添加。但卡片内容是否由 `url` 渲染成网页、还是只能由客户端原生绘制，
+官方只给了原生那一种先例（`mediacenter` 的两张卡片 `url` 都是空串），还在验证中。
+
 ## 镜像
 
 - `lscr.io/linuxserver/transmission@sha256:1a12fef3c89eca48b7be9e7d36b17b4eb4e1bcf5e1ee7fbf372e3a38b562939d`
