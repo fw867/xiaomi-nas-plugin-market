@@ -20,7 +20,7 @@ from engine import (
     Engine, Error, IMAGE, NAME, LABEL, PORT, BT_PORT, VERSION, IMAGE_VERSION,
     LEGACY_SETTINGS_FOLDER, confined, container_config, installed_version,
     settings_document, settings_path, WEBUI_SUBDIR, webui_password, webui_username,
-    FORWARD_RETRY_SECONDS,
+    FORWARD_RETRY_SECONDS, MEMORY_LIMIT, CPU_LIMIT, WEBUI_HOME,
 )
 import engine  # noqa: E402  （按模块打桩，例如 engine.PROC_NET）
 import upnp  # noqa: E402
@@ -113,7 +113,8 @@ class EngineTests(unittest.TestCase):
             '/watch': '/nas/Watch',
         })
         self.assertFalse(any('docker.sock' in s for s in mounts.values()))
-        self.assertEqual(host['Memory'], 512 * 1024 * 1024)
+        self.assertEqual(host['Memory'], MEMORY_LIMIT)                    # 2 GiB，见 MEMORY_LIMIT
+        self.assertEqual(host['MemorySwap'], MEMORY_LIMIT)
         self.assertEqual(host['SecurityOpt'], ['no-new-privileges:true'])
 
     def test_legacy_native_settings_ignored(self):
@@ -901,6 +902,110 @@ class PortPublishTests(unittest.TestCase):
             data = self.engine.snapshot()
         self.assertFalse(data['running'])
         self.assertEqual(data['ports']['missing'], [])
+
+
+class ResourceLimitTests(unittest.TestCase):
+    """内存上限 512 MiB → 2 GiB：太小会被内核 OOM 杀掉（见 MEMORY_LIMIT 的说明）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name) / 'root'
+        self.root.mkdir()
+        self.engine = Engine(Path(self.tmp.name) / 'data', self.root)
+
+    def _config(self):
+        return {'uid': 1, 'gid': 1, 'owner': 'tok', 'username': 'admin',
+                'config': '/c', 'download': '/d', 'watch': '/w'}
+
+    def test_container_config_asks_for_two_gib(self):
+        cfg = container_config(self._config(), Path('/data'), 'Secret123!')
+        self.assertEqual(MEMORY_LIMIT, 2 * 1024 ** 3)
+        self.assertEqual(cfg['HostConfig']['Memory'], MEMORY_LIMIT)
+        self.assertEqual(cfg['HostConfig']['MemorySwap'], MEMORY_LIMIT)
+        self.assertEqual(cfg['HostConfig']['NanoCpus'], CPU_LIMIT)
+
+    def test_old_memory_limit_is_detected_as_stale(self):
+        ok = {'Memory': MEMORY_LIMIT, 'MemorySwap': MEMORY_LIMIT, 'NanoCpus': CPU_LIMIT}
+        old = {'Memory': 512 * 1024 * 1024, 'MemorySwap': 512 * 1024 * 1024,
+               'NanoCpus': CPU_LIMIT}
+        cases = [
+            ({'HostConfig': ok}, False),
+            ({'HostConfig': old}, True),
+            ({'HostConfig': {'Memory': MEMORY_LIMIT, 'MemorySwap': MEMORY_LIMIT,
+                             'NanoCpus': 10 ** 9}}, True),
+            ({'HostConfig': {}}, True),
+            ({}, True),
+        ]
+        for item, expected in cases:
+            with self.subTest(item=item):
+                self.assertEqual(Engine.resources_stale(item), expected)
+
+    def test_start_recreates_container_with_old_memory_limit(self):
+        self.engine.config = {'owner': 'tok', 'username': 'admin', 'uid': 1, 'gid': 1,
+                              'config': '/c', 'download': '/d', 'watch': '/w'}
+        item = {'Config': {'Labels': {LABEL: 'tok'},
+                           'Env': ['TRANSMISSION_WEB_HOME=' + WEBUI_HOME]},
+                'HostConfig': {'Memory': 512 * 1024 * 1024, 'MemorySwap': 512 * 1024 * 1024,
+                               'NanoCpus': CPU_LIMIT},
+                'State': {'Running': True}}
+        calls = []
+
+        def fake_api(method, path, body=None, timeout=30):
+            calls.append((method, path, body))
+            return 200, b'{}'
+
+        with patch.object(self.engine, 'check_directories'), \
+                patch.object(self.engine, 'adopt_legacy_settings', return_value=False), \
+                patch.object(self.engine, 'ensure_settings', return_value=False), \
+                patch.object(self.engine, 'ensure_webui'), \
+                patch.object(self.engine, 'owned', return_value=item), \
+                patch.object(self.engine, 'pull'), \
+                patch.object(self.engine, 'saved_password', return_value='Secret123!'), \
+                patch.object(self.engine, 'ensure_published_ports'), \
+                patch.object(self.engine, 'ensure_port_forward'), \
+                patch('engine.docker_api', side_effect=fake_api), \
+                patch('engine.tr_rpc_probe', return_value=True), \
+                patch('engine.atomic_json'):
+            self.engine.start()
+        paths = [path for _, path, _ in calls]
+        self.assertIn('/containers/' + NAME + '/stop?t=15', paths)
+        self.assertIn('/containers/' + NAME + '?force=1&v=1', paths)      # DELETE
+        self.assertIn('/containers/create?name=' + NAME, paths)
+        create = next(body for _, path, body in calls if path.startswith('/containers/create'))
+        self.assertEqual(create['HostConfig']['Memory'], MEMORY_LIMIT)
+        # 必须先删再建，否则 create 会撞名
+        self.assertLess(paths.index('/containers/' + NAME + '?force=1&v=1'),
+                        paths.index('/containers/create?name=' + NAME))
+
+    def test_start_keeps_container_with_matching_limits(self):
+        self.engine.config = {'owner': 'tok', 'username': 'admin', 'uid': 1, 'gid': 1,
+                              'config': '/c', 'download': '/d', 'watch': '/w'}
+        item = {'Config': {'Labels': {LABEL: 'tok'},
+                           'Env': ['TRANSMISSION_WEB_HOME=' + WEBUI_HOME]},
+                'HostConfig': {'Memory': MEMORY_LIMIT, 'MemorySwap': MEMORY_LIMIT,
+                               'NanoCpus': CPU_LIMIT, 'Mounts': []},
+                'State': {'Running': True}}
+        calls = []
+
+        def fake_api(method, path, body=None, timeout=30):
+            calls.append((method, path, body))
+            return 200, b'{}'
+
+        with patch.object(self.engine, 'check_directories'), \
+                patch.object(self.engine, 'adopt_legacy_settings', return_value=False), \
+                patch.object(self.engine, 'ensure_settings', return_value=False), \
+                patch.object(self.engine, 'ensure_webui'), \
+                patch.object(self.engine, 'owned', return_value=item), \
+                patch.object(self.engine, 'ensure_published_ports'), \
+                patch.object(self.engine, 'ensure_port_forward'), \
+                patch('engine.docker_api', side_effect=fake_api), \
+                patch('engine.tr_rpc_probe', return_value=True), \
+                patch('engine.atomic_json'):
+            self.engine.start()
+        paths = [path for _, path, _ in calls]
+        self.assertEqual(paths, [])                                       # 不该动容器
+        self.assertTrue(self.engine.config['enabled'])                    # 只在内存里标记启用
 
 
 class PackagingTests(unittest.TestCase):

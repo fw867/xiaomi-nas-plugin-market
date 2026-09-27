@@ -34,6 +34,12 @@ PROC_NET = Path(os.environ.get('PROC_NET', '/proc/net'))
 PUBLISHED_PORTS = (('tcp', PORT), ('tcp', BT_PORT), ('udp', BT_PORT))
 # 路由器映射失败后隔多久再试（路由器重启、UPnP 刚打开这类情况能自愈）
 FORWARD_RETRY_SECONDS = 1800
+# 容器资源上限。内存原来是 512 MiB，实测做种多的时候 transmission-daemon 的 RSS
+# 会涨到 440 MiB 以上，撞上限就被内核 OOM 杀掉、由 s6 反复拉起（dmesg 里 5 分钟内
+# 9 次 "Memory cgroup out of memory: Killed process ... (transmission-da)"），
+# 所以放宽到 2 GiB。MemorySwap 与 Memory 相同＝不额外给 swap。
+MEMORY_LIMIT = 2048 * 1024 * 1024
+CPU_LIMIT = 1500000000
 
 
 class Error(RuntimeError):
@@ -354,9 +360,9 @@ def container_config(config, data, password):
         'Labels': {LABEL: config['owner']},
         'HostConfig': {
             'RestartPolicy': {'Name': 'no'},
-            'Memory': 512 * 1024 * 1024,
-            'MemorySwap': 512 * 1024 * 1024,
-            'NanoCpus': 1500000000,
+            'Memory': MEMORY_LIMIT,
+            'MemorySwap': MEMORY_LIMIT,
+            'NanoCpus': CPU_LIMIT,
             'PidsLimit': 128,
             'SecurityOpt': ['no-new-privileges:true'],
             'LogConfig': {'Type': 'json-file', 'Config': {'max-size': '5m', 'max-file': '2'}},
@@ -790,6 +796,18 @@ class Engine:
         env = item.get('Config', {}).get('Env') or []
         return ('TRANSMISSION_WEB_HOME=' + WEBUI_HOME) not in env
 
+    @staticmethod
+    def resources_stale(item):
+        """容器的内存/CPU 上限和现在要求的不一致——只能在创建时设，得重建。
+
+        512 MiB 的时代 transmission-daemon 会撞上限被 OOM 杀掉（见 MEMORY_LIMIT
+        的说明），旧容器必须重建才会拿到新的上限。
+        """
+        host = item.get('HostConfig') or {}
+        return (host.get('Memory') != MEMORY_LIMIT
+                or host.get('MemorySwap') != MEMORY_LIMIT
+                or host.get('NanoCpus') != CPU_LIMIT)
+
     def test_port(self):
         """调 Transmission 的 port-test，判断 BT 端口是否对公网开放。
 
@@ -826,8 +844,8 @@ class Engine:
         repaired = self.ensure_settings() or adopted
         self.ensure_webui()
         item = self.owned()
-        if item and self.webui_env_stale(item):
-            # 控制台路径变了：环境变量只在建容器时生效，必须重建
+        if item and (self.webui_env_stale(item) or self.resources_stale(item)):
+            # 控制台路径、或内存/CPU 上限变了：这两样都只在建容器时生效，必须重建
             if item.get('State', {}).get('Running'):
                 self._call('POST', '/containers/' + NAME + '/stop?t=15', timeout=90)
             self._call('DELETE', '/containers/' + NAME + '?force=1&v=1', timeout=60)
