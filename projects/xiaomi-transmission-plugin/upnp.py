@@ -40,6 +40,11 @@ class UpnpError(RuntimeError):
     pass
 
 
+def _udp_socket():
+    """单独一层是为了可测：直接替换 socket 模块的 socket 会打到别的线程。"""
+    return socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+
 def lan_address():
     """本机在局域网的地址（按默认路由探测，避免拿到 docker0 的地址）。"""
     probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -84,7 +89,7 @@ def ssdp_location(timeout=SSDP_TIMEOUT):
     """SSDP 找 IGD，返回 (描述文件地址, 应答方地址)。"""
     message = ('M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\n'
                'MAN: "ssdp:discover"\r\nMX: 2\r\nST: %s\r\n\r\n' % SSDP_ST)
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock = _udp_socket()
     sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
     try:
         sock.sendto(message.encode(), SSDP_ADDRESS)
@@ -222,7 +227,7 @@ def natpmp_map(gateway_address, internal_port, external_port, protocol='tcp', li
     """
     opcode = 2 if protocol.lower() == 'tcp' else 1
     packet = struct.pack('!BBHHHI', 0, opcode, 0, internal_port, external_port, lifetime)
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock = _udp_socket()
     sock.settimeout(NATPMP_TIMEOUT)
     try:
         sock.sendto(packet, (gateway_address, NATPMP_PORT))

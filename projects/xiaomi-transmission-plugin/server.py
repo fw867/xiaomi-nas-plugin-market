@@ -528,13 +528,14 @@ def lan_ip():
         probe.close()
 
 
-def forward_keeper(engine):
+def forward_keeper(engine, interval=60, sleep=time.sleep):
     """后台定时器：NAT-PMP 的映射有租期，到期前重建；失败的定期重试。
 
     只做这两件小事，跑在守护线程里，出错也不能把插件服务带崩。
+    sleep 做成参数是为了可测：打桩全局的 time.sleep 会牵连其它线程。
     """
     while True:
-        time.sleep(60)
+        sleep(interval)
         try:
             engine.keep_forward_alive()
         except Exception:                                    # noqa: BLE001 定时器不能死

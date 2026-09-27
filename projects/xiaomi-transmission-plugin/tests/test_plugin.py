@@ -634,9 +634,8 @@ class HTTPTests(unittest.TestCase):
             raise RuntimeError('路由器抽风')
 
         stub = types.SimpleNamespace(keep_forward_alive=boom)
-        with patch('server.time.sleep', side_effect=fake_sleep):
-            with self.assertRaises(KeyboardInterrupt):
-                forward_keeper(stub)
+        with self.assertRaises(KeyboardInterrupt):
+            forward_keeper(stub, sleep=fake_sleep)
         self.assertGreaterEqual(len(ticks), 3)
 
     def test_forward_endpoint_needs_csrf(self):
@@ -1028,7 +1027,7 @@ class UpnpTests(unittest.TestCase):
         # 16 字节应答：末尾 4 字节是路由器给的租期
         reply = struct.pack('!BBHIHHI', 0, 130, 0, 100, 51413, 51413, 3600)
         sock = _FakeSocket([reply])
-        with patch.object(upnp.socket, 'socket', return_value=sock):
+        with patch.object(upnp, '_udp_socket', return_value=sock):
             ok, detail, lease = upnp.natpmp_map('192.168.1.1', 51413, 51413, 'tcp')
         self.assertTrue(ok)
         self.assertIn('51413', detail)
@@ -1038,21 +1037,21 @@ class UpnpTests(unittest.TestCase):
 
     def test_natpmp_success_without_lease_field(self):
         reply = struct.pack('!BBHIHH', 0, 130, 0, 100, 51413, 51413)
-        with patch.object(upnp.socket, 'socket', return_value=_FakeSocket([reply])):
+        with patch.object(upnp, '_udp_socket', return_value=_FakeSocket([reply])):
             ok, _, lease = upnp.natpmp_map('192.168.1.1', 51413, 51413, 'tcp')
         self.assertTrue(ok)
         self.assertEqual(lease, 7200)                              # 应答没带租期就用请求值
 
     def test_natpmp_refused(self):
         reply = struct.pack('!BBHIHH', 0, 130, 3, 100, 51413, 0)
-        with patch.object(upnp.socket, 'socket', return_value=_FakeSocket([reply])):
+        with patch.object(upnp, '_udp_socket', return_value=_FakeSocket([reply])):
             ok, detail, lease = upnp.natpmp_map('192.168.1.1', 51413, 51413, 'tcp')
         self.assertFalse(ok)
         self.assertIn('网络故障', detail)
         self.assertEqual(lease, 0)
 
     def test_natpmp_timeout(self):
-        with patch.object(upnp.socket, 'socket', return_value=_FakeSocket([])):
+        with patch.object(upnp, '_udp_socket', return_value=_FakeSocket([])):
             ok, detail, lease = upnp.natpmp_map('192.168.1.1', 51413, 51413, 'udp')
         self.assertFalse(ok)
         self.assertIn('没有响应', detail)
