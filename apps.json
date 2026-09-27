@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "name": "小米智能存储应用商店",
-  "generatedAt": 1790479071,
+  "generatedAt": 1790480543,
   "repository": "fw867/xiaomi-nas-plugin-market",
   "branch": "main",
   "store": {
@@ -126,12 +126,12 @@
     {
       "id": "transmission",
       "name": "Transmission 下载",
-      "version": "0.1.25",
+      "version": "0.1.26",
       "summary": "Docker 版 BT 下载：可设置下载/配置/监控目录与 WebUI 账号；端口 9091、51413",
       "description": "Docker 容器运行 LinuxServer Transmission；配置页可设置下载目录、配置文件夹目录、监控目录与 WebUI 用户名密码。需要 Docker。",
-      "bundle": "apps/transmission-0.1.25.zip",
-      "sha256": "8ff9f9bf8c30b36bcbb63e5b0037b99947f18b549bb090b5897849d90a886630",
-      "size": 854680,
+      "bundle": "apps/transmission-0.1.26.zip",
+      "sha256": "faeefcc15e804666b2079788bcc5555e4e258173b2980099ca2c6e25ffb1eb7c",
+      "size": 859888,
       "icon": "apps/icons/transmission.png",
       "channel": "stable",
       "tags": [
