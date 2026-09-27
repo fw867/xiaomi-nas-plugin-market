@@ -585,6 +585,19 @@ class HTTPTests(unittest.TestCase):
     def test_csrf_required(self):
         self.assertEqual(self.request('POST', '/api/service/stop', {}, {'X-TR-Session': self.token})[0], 403)
 
+    def test_status_carries_the_glance_stats(self):
+        """首页小组件做不成，这几个数字就放在插件页顶部；取不到时给 null 而不是报错。"""
+        code, body = self.request('GET', '/api/status', headers=self.auth())
+        self.assertEqual(code, 200)
+        data = json.loads(body)
+        self.assertIn('transfer', data)
+        for key in ('dlspeed', 'upspeed', 'downloaded', 'uploaded', 'seeding', 'downloading'):
+            with self.subTest(key=key):
+                self.assertIn(key, data['transfer'])
+        # 预览模式没有 Transmission 账号，取不到就全为 null
+        self.assertIsNone(data['transfer']['dlspeed'])
+        self.assertIsNone(data['transfer']['seeding'])
+
     def test_status_no_secrets(self):
         code, body = self.request('GET', '/api/status', headers=self.auth())
         self.assertEqual(code, 200)
@@ -845,79 +858,32 @@ class PortPublishTests(unittest.TestCase):
         self.assertEqual(data['ports']['missing'], [])
 
 
-class WidgetPageTests(unittest.TestCase):
-    """首页小组件用的极简统计页：不带会话令牌也要能取，页面自己再调 /api/torrents。"""
-
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        root = Path(self.tmp.name) / 'root'
-        root.mkdir()
-        self.engine = Engine(Path(self.tmp.name) / 'data', root, dev=True)
-        self.server = Server(('127.0.0.1', 0), self.engine, 'u123456', dev=True)
-        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
-        self.addCleanup(self._close)
-
-    def _close(self):
-        self.server.shutdown()
-        self.server.server_close()
-        self.thread.join()
-
-    def get(self, route):
-        conn = http.client.HTTPConnection('127.0.0.1', self.server.server_port)
-        try:
-            conn.request('GET', route)
-            response = conn.getresponse()
-            return response.status, dict(response.getheaders()), response.read()
-        finally:
-            conn.close()
-
-    def test_widget_page_is_public(self):
-        status, headers, body = self.get('/widget.html')
-        self.assertEqual(status, 200)
-        self.assertIn('text/html', headers.get('Content-Type', ''))
-        text = body.decode('utf-8')
-        self.assertIn('下载', text)
-        self.assertIn('做种', text)
-
-    def test_widget_page_has_no_secrets(self):
-        _, _, body = self.get('/widget.html')
-        text = body.decode('utf-8')
-        self.assertNotIn('__SESSION_TOKEN__', text)
-        self.assertNotIn('__CSRF_TOKEN__', text)
-        self.assertNotIn('csrf-token', text)
-
-    def test_widget_page_reads_the_stats_api(self):
-        _, _, body = self.get('/widget.html')
-        text = body.decode('utf-8')
-        self.assertIn("api/torrents", text)
-        for field in ('dlspeed', 'upspeed', 'downloaded', 'uploaded'):
-            with self.subTest(field=field):
-                self.assertIn(field, text)
-
-    def test_still_requires_auth_for_api(self):
-        status, _, _ = self.get('/api/torrents')
-        self.assertEqual(status, 401)
-
-    def test_widget_page_file_ships_with_the_plugin(self):
-        page = Path(__file__).resolve().parents[1] / 'web' / 'widget.html'
-        self.assertTrue(page.is_file())
-
-
 class WidgetSourceTests(unittest.TestCase):
-    """统计页只在仓库源码里维护，部署时随 web/ 一起走。"""
+    """首页小组件：客户端认 registry 里的 widget 声明，但正文不从插件取。
+
+    实测（NAS）：声明写进去后 app 的「小组件 → 应用」里会出现 Transmission 下载，
+    点开能看到卡片、客户端也来取了卡片图标（/plugin/<user>/<uikey>/assets/...），
+    但它**从不加载 widget.url**——url 给 /widget.html 时没有对应请求，卡片报连接超时，
+    url 为空时报的也是连接超时，说明正文由客户端/云端按 widget 类型提供。
+    所以这里只保证「插件页上的数字」是准的，不再往首页塞卡片。
+    """
 
     def test_transfer_reports_session_totals(self):
         source = (Path(__file__).resolve().parents[1] / 'server.py').read_text(encoding='utf-8')
         self.assertIn("'uploaded': int(cur.get('uploadedBytes')", source)
         self.assertIn("'secondsActive': int(cur.get('secondsActive')", source)
 
-    def test_widget_page_counts_torrent_states(self):
-        page = (Path(__file__).resolve().parents[1] / 'web' / 'widget.html').read_text(encoding='utf-8')
+    def test_stats_summary_counts_torrent_states(self):
+        source = (Path(__file__).resolve().parents[1] / 'server.py').read_text(encoding='utf-8')
         # 3/4 下载中与排队下载，5/6 做种中与排队做种
-        self.assertIn('status === 4 || status === 3', page)
-        self.assertIn('status === 6 || status === 5', page)
+        self.assertIn('status in (5, 6)', source)
+        self.assertIn('status in (3, 4)', source)
+
+    def test_no_public_widget_page(self):
+        """实验用的统计页已经删掉，不留没有入口的公开路由。"""
+        root = Path(__file__).resolve().parents[1]
+        self.assertFalse((root / 'web' / 'widget.html').is_file())
+        self.assertNotIn("'/widget.html'", (root / 'server.py').read_text(encoding='utf-8'))
 
 
 class UiTests(unittest.TestCase):
@@ -956,6 +922,18 @@ class UiTests(unittest.TestCase):
                 script = (self.web / name).read_text(encoding='utf-8')
                 self.assertIn("$('#portPublish')", script)
                 self.assertIn('入站端口未发布', script)
+
+    def test_page_shows_glance_stats(self):
+        html = (self.web / 'index.html').read_text(encoding='utf-8')
+        for name in ('statusStats', 'statsDown', 'statsUp', 'statsSeeding',
+                     'statsDownloading', 'statsSessionDown', 'statsSessionUp'):
+            with self.subTest(name=name):
+                self.assertIn('id="%s"' % name, html)
+        for name in ('app.js', 'app.bundle.js'):
+            with self.subTest(name=name):
+                script = (self.web / name).read_text(encoding='utf-8')
+                self.assertIn('function renderStats(current)', script)
+                self.assertIn("$('#statusStats')", script)
 
     def test_html_references_existing_files(self):
         html = (self.web / 'index.html').read_text(encoding='utf-8')

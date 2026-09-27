@@ -88,21 +88,24 @@ transmission: 入站端口未监听 51413/tcp，重启容器修复
 仍然缺的话，插件页面的端口那一行下方会显示「入站端口未发布：…」，接口
 `/api/status` 的 `ports` 字段里也有 `published` / `missing` / `repaired`。
 
-## 小组件统计页
+## 首页小组件：为什么做不了
 
-`web/widget.html` 是一个**给 app 首页小组件用的极简统计页**：下载/上传实时速度、
-做种与下载中的任务数、以及 daemon 本次启动以来的累计上传/下载量。特点：
+试过把 transmission 注册成 app 首页的小组件，结论是**第三方插件做不了**。实测过程：
 
-- 背景透明、字大、内容少，3 秒自刷新（页面隐藏时不刷）
-- 不带会话令牌，也不需要密钥；页面自己调同目录的 `api/torrents` 取数
-  （走的是同一条客户端校验链路，所以仍然只有通过 app 才能访问）
-- `/api/torrents` 的 `transfer` 段为此补充了 `uploaded` 与 `secondsActive`
-  （`downloaded`/`uploaded` 取的是 `current-stats`，即本次启动以来，不是历史总量）
+1. registry 的 `frontend.widget` 字段客户端是认的——写进去之后，app 的「小组件 → 应用」里
+   会出现 `Transmission 下载`，点开能看到卡片可以添加，**客户端还会来取卡片图标**
+   （`GET /plugin/<user>/transmission/assets/transmission.png` → 200）。
+2. 但**卡片正文不从插件取**：`url` 填 `/widget.html` 时，客户端一次都没请求过这个路径；
+   `url` 填插件页面时卡片是空白；`url` 留空时同样报错。三种都失败，报的是「连接超时」，
+   也就是正文另有来源（客户端/云端按 widget 类型提供），第三方没有这一环。
+3. 官方唯一的先例是 `mediacenter` 的两张卡片：`url` 全是空串（原生绘制），数据走它自己的
+   LuCI 路由 `POST /cgi-bin/luci/mediacenter/media_recently_watched`——而 LuCI 路由是
+   nginx 里写死的 location + 系统二进制，第三方插件注册不了。
 
-**能不能挂到 app 首页**：registry 的 `frontend.widget` 字段客户端是认的——实测把
-widget 声明写进去后，app 的「小组件 → 应用」里会出现 `Transmission 下载`，点开能看到
-对应的卡片可以添加。但卡片内容是否由 `url` 渲染成网页、还是只能由客户端原生绘制，
-官方只给了原生那一种先例（`mediacenter` 的两张卡片 `url` 都是空串），还在验证中。
+所以数字放在插件页顶部的统计栏：**下载/上传实时速度、做种与下载中的任务数、
+本次运行（daemon 启动以来）的累计上传/下载量**，随页面 3 秒一轮刷新。
+数据来自 `/api/status` 的 `transfer` 段（`downloaded`/`uploaded` 取 `current-stats`，
+即本次启动以来，不是历史总量），取不到时该段为 `null`，不影响状态接口本身。
 
 ## 镜像
 

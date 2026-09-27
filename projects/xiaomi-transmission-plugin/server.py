@@ -273,6 +273,40 @@ class Handler(BaseHTTPRequestHandler):
         engine = self.server.engine
         return ((engine.config or {}).get('username', ''), engine.saved_password())
 
+    def transfer_summary(self):
+        """给页面顶部统计栏用的几个数字；取不到就返回空值，不抛错。
+
+        downloaded/uploaded 是 current-stats（daemon 本次启动以来），
+        seeding/downloading 由任务状态现算（3/4 下载，5/6 做种）。
+        """
+        empty = {'dlspeed': None, 'upspeed': None, 'downloaded': None,
+                 'uploaded': None, 'seeding': None, 'downloading': None}
+        username, password = self.rpc_creds()
+        if not username or not password:
+            return empty
+        try:
+            stats = tr_call('session-stats', username, password, timeout=6)
+            listing = tr_call('torrent-get', username, password,
+                              {'fields': ['status']}, timeout=6)
+        except Error:
+            return empty
+        seeding = downloading = 0
+        for item in listing.get('torrents') or []:
+            status = int((item or {}).get('status') or 0)
+            if status in (5, 6):
+                seeding += 1
+            elif status in (3, 4):
+                downloading += 1
+        cur = stats.get('current-stats') or {}
+        return {
+            'dlspeed': int(stats.get('downloadSpeed') or 0),
+            'upspeed': int(stats.get('uploadSpeed') or 0),
+            'downloaded': int(cur.get('downloadedBytes') or 0),
+            'uploaded': int(cur.get('uploadedBytes') or 0),
+            'seeding': seeding,
+            'downloading': downloading,
+        }
+
     def engine_snapshot_torrents(self):
         """自研控制台数据：任务列表 + 当前速度（走 Transmission JSON-RPC）。"""
         username, password = self.rpc_creds()
@@ -365,10 +399,6 @@ class Handler(BaseHTTPRequestHandler):
             html = html.replace('__CSRF_TOKEN__', self.sign('csrf:' + token) if token else '')
             html = html.replace('__PLUGIN_VERSION__', installed_version())
             return self.send(200, html.encode(), 'text/html; charset=utf-8')
-        if route.path == '/widget.html':
-            # 首页小组件用的极简统计页：不带会话令牌，也不含任何密钥，
-            # 页面自己再调 /api/torrents 取数（走同一条客户端校验链路）。
-            return self.send(200, (WEB / 'widget.html').read_bytes(), 'text/html; charset=utf-8')
         if route.path in ('/app.bundle.js', '/styles.css'):
             file = WEB / route.path[1:]
             return self.send(200, file.read_bytes(), mimetypes.guess_type(file.name)[0])
@@ -392,6 +422,9 @@ class Handler(BaseHTTPRequestHandler):
             if route.path == '/api/status':
                 result = self.server.engine.snapshot()
                 result['address'] = self.address()
+                # 首页小组件做不成，就把这几个数字放在插件页最显眼的位置。
+                # 尽力而为：Transmission 没起来时给 null，不影响状态接口本身。
+                result['transfer'] = self.transfer_summary()
             elif route.path == '/api/browse':
                 result = {'items': self.server.engine.browse(query.get('path', [''])[0])}
             elif route.path == '/api/torrents':

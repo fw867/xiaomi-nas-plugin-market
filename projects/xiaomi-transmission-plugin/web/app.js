@@ -121,7 +121,22 @@
     }
     renderPortState(current);
     renderPortPublish(current);
+    renderStats(current);
     if (!current.busy) showError(current.error);
+  }
+  function renderStats(current) {
+    const box = $('#statusStats');
+    if (!box) return;
+    const t = current.transfer || {};
+    const has = t.dlspeed !== null && t.dlspeed !== undefined;
+    box.hidden = !has;
+    if (!has) return;
+    $('#statsDown').textContent = bytes(t.dlspeed) + '/s';
+    $('#statsUp').textContent = bytes(t.upspeed) + '/s';
+    $('#statsSeeding').textContent = t.seeding;
+    $('#statsDownloading').textContent = t.downloading;
+    $('#statsSessionDown').textContent = bytes(t.downloaded);
+    $('#statsSessionUp').textContent = bytes(t.uploaded);
   }
   function renderPortState(current) {
     const port = current.port || {};

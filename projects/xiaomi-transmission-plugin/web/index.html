@@ -35,6 +35,13 @@
                         <button id="toggleService" class="btn">启动服务</button>
                     </div>
                 </div>
+                <div class="status-stats" id="statusStats" hidden>
+                    <span class="stat"><em>下载</em><b id="statsDown">—</b></span>
+                    <span class="stat"><em>上传</em><b id="statsUp">—</b></span>
+                    <span class="stat"><em>做种</em><b id="statsSeeding">—</b></span>
+                    <span class="stat"><em>下载中</em><b id="statsDownloading">—</b></span>
+                    <span class="stat wide"><em>本次运行</em>↓<b id="statsSessionDown">—</b> ↑<b id="statsSessionUp">—</b></span>
+                </div>
                 <div class="status-port">
                     <span class="muted" id="portState">BT 端口状态未测试</span>
                     <button id="testPort" type="button" class="btn">测试端口</button>
