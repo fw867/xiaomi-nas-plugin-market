@@ -54,8 +54,8 @@
   挂载，配置与媒体库不受影响，只有一次短暂的容器重启。
 - 健康检查只能在创建容器时决定：Docker 20.10 的 `POST /containers/<id>/update`
   虽然接受 `Healthcheck` 字段并返回 200，但**实际不生效**，所以只能重建。
-- 页面状态栏出现「健康检查已关」即表示已生效；接口 `/api/status` 的
-  `healthcheckOff` 字段同理。
+- 页面「说明与限制」里写了这一点（状态栏只显示 Jellyfin/镜像版本等运行信息）；
+  接口 `/api/status` 的 `healthcheckOff` 字段可以程序化判断。
 - 想知道是不是别的程序在唤醒硬盘，用硬盘休眠插件的体检脚本：
   `projects/xiaomi-disk-sleep-plugin/tools/disk-activity-report.py`。
 
@@ -64,6 +64,37 @@
 系统排空剩余事件后，两块机械盘在 12:27:29 同时进入 `standby`，此后 60 多分钟
 `hdidle` 没有再记录任何 activity。也就是说这条 30 秒心跳原本就是硬盘不休眠的
 根本原因，关掉它之后不需要停用系统索引/相册/媒体库服务。
+
+## 不再写死 JELLYFIN_PublishedServerUrl
+
+早先的版本给容器设了 `JELLYFIN_PublishedServerUrl=http://__NAS_IP__:8097`，
+而那个 `__NAS_IP__` **从来没有被替换过**（全仓库只此一处）。后果是 Jellyfin 把
+它当成自己的对外地址：
+
+```bash
+$ curl http://127.0.0.1:8097/System/Info/Public
+{"LocalAddress":"http://__NAS_IP__:8097", ...}     # 客户端拿到的就是这个解析不了的域名
+```
+
+客户端拿到解析不了的地址就会连接失败、会话中断（Jellyfin 日志里的
+`WS ... The remote party closed the WebSocket connection`、
+`Unexpected end of request content` 都是这种客户端侧断开），远程访问时表现为
+「用着用着就退出了」。设成局域网地址对远程访问同样是错的——**该用什么地址，
+取决于客户端是从哪个地址连上来的**，所以交给 Jellyfin 自己判断，插件不再插手。
+
+环境变量只在创建容器时生效，因此旧容器里残留这个键时，`start()` 会**自动重建一次**
+（判断逻辑见 `Engine.stale_env()`，与去掉健康检查走同一条重建路径）。
+
+不设这个变量之后，Jellyfin 默认会报**容器自己的地址**（`http://172.17.0.2:8096`），
+客户端同样用不了。正确做法是在 Jellyfin 里打开**按请求头发布地址**：
+
+- 控制台 → 网络 → 勾上「允许通过请求头发布服务器地址」
+  （对应 `config/network.xml` 的 `EnablePublishedServerUriByRequest`，改成 `true` 后
+  需要重启 Jellyfin）；这样地址跟着客户端实际访问用的 Host 走——局域网访问得到
+  `http://<NAS-IP>:8097`，走内网穿透访问得到隧道域名，两边都对。
+- 改 `network.xml` 要在容器**停止**状态下改：Jellyfin 关闭时会把内存里的配置写回文件。
+  改的时候原地写入（不要用 `sed -i`，那会换掉 inode 和属主）。
+
 
 ## 本地预览
 

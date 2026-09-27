@@ -185,7 +185,8 @@ class HealthcheckTests(unittest.TestCase):
 
     def test_start_does_not_touch_container_without_healthcheck(self):
         item = {
-            'Config': {'Labels': {LABEL: 'tok'}, 'Healthcheck': {'Test': ['NONE']}},
+            'Config': {'Labels': {LABEL: 'tok'}, 'Healthcheck': {'Test': ['NONE']},
+                       'Env': ['TZ=Asia/Shanghai']},
             'State': {'Running': True},
         }
         calls = self._run_start(item)
@@ -195,12 +196,51 @@ class HealthcheckTests(unittest.TestCase):
 
     def test_start_starts_stopped_container_without_recreating(self):
         item = {
-            'Config': {'Labels': {LABEL: 'tok'}, 'Healthcheck': {'Test': ['NONE']}},
+            'Config': {'Labels': {LABEL: 'tok'}, 'Healthcheck': {'Test': ['NONE']},
+                       'Env': ['TZ=Asia/Shanghai']},
             'State': {'Running': False},
         }
         calls = self._run_start(item)
         paths = [path for _, path, _ in calls]
         self.assertEqual(paths, ['/containers/' + NAME + '/start'])
+
+    def test_stale_env_detection(self):
+        """环境变量只在创建时生效：值不对、或残留已删除的键，都得重建。"""
+        cases = [
+            ({'Config': {}}, True),                                        # 老容器连 Env 都没有
+            ({'Config': {'Env': ['TZ=Asia/Shanghai']}}, False),
+            ({'Config': {'Env': ['TZ=UTC']}}, True),
+            ({'Config': {'Env': ['PATH=/usr/bin', 'TZ=Asia/Shanghai']}}, False),
+            # 历史上写死的假地址（占位符从未被替换）——Jellyfin 会把它当对外地址
+            ({'Config': {'Env': ['TZ=Asia/Shanghai',
+                                 'JELLYFIN_PublishedServerUrl=http://__NAS_IP__:8097']}}, True),
+        ]
+        for item, expected in cases:
+            with self.subTest(item=item):
+                self.assertEqual(Engine.stale_env(item), expected)
+
+    def test_start_recreates_container_with_stale_published_url(self):
+        item = {
+            'Config': {'Labels': {LABEL: 'tok'}, 'Healthcheck': {'Test': ['NONE']},
+                       'Env': ['TZ=Asia/Shanghai',
+                               'JELLYFIN_PublishedServerUrl=http://__NAS_IP__:8097']},
+            'State': {'Running': True},
+        }
+        calls = self._run_start(item)
+        paths = [path for _, path, _ in calls]
+        self.assertIn('/containers/' + NAME + '/stop?t=30', paths)
+        self.assertIn('/containers/create?name=' + NAME, paths)
+        create = next(body for _, path, body in calls if path.startswith('/containers/create'))
+        self.assertEqual(create['Env'], ['TZ=Asia/Shanghai'])
+        self.assertFalse([e for e in create['Env'] if 'PublishedServerUrl' in e])
+
+    def test_container_config_no_longer_sets_a_published_url(self):
+        """写死的 http://__NAS_IP__:8097 会被 Jellyfin 当成对外地址（见 engine 注释）。"""
+        cfg = container_config({'uid': 1, 'gid': 1, 'owner': 'tok', 'config': '/tmp/config',
+                                'cache': '/tmp/cache', 'media': '/tmp/media'})
+        self.assertFalse([e for e in cfg['Env'] if 'PublishedServerUrl' in e])
+        self.assertIn('TZ=Asia/Shanghai', cfg['Env'])
+        self.assertNotIn('__NAS_IP__', json.dumps(cfg))
 
     def test_snapshot_reports_healthcheck_flag(self):
         self.engine.config['healthcheck_off'] = True
@@ -293,6 +333,14 @@ class UiTests(unittest.TestCase):
         self.assertIn('8097', html)
         self.assertIn('__PLUGIN_VERSION__', html)
         self.assertTrue((self.web / 'assets' / 'jellyfin.png').is_file())
+
+    def test_healthcheck_note_lives_in_the_notes_card(self):
+        """「健康检查已关」是说明性文案，放「说明与限制」里，状态栏只显示运行信息。"""
+        html = (self.web / 'index.html').read_text(encoding='utf-8')
+        self.assertIn('容器健康检查是关闭的', html)
+        script = (self.web / 'app.js').read_text(encoding='utf-8')
+        self.assertNotIn('健康检查已关', script)
+        self.assertIn("info.push('镜像 ' + s.imageVersion)", script)
 
     def test_html_references_existing_files(self):
         html = (self.web / 'index.html').read_text(encoding='utf-8')

@@ -39,6 +39,24 @@ DOCKER_SOCKET = os.environ.get('DOCKER_SOCKET', '/var/run/docker.sock')
 # 定位过程见 projects/xiaomi-disk-sleep-plugin/tools/disk-activity-report.py。
 HEALTHCHECK_OFF = {'Test': ['NONE']}
 
+# 插件给容器设的环境变量键。`JELLYFIN_PublishedServerUrl` 是**已经删掉**的那个：
+# 历史上写死成 `http://__NAS_IP__:8097`，占位符从来没有被替换过，于是 Jellyfin
+# 把 `http://__NAS_IP__:8097` 当成自己的对外地址（`GET /System/Info/Public` 的
+# LocalAddress 就是它），客户端拿到这个解析不了的域名就会连接失败、会话中断——
+# 远程访问时表现为"用着用着就退出了"。环境变量只在创建容器时生效，所以旧容器
+# 里残留这个键时必须在 start() 里重建一次。
+CONTAINER_ENV_KEYS = ('TZ',)
+REMOVED_ENV_KEYS = ('JELLYFIN_PublishedServerUrl',)
+
+
+def container_env():
+    """要往容器里塞的环境变量（只放必需的）。
+
+    不再设置 JELLYFIN_PublishedServerUrl：设成局域网地址对远程访问是错的，
+    而地址由客户端用哪个地址连上来决定才是对的，所以交给 Jellyfin 自己判断。
+    """
+    return ['TZ=Asia/Shanghai']
+
 
 class Error(RuntimeError):
     pass
@@ -132,10 +150,7 @@ def container_config(config):
             str(CONTAINER_HTTPS) + '/tcp': {},
             str(CONTAINER_DLNA) + '/udp': {},
         },
-        'Env': [
-            'TZ=Asia/Shanghai',
-            'JELLYFIN_PublishedServerUrl=http://__NAS_IP__:' + str(PORT),
-        ],
+        'Env': container_env(),
         'Labels': {LABEL: config['owner']},
         # 不要继承官方镜像的 30 秒健康检查（见 HEALTHCHECK_OFF 的说明）。
         'Healthcheck': dict(HEALTHCHECK_OFF),
@@ -234,21 +249,43 @@ class Engine:
         tests = ((item.get('Config') or {}).get('Healthcheck') or {}).get('Test') or []
         return bool(tests) and str(tests[0]).upper() != 'NONE'
 
-    def drop_inherited_healthcheck(self, item):
-        """把旧版本插件建出来的容器重建掉，去掉镜像自带的健康检查。
+    @staticmethod
+    def stale_env(item):
+        """容器里的环境变量和现在要求的不一致（只能在创建时生效，得重建）。
 
-        健康检查只能在创建容器时决定：Docker 20.10 的
-        `POST /containers/<id>/update` 虽然接受 Healthcheck 字段并返回 200，
-        但实际不生效（inspect 里仍是原值，State.Health 也照旧每 30 秒追加记录）。
-        所以这里停容器 → 删除 → 交给调用方按新配置重建。
+        两个方向都要看：插件现在要设的键值对不上，以及插件**已经不再设置**的键
+        （例如写过假地址的 JELLYFIN_PublishedServerUrl）还残留在旧容器里。
+        """
+        current = {}
+        for entry in (item.get('Config') or {}).get('Env') or []:
+            key, _, value = str(entry).partition('=')
+            current[key] = value
+        for entry in container_env():
+            key, _, value = entry.partition('=')
+            if current.get(key) != value:
+                return True
+        return any(key in current for key in REMOVED_ENV_KEYS)
+
+    def recreate_if_stale(self, item):
+        """旧配置只能靠重建生效：继承的健康检查、或已删除的环境变量。
+
+        健康检查只能在创建容器时决定（Docker 20.10 的
+        `POST /containers/<id>/update` 接受 Healthcheck 并返回 200，但不生效）；
+        环境变量同理。这里停容器 → 删除 → 交给调用方按新配置重建。
         /config、/cache、/media 都是 bind 挂载，配置与媒体库不受影响。
         返回 True 表示已经把它删掉了。
         """
-        if not self.inherited_healthcheck(item):
+        reasons = []
+        if self.inherited_healthcheck(item):
+            reasons.append('镜像自带的健康检查')
+        if self.stale_env(item):
+            reasons.append('过期的环境变量')
+        if not reasons:
             return False
         if item.get('State', {}).get('Running'):
             self._call('POST', '/containers/' + NAME + '/stop?t=30', timeout=90)
         self._call('DELETE', '/containers/' + NAME, ok=(200, 204, 404))
+        print('jellyfin: 重建容器（%s）' % '、'.join(reasons), flush=True)
         return True
 
     def browse(self, relative):
@@ -385,10 +422,10 @@ class Engine:
             raise Error('请先初始化')
         self.check_directories()
         item = self.owned()
-        if item and self.inherited_healthcheck(item):
-            # 旧容器带着镜像自带的 30 秒健康检查，必须重建才能去掉（见方法说明）。
-            # 升级后插件服务重启、或用户点「启动服务」时都会走到这里。
-            self.drop_inherited_healthcheck(item)
+        if item and self.recreate_if_stale(item):
+            # 旧容器带着镜像自带的 30 秒健康检查、或残留着写死假地址的环境变量，
+            # 都只能靠重建去掉（见方法说明）。升级后插件服务重启、或用户点
+            # 「启动服务」时都会走到这里。
             item = None
             self.create_container()
         elif item is None:

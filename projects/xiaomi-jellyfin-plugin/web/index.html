@@ -94,6 +94,7 @@
                     <li>端口映射：宿主机 <code>8097→8096</code>（HTTP）、<code>8920→8920</code>（HTTPS）、<code>7359/UDP</code>（DLNA）。</li>
                     <li>Jellyfin 为开源软件，本插件不代表官方背书。</li>
                     <li>停止或卸载插件只停止容器，配置与媒体文件都会保留。</li>
+                    <li><strong>容器健康检查是关闭的：</strong>官方镜像每 30 秒打一次 <code>/health</code>，每打一次 Jellyfin 都会重写 SQLite，进而唤醒系统索引和硬盘（约 1.4 GB/天/盘）。插件建的容器不再带这个检查；服务是否可用由上面的就绪状态反映。</li>
                     <li><strong>首次使用：</strong>用浏览器打开入口地址完成向导，创建管理员并添加媒体库（选择 <code>/media</code> 下的子目录）。向导完成前同网段设备可能抢先初始化，请尽快设置。</li>
                 </ul>
             </details>
