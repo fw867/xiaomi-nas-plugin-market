@@ -329,6 +329,10 @@ class Handler(BaseHTTPRequestHandler):
             if action.startswith('service/'):
                 self.server.engine.launch(action.split('/')[1], data)
                 return self.send(202, {'ok': True})
+            if action == 'forward':
+                # 同步跑：SSDP 2.5s + SOAP 4s 量级，页面按钮带进度提示
+                return self.send(200, {'ok': True,
+                                       'forward': self.server.engine.ensure_port_forward(True)})
             if action == 'login':
                 password = data.get('password')
                 if not isinstance(password, str) or not 1 <= len(password) <= 200:
@@ -370,6 +374,20 @@ class Handler(BaseHTTPRequestHandler):
             self.server.request_slots.release()
 
 
+def forward_keeper(engine, interval=60, sleep=time.sleep):
+    """后台定时器：NAT-PMP 的映射有租期，到期前重建；失败的定期重试。
+
+    只做这两件小事，跑在守护线程里，出错也不能把插件服务带崩。
+    sleep 做成参数是为了可测：打桩全局的 time.sleep 会牵连其它线程。
+    """
+    while True:
+        sleep(interval)
+        try:
+            engine.keep_forward_alive()
+        except Exception:                                    # noqa: BLE001 定时器不能死
+            pass
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dev', action='store_true')
@@ -387,6 +405,7 @@ def main():
     server = Server(('127.0.0.1', int(os.environ.get('PORT', 18122))), engine, user, args.dev)
     if engine.config and engine.config.get('enabled') and not args.dev:
         engine.launch('start', {})
+    threading.Thread(target=forward_keeper, args=(engine,), daemon=True).start()
     print('qB plugin listening on http://127.0.0.1:' + str(server.server_port), flush=True)
     try:
         server.serve_forever()

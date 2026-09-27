@@ -1,4 +1,5 @@
 import base64
+import ast
 import http.client
 import io
 import json
@@ -900,6 +901,35 @@ class PortPublishTests(unittest.TestCase):
             data = self.engine.snapshot()
         self.assertFalse(data['running'])
         self.assertEqual(data['ports']['missing'], [])
+
+
+class PackagingTests(unittest.TestCase):
+    """打包清单是显式列文件的：插件目录里新增的模块必须同步进去。
+
+    回归用例：upnp.py 加进插件后忘了写进 scripts/build_apps.py 的 runtime，
+    CI 构建出的商店包里就没有这个文件，用户从商店装完启动即
+    `ModuleNotFoundError: No module named 'upnp'`（手工拷文件部署时看不出来）。
+    """
+
+    def setUp(self):
+        self.plugin = Path(__file__).resolve().parents[1]
+        self.build = self.plugin.parents[1] / 'scripts' / 'build_apps.py'
+
+    def _spec(self):
+        tree = ast.parse(self.build.read_text(encoding='utf-8'))
+        for node in tree.body:
+            if isinstance(node, ast.AnnAssign) and getattr(node.target, 'id', '') == 'PACKAGE_SPECS':
+                for spec in ast.literal_eval(node.value):
+                    if spec.get('project') == self.plugin.name:
+                        return spec
+        self.fail('build_apps.py 里找不到本插件的 PACKAGE_SPECS 条目')
+
+    def test_every_module_is_packaged(self):
+        runtime = self._spec()['runtime']
+        packaged = set(runtime.keys()) | set(runtime.values())
+        for module in sorted(p.name for p in self.plugin.glob('*.py')):
+            with self.subTest(module=module):
+                self.assertIn(module, packaged)
 
 
 class WidgetSourceTests(unittest.TestCase):

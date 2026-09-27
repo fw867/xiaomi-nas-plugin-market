@@ -233,6 +233,7 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
         "runtime": {
             "server.py": "server.py",
             "engine.py": "engine.py",
+            "upnp.py": "upnp.py",
             "web": "web",
             "licenses": "licenses",
             "README.md": "README.md",
@@ -324,6 +325,7 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
         "runtime": {
             "server.py": "server.py",
             "engine.py": "engine.py",
+            "upnp.py": "upnp.py",
             "web": "web",
             "licenses": "licenses",
             "README.md": "README.md",

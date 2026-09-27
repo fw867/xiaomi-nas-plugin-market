@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 from urllib.parse import urlencode, urlsplit, parse_qs
 
+import upnp
+
 # 开发环境（源码树里直接跑）的回退值。页面上显示的是插件包的真实版本，
 # 由 installed_version() 从自身所在的发布目录名里取。
 VERSION = '0.1.2'
@@ -31,6 +33,8 @@ SESSION_TIMEOUT = 30 * 24 * 3600
 # 设备上只有 dockerd，没有 docker 命令行（/usr/bin/docker 不存在），
 # 所以不能 subprocess 调 CLI，一律走 socket 上的 Engine API。
 DOCKER_SOCKET = os.environ.get('DOCKER_SOCKET', '/var/run/docker.sock')
+# 路由器映射失败后隔多久再试（路由器重启、UPnP 刚打开这类情况能自愈）
+FORWARD_RETRY_SECONDS = 1800
 
 
 class Error(RuntimeError):
@@ -205,6 +209,12 @@ class Engine:
         self.cfgfile = self.data / 'settings.json'
         self.config = json.loads(self.cfgfile.read_text()) if self.cfgfile.exists() else None
         self.credentialfile = self.data / 'credential.json'
+        # 路由器端口映射（UPnP/NAT-PMP）的结果，见 ensure_port_forward。
+        # 必须落盘：服务停止时 systemd 的 ExecStopPost 是**另一个进程**，
+        # 内存里那点状态它看不到，那样就删不掉路由器上留下的映射。
+        self.forwardfile = self.data / 'forward.json'
+        self.forward_state = self.load_forward()
+        self.forward_lock = threading.Lock()
 
     def _call(self, method, path, body=None, timeout=30, ok=(200, 201, 204)):
         """调一次 Engine API；非预期状态码统一报错。"""
@@ -277,7 +287,9 @@ class Engine:
         return {'version': installed_version(), 'configured': bool(self.config), 'running': running, 'ready': ready,
                 'busy': self.busy, 'error': error, 'preview': self.dev,
                 'directory': self.config['relative'] if self.config else '',
-                'imageVersion': '5.2.3 / LSIO ls474'}
+                'imageVersion': '5.2.3 / LSIO ls474',
+                # 路由器上的 BT 端口映射（UPnP/NAT-PMP）
+                'forward': self.forward_snapshot()}
 
     def setup(self, relative, password):
         if self.config:
@@ -345,6 +357,124 @@ class Engine:
         if str(folder) != self.config['download'] or (stat.st_dev, stat.st_ino) != (self.config['device'], self.config['inode']):
             raise Error('下载目录身份已变化，拒绝启动；请先检查存储挂载')
 
+    def load_forward(self):
+        """读回上次的映射结果（新进程也要知道该删哪条映射）。"""
+        empty = {'ok': False, 'method': '', 'detail': '尚未尝试', 'at': 0, 'removed': False}
+        try:
+            data = json.loads(self.forwardfile.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return empty
+        return data if isinstance(data, dict) else empty
+
+    def save_forward(self):
+        try:
+            atomic_json(self.forwardfile, self.forward_state)
+        except OSError:
+            pass
+
+    def ensure_port_forward(self, force=False):
+        """启动时（或用户点「映射端口」时）请路由器把 BT 端口转给本机。
+
+        容器里 qB 自己的 UPnP 不管用（`PortForwardingEnabled=false`，而且它上报的
+        internal client 是 Docker 网桥地址，路由器路由不到），所以由宿主机发起。
+        纯尽力而为：失败只记录原因，绝不阻断启动。
+        """
+        if self.dev:
+            return self.forward_state
+        if not self.forward_lock.acquire(blocking=False):
+            return self.forward_state
+        try:
+            address = upnp.lan_address()
+            if not address:
+                self.forward_state = {'ok': False, 'method': '', 'at': int(time.time()),
+                                      'detail': '找不到局域网地址，跳过路由器映射'}
+                self.save_forward()
+                return self.forward_state
+            state = upnp.forward_ports(BT_PORT, BT_PORT, address,
+                                       'Xiaomi NAS qBittorrent')
+            self.forward_state = state
+            self.save_forward()
+            print('qbittorrent: 路由器端口映射（%s）%s'
+                  % (state.get('method') or 'UPnP/NAT-PMP', state.get('detail') or ''), flush=True)
+            return self.forward_state
+        finally:
+            self.forward_lock.release()
+
+    def remove_port_forward(self):
+        """停止服务时撤掉路由器上的映射（尽力而为）。
+
+        容器都停了，那个端口没人应答；而且 UPnP 用的是永久映射，不删的话卸载插件后
+        它会一直留在路由器上。
+        """
+        state = self.forward_state or {}
+        if not state.get('at'):
+            return {'ok': False, 'detail': '没有建过映射，跳过移除'}
+        if self.dev:
+            return {'ok': False, 'detail': '预览模式不碰路由器'}
+        if not self.forward_lock.acquire(blocking=False):
+            return {'ok': False, 'detail': '映射操作正在进行，跳过移除'}
+        try:
+            result = upnp.remove_forward(
+                BT_PORT, BT_PORT,
+                method=state.get('method', ''),
+                gateway_address=state.get('gateway', ''),
+                control=state.get('control', ''),
+                service_type=state.get('service', ''),
+                protocols=tuple(state.get('protocols') or ('TCP', 'UDP')))
+            removed = bool(result.get('ok'))
+            # forward_state 描述的是"路由器现在还在转发吗"，移除之后必然是 False；
+            # 移除本身成没成功由返回值单独告诉调用方。
+            self.forward_state = {'ok': False, 'method': '', 'removed': removed,
+                                  'detail': result.get('detail', ''), 'at': int(time.time())}
+            self.save_forward()
+            print('qbittorrent: 路由器端口映射清理：%s' % self.forward_state['detail'], flush=True)
+            return {'ok': removed, 'removed': removed, 'detail': result.get('detail', '')}
+        finally:
+            self.forward_lock.release()
+
+    def forward_snapshot(self):
+        """页面用的映射状态。"""
+        state = dict(self.forward_state or {})
+        state.setdefault('externalPort', BT_PORT)
+        state.setdefault('protocols', ['TCP', 'UDP'])
+        state.setdefault('at', 0)
+        state.setdefault('lease', 0)
+        state.setdefault('removed', False)
+        state.setdefault('detail', '尚未尝试')
+        state.setdefault('ok', False)
+        state.setdefault('method', '')
+        return state
+
+    def forward_due(self, now=None):
+        """现在该不该再碰一次路由器。
+
+        - UPnP 用的是永久映射（lease=0），建成之后不用管；
+        - NAT-PMP 的映射有租期，到期前一半就得重建，否则 BT 入站会静默失效；
+        - 失败的话隔 30 分钟重试一次；
+        - 刚被移除过就不动（那是停止服务时主动删的，别又加回去）。
+        """
+        state = self.forward_state or {}
+        if state.get('removed'):
+            return False
+        stamp = int(state.get('at') or 0)
+        if not stamp:
+            return False
+        elapsed = int(now if now is not None else time.time()) - stamp
+        if state.get('ok'):
+            lease = int(state.get('lease') or 0)
+            return bool(lease) and elapsed >= max(60, lease // 2)
+        return elapsed >= FORWARD_RETRY_SECONDS
+
+    def keep_forward_alive(self):
+        """给定时器调的：该续期/重试就再跑一次 ensure_port_forward。"""
+        if self.dev or not self.forward_due():
+            return False
+        if not (self.config or {}).get('enabled'):
+            # 服务是用户自己停的，别再往路由器上加映射
+            return False
+        self.ensure_port_forward(True)
+        return True
+
     def start(self):
         if not self.config:
             raise Error('请先初始化')
@@ -361,6 +491,8 @@ class Engine:
             self._call('POST', '/containers/' + NAME + '/start')
         self.config['enabled'] = True
         atomic_json(self.cfgfile, self.config)
+        # 容器起来了就去路由器上要一个 BT 端口的转发（尽力而为，失败不影响启动）
+        self.ensure_port_forward()
         for _ in range(60):
             try:
                 response, _, _ = qb_request('app/version')
@@ -378,6 +510,8 @@ class Engine:
         if item and item.get('State', {}).get('Running'):
             # 给容器 15 秒优雅退出；stop 本身会阻塞到容器停下，所以超时要放宽。
             self._call('POST', '/containers/' + NAME + '/stop?t=15', timeout=90)
+        # 容器停了，路由器上那条转发也没人应答了；顺手撤掉，别留在路由器上
+        self.remove_port_forward()
         if remember:
             self.config['enabled'] = False
             atomic_json(self.cfgfile, self.config)

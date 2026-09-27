@@ -75,7 +75,27 @@ const assetUrl = (path) => new URL(path, pluginAssetBase()).href;
 
     $('#login').hidden = current.loggedIn || current.busy;
     $('#consoleBody').hidden = !current.loggedIn;
+    renderForward(current);
     if (!current.busy) showError(current.error);
+  }
+  function renderForward(current) {
+    // 容器里的 qB 自己不做 UPnP，端口转发由插件在宿主机侧要
+    const box = $('#forwardState');
+    if (!box) return;
+    const forward = current.forward || {};
+    const port = forward.externalPort || 36754;
+    if (forward.ok) {
+      const lease = Number(forward.lease) || 0;
+      const renew = lease ? `，${Math.round(lease / 60)} 分钟自动续期` : '';
+      box.textContent = `路由器已转发 ${port}（${forward.method}${renew}）`;
+    } else if (forward.removed) {
+      box.textContent = `路由器映射已移除（${port} TCP+UDP），启动服务时会重新映射`;
+    } else if (forward.at) {
+      box.textContent = `路由器未转发 ${port}：${forward.detail || '原因未知'}`;
+    } else {
+      box.textContent = `路由器端口映射未尝试（${port} TCP+UDP）`;
+    }
+    $('#forwardPort').disabled = current.busy || !current.running;
   }
   function renderTasks() {
     const search = $('#search').value.toLowerCase(), filter = $('#filter').value;
@@ -141,6 +161,11 @@ const assetUrl = (path) => new URL(path, pluginAssetBase()).href;
   $('#setupForm').onsubmit = e => {e.preventDefault();const f=e.target;if(!f.elements.path.value){showError('请先选择下载目录');return;}busy(f.querySelector('[type=submit]'),async()=>{await api('service/setup',{path:f.elements.path.value,password:f.elements.password.value}); f.elements.password.value='';await refresh();});};
   $('#loginForm').onsubmit = e => {e.preventDefault();const f=e.target;busy(f.querySelector('[type=submit]'),async()=>{await api('login',{password:f.elements.password.value});f.reset();await refresh();});};
   $('#toggleService').onclick = () => busy($('#toggleService'),async()=>{await api('service/' + (state.running?'stop':'start'),{});await refresh();});
+  $('#forwardPort').onclick = () => busy($('#forwardPort'),async()=>{
+    const result = await api('forward',{}), forward = result.forward || {};
+    toast(forward.ok ? '路由器已转发 BT 端口' : '未能转发：' + (forward.detail || '原因未知'));
+    await refresh();
+  });
   $('#add').onclick = () => {$('#addForm').reset();$('#addDialog').showModal();};
   $('#addForm').onsubmit = e => {e.preventDefault();const f=e.target;busy(f.querySelector('[type=submit]'),async()=>{
     const file=f.elements.torrent.files[0],magnet=f.elements.magnet.value.trim();

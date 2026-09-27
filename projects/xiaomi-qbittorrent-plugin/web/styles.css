@@ -243,10 +243,24 @@ button:focus-visible { outline: 2px solid rgba(24, 120, 187, .45); outline-offse
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+  flex-wrap: wrap;
 }
 .service-copy { min-width: 0; }
 .service-copy span { display: block; font-size: 12px; }
 .service-copy strong { display: block; font-size: 13.5px; font-weight: 600; overflow-wrap: anywhere; }
+
+/* 路由器上的 BT 端口转发（UPnP/NAT-PMP）：整行铺开在服务卡片下面 */
+.forward-row {
+  flex: 1 1 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+.forward-row span { min-width: 0; overflow-wrap: anywhere; }
 
 /* ---------- 入口地址与控制台 ---------- */
 

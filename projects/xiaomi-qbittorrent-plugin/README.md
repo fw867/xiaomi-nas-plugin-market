@@ -36,6 +36,32 @@ python3 server.py --dev
 
 打开 `http://127.0.0.1:18122/`。未授权 API 不能获取任务列表。真实共享包不包含密码、令牌、个人 SSH 密钥或下载文件。
 
+## 路由器端口映射（UPnP / NAT-PMP）
+
+BT 要能从外面连上，路由器上得有 `36754`（TCP + UDP）的转发到 NAS。**容器里 qB 自己不做这件事**
+（初始化时写死 `PortForwardingEnabled=false`，而且它上报的 internal client 是 Docker 网桥地址，
+路由器路由不到），所以由插件**从宿主机**发起，和 transmission 插件是同一套实现：
+
+- 「启动服务」时自动试一次（`ensure_port_forward()`）：先 **UPnP**（SSDP 发现 → 读设备描述 →
+  `AddPortMapping`，TCP 与 UDP 各一条），不行再退到 **NAT-PMP**（RFC 6886）。
+- **尽力而为**：拿不到映射只记录原因，绝不阻断启动。页面上那一行写清楚卡在哪一步
+  （例如 `UPnP 错误 501（Action Failed）`），旁边「映射端口」按钮可随时重试。
+- 映射的内网目标固定是 NAS 的局域网地址（按默认路由探测，不会错拿 docker0 的地址）；
+  `/api/status` 的 `forward` 段给出 `ok` / `method` / `gateway` / `external` / `mapped` / `detail`。
+- **续期**：UPnP 用 `lease=0`（永久映射，不用续）；NAT-PMP 的租期由路由器给定（实测 7200 秒），
+  插件在到期一半时重建；失败的话每 30 分钟重试一次。定时器跑在插件服务里，60 秒一轮。
+- **停止服务时会把映射删掉**（容器停了那条转发也没人应答，UPnP 又用的是永久映射，不删会一直
+  留在路由器上）。删除按记录下来的方式做，映射结果**落盘**在
+  `<插件数据目录>/forward.json`——插件服务停止时 systemd 的 `ExecStopPost` 是**另一个进程**，
+  只靠内存状态删不掉。存下来的 UPnP 控制地址可能过期（路由器重启会换临时端口），失败会重新
+  发现一次再试；「本来就没有这条」（714）不算失败。
+
+> UniFi / UCG-Fiber 实测：UPnP 的 **Secure Mode 开着时 `AddPortMapping` 一律返回
+> `501 Action Failed`**（换任何端口都一样，NAT-PMP 也 `result=3`），关掉即通；
+> 建议把同一设置页里的 NAT-PMP 一起打开作为兜底。
+
+实现只用标准库（`upnp.py`，与 transmission 插件里是同一份代码，改动请两边同步）。
+
 ## 上游与资产
 
 - [qBittorrent](https://www.qbittorrent.org/) / [Web API 文档](https://github.com/qbittorrent/qBittorrent/wiki/WebUI-API-(qBittorrent-5.0))
