@@ -505,6 +505,10 @@ class Handler(BaseHTTPRequestHandler):
             if action in ('start', 'stop', 'remove', 'add'):
                 self.tr_action(action, data)
                 return self.send(200, {'ok': True})
+            if action == 'forward':
+                # 同步跑：SSDP 2.5s + SOAP 4s 量级，页面按钮带进度提示
+                return self.send(200, {'ok': True,
+                                       'forward': self.server.engine.ensure_port_forward(True)})
             raise Error('不支持此操作')
         except (Error, ValueError, OSError) as exc:
             self.send(400, {'ok': False, 'error': str(exc) if isinstance(exc, Error) else '操作失败，请检查输入'})

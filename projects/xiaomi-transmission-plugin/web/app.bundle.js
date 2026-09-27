@@ -121,6 +121,7 @@
     }
     renderPortState(current);
     renderPortPublish(current);
+    renderForward(current);
     renderStats(current);
     if (!current.busy) showError(current.error);
   }
@@ -137,6 +138,20 @@
     $('#statsDownloading').textContent = t.downloading;
     $('#statsSessionDown').textContent = bytes(t.downloaded);
     $('#statsSessionUp').textContent = bytes(t.uploaded);
+  }
+  function renderForward(current) {
+    const box = $('#forwardState');
+    if (!box) return;
+    const forward = current.forward || {};
+    const port = forward.externalPort || 51413;
+    if (forward.ok) {
+      box.textContent = `路由器已转发 ${port}（${forward.method}）`;
+    } else if (forward.at) {
+      box.textContent = `路由器未转发 ${port}：${forward.detail || '原因未知'}`;
+    } else {
+      box.textContent = `路由器端口映射未尝试（${port} TCP+UDP）`;
+    }
+    $('#forwardPort').disabled = current.busy || !current.running;
   }
   function renderPortState(current) {
     const port = current.port || {};
@@ -276,6 +291,12 @@
   $('#testPort').onclick = () => busy($('#testPort'), async () => {
     await api('service/port-test', {});
     toast('端口测试完成');
+    await refresh();
+  });
+  $('#forwardPort').onclick = () => busy($('#forwardPort'), async () => {
+    const result = await api('forward', {});
+    const forward = result.forward || {};
+    toast(forward.ok ? '路由器已转发 BT 端口' : '未能转发：' + (forward.detail || '原因未知'));
     await refresh();
   });
   $('#setupForm').onsubmit = e => {

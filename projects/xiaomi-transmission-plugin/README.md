@@ -107,6 +107,26 @@ transmission: 入站端口未监听 51413/tcp，重启容器修复
 数据来自 `/api/status` 的 `transfer` 段（`downloaded`/`uploaded` 取 `current-stats`，
 即本次启动以来，不是历史总量），取不到时该段为 `null`，不影响状态接口本身。
 
+## 路由器端口映射（UPnP / NAT-PMP）
+
+BT 要能从外面连上，路由器上得有 `51413` 的转发。**容器里 Transmission 自带的 UPnP 不管用**：
+它上报给路由器的 internal client 是 Docker 网桥地址（172.17.0.x），路由器路由不到。
+所以由插件**从宿主机**发起映射：
+
+- 「启动服务」时自动试一次（`ensure_port_forward()`）：顺序是
+  **UPnP**（SSDP 发现 → 读设备描述 → `AddPortMapping`，TCP 与 UDP 各一条），
+  不行再退到 **NAT-PMP**（RFC 6886）。
+- **尽力而为**：拿不到映射只记录原因，绝不阻断启动。页面上那一行会写清楚卡在哪一步
+  （例如 `UPnP 错误 501（Action Failed）`），旁边「映射端口」按钮可随时重试。
+- 映射的内网目标固定是 NAS 的局域网地址（按默认路由探测，不会错拿 docker0 的地址），
+  端口为 `51413` TCP + UDP；`/api/status` 的 `forward` 段给出 `ok` / `method` /
+  `gateway` / `external` / `mapped` / `detail`。
+- 成不成功以 Transmission 自己的 `port-test` 为准（它问外部检测服务，返回
+  `port-is-open`），别只看路由器说「建好了」。
+
+实现只用标准库（`upnp.py`），不发任何东西到第三方服务；失败原因都来自路由器返回的
+SOAP fault（如 `501 Action Failed`）或 NAT-PMP 的 result code。
+
 ## 镜像
 
 - `lscr.io/linuxserver/transmission@sha256:1a12fef3c89eca48b7be9e7d36b17b4eb4e1bcf5e1ee7fbf372e3a38b562939d`

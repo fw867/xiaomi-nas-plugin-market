@@ -17,6 +17,8 @@ import base64
 from pathlib import Path
 from urllib.parse import urlencode
 
+import upnp
+
 VERSION = '0.2.0'
 # LinuxServer Transmission 4.1.3-r0-ls362，多架构 manifest digest（含 arm64）。
 IMAGE = 'lscr.io/linuxserver/transmission@sha256:1a12fef3c89eca48b7be9e7d36b17b4eb4e1bcf5e1ee7fbf372e3a38b562939d'
@@ -378,6 +380,9 @@ class Engine:
         self.lock = threading.Lock()
         self.busy, self.error = False, ''
         self.port_state = {'testedAt': 0, 'open': None, 'error': ''}
+        # 路由器端口映射（UPnP/NAT-PMP）的结果，见 ensure_port_forward
+        self.forward_state = {'ok': False, 'method': '', 'detail': '尚未尝试', 'at': 0}
+        self.forward_lock = threading.Lock()
         # 入站端口的自检结果（见 ensure_published_ports）
         self.ports_state = {'missing': [], 'repaired': False, 'checkedAt': 0}
         self.worker = None
@@ -477,6 +482,43 @@ class Engine:
         self.ports_state = {'missing': missing, 'repaired': repaired, 'checkedAt': int(time.time())}
         return missing
 
+    def ensure_port_forward(self, force=False):
+        """启动时（或用户点「映射端口」时）请路由器把 BT 端口转给本机。
+
+        容器里的 Transmission 上报的 internal client 是 Docker 网桥地址，路由器
+        路由不到，所以必须由宿主机发起。纯尽力而为：失败只记录原因，绝不阻断启动；
+        已经在映射中时直接返回上次结果，避免并发打路由器。
+        """
+        if self.dev:
+            return self.forward_state
+        if not self.forward_lock.acquire(blocking=False):
+            return self.forward_state
+        try:
+            address = upnp.lan_address()
+            if not address:
+                self.forward_state = {'ok': False, 'method': '', 'at': int(time.time()),
+                                      'detail': '找不到局域网地址，跳过路由器映射'}
+                return self.forward_state
+            state = upnp.forward_ports(BT_PORT, BT_PORT, address,
+                                       'Xiaomi NAS Transmission')
+            self.forward_state = state
+            print('transmission: 路由器端口映射（%s）%s'
+                  % (state.get('method') or 'UPnP/NAT-PMP', state.get('detail') or ''), flush=True)
+            return self.forward_state
+        finally:
+            self.forward_lock.release()
+
+    def forward_snapshot(self):
+        """页面用的映射状态；顺带带上本次要映射的端口，方便提示文案。"""
+        state = dict(self.forward_state or {})
+        state.setdefault('externalPort', BT_PORT)
+        state.setdefault('protocols', ['TCP', 'UDP'])
+        state.setdefault('at', 0)
+        state.setdefault('detail', '尚未尝试')
+        state.setdefault('ok', False)
+        state.setdefault('method', '')
+        return state
+
     def ports_snapshot(self, running):
         """页面用的端口状态；容器没跑时不报缺失（那是用户自己停的）。"""
         missing = self.missing_published_ports() if (running and not self.dev) else []
@@ -523,6 +565,8 @@ class Engine:
             'port': {'peerPort': BT_PORT, **self.port_state},
             # 入站端口是否真的发布到了宿主机（docker-proxy 掉线会让它悄悄消失）
             'ports': self.ports_snapshot(running),
+            # 路由器上的端口映射（UPnP/NAT-PMP）
+            'forward': self.forward_snapshot(),
         }
 
     def _claim_folder(self, relative, field):
@@ -662,8 +706,9 @@ class Engine:
     def test_port(self):
         """调 Transmission 的 port-test，判断 BT 端口是否对公网开放。
 
-        注意：容器里 UPnP 自动映射不生效（容器 IP 不在 LAN 网段），
-        要开放需要在路由器上手动把 BT 端口转发到 NAS。
+        注意：**容器里** Transmission 自带的 UPnP 映射不生效（它上报的 internal
+        client 是 Docker 网桥地址，路由器路由不到）。端口转发由插件在宿主机侧做，
+        见 ensure_port_forward()——路由器不认 UPnP/NAT-PMP 时才需要手动转发。
         """
         if not self.config:
             raise Error('请先初始化')
@@ -722,6 +767,8 @@ class Engine:
         # 先修端口再等就绪：docker-proxy 掉线时宿主上没人监听 51413/tcp，
         # 重启容器会把绑定重新下发。
         self.ensure_published_ports()
+        # 端口真的发布出来了，再去路由器上要一个转发（尽力而为）
+        self.ensure_port_forward()
         for _ in range(60):
             try:
                 tr_rpc_probe()

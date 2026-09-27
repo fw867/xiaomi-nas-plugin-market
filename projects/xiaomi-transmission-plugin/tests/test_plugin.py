@@ -4,6 +4,8 @@ import io
 import json
 import os
 import re
+import socket
+import struct
 import tempfile
 import threading
 import types
@@ -18,6 +20,7 @@ from engine import (
     settings_document, settings_path, WEBUI_SUBDIR, webui_password, webui_username,
 )
 import engine  # noqa: E402  （按模块打桩，例如 engine.PROC_NET）
+import upnp  # noqa: E402
 from server import Server
 
 
@@ -30,6 +33,11 @@ class EngineTests(unittest.TestCase):
         for name in ('Downloads', 'Config', 'Watch'):
             (self.root / name).mkdir()
         self.engine = Engine(Path(self.tmp.name) / 'private', self.root)
+        # 单测绝不碰真实网络：UPnP/NAT-PMP 默认打桩，专门的用例再自己覆盖
+        self.addCleanup(patch.object(engine.upnp, 'lan_address',
+                                     return_value='192.168.1.8').stop)
+        self.addCleanup(patch.object(engine.upnp, 'forward_ports', return_value={
+            'ok': False, 'method': '', 'detail': '测试环境跳过', 'at': 0}).stop)
 
     def test_username_policy(self):
         self.assertEqual(webui_username('admin'), 'admin')
@@ -598,6 +606,21 @@ class HTTPTests(unittest.TestCase):
         self.assertIsNone(data['transfer']['dlspeed'])
         self.assertIsNone(data['transfer']['seeding'])
 
+    def test_forward_endpoint_returns_router_state(self):
+        with patch.object(self.engine, 'ensure_port_forward', return_value={
+                'ok': False, 'method': '', 'detail': 'UPnP：UPnP 错误 501（Action Failed）',
+                'at': 1, 'externalPort': BT_PORT}):
+            code, body = self.request('POST', '/api/forward', {}, self.auth())
+        self.assertEqual(code, 200)
+        data = json.loads(body)
+        self.assertTrue(data['ok'])
+        self.assertFalse(data['forward']['ok'])
+        self.assertIn('501', data['forward']['detail'])
+
+    def test_forward_endpoint_needs_csrf(self):
+        self.assertEqual(
+            self.request('POST', '/api/forward', {}, {'X-TR-Session': self.token})[0], 403)
+
     def test_status_no_secrets(self):
         code, body = self.request('GET', '/api/status', headers=self.auth())
         self.assertEqual(code, 200)
@@ -886,6 +909,254 @@ class WidgetSourceTests(unittest.TestCase):
         self.assertNotIn("'/widget.html'", (root / 'server.py').read_text(encoding='utf-8'))
 
 
+class UpnpTests(unittest.TestCase):
+    """UPnP/NAT-PMP 客户端：只用标准库，全部离线打桩。"""
+
+    def test_gateway_picks_lowest_metric_default_route(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            route = Path(tmp) / 'route'
+            route.write_text(
+                'Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n'
+                'docker0\t000011AC\t00000000\t0001\t0\t0\t0\t0000FFFF\t0\t0\t0\n'
+                'enu1u3\t00000000\t0101A8C0\t0003\t0\t0\t1004\t00000000\t0\t0\t0\n'
+                'eth9\t00000000\t0101A8C1\t0003\t0\t0\t20\t00000000\t0\t0\t0\n',
+                encoding='utf-8')
+            with patch.object(upnp, 'PROC_ROUTE', str(route)):
+                self.assertEqual(upnp.gateway(), '193.168.1.1')
+
+    def test_gateway_without_default_route(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            route = Path(tmp) / 'route'
+            route.write_text('Iface\tDestination\n', encoding='utf-8')
+            with patch.object(upnp, 'PROC_ROUTE', str(route)):
+                self.assertEqual(upnp.gateway(), '')
+
+    def test_control_point_prefers_wan_service(self):
+        description = (
+            '<?xml version="1.0"?><root xmlns="urn:schemas-upnp-org:device-1-0"><device>'
+            '<serviceList>'
+            '<service><serviceType>urn:schemas-upnp-org:service:Layer3Forwarding:1</serviceType>'
+            '<controlURL>/ctl/L3F</controlURL></service>'
+            '<service><serviceType>urn:schemas-upnp-org:service:WANIPConnection:2</serviceType>'
+            '<controlURL>/ctl/IPConn</controlURL></service>'
+            '</serviceList></device></root>')
+        with patch.object(upnp, '_request', return_value=(200, description)):
+            service_type, control = upnp.control_point('http://192.168.1.1:41795/rootDesc.xml')
+        self.assertEqual(service_type, 'urn:schemas-upnp-org:service:WANIPConnection:2')
+        self.assertEqual(control, 'http://192.168.1.1:41795/ctl/IPConn')
+
+    def test_control_point_without_wan_service(self):
+        description = ('<?xml version="1.0"?><root xmlns="urn:schemas-upnp-org:device-1-0">'
+                       '<device/></root>')
+        with patch.object(upnp, '_request', return_value=(200, description)):
+            with self.assertRaises(upnp.UpnpError):
+                upnp.control_point('http://192.168.1.1/rootDesc.xml')
+
+    def test_control_point_reports_bad_description(self):
+        with patch.object(upnp, '_request', return_value=(200, 'not xml')):
+            with self.assertRaises(upnp.UpnpError) as ctx:
+                upnp.control_point('http://192.168.1.1/rootDesc.xml')
+        self.assertIn('解析失败', str(ctx.exception))
+
+    def test_add_mapping_reports_router_fault(self):
+        fault = ('<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>'
+                 '<s:Fault><detail><UPnPError xmlns="urn:schemas-upnp-org:control-1-0">'
+                 '<errorCode>501</errorCode><errorDescription>Action Failed</errorDescription>'
+                 '</UPnPError></detail></s:Fault></s:Body></s:Envelope>')
+        with patch.object(upnp, '_request', return_value=(500, fault)):
+            with self.assertRaises(upnp.UpnpError) as ctx:
+                upnp.add_mapping('http://192.168.1.1/ctl', 'urn:x:WANIPConnection:2',
+                                 51413, 51413, '192.168.1.8', 'TCP', 'desc')
+        self.assertIn('501', str(ctx.exception))
+        self.assertIn('Action Failed', str(ctx.exception))
+
+    def test_add_mapping_sends_the_expected_arguments(self):
+        seen = {}
+
+        def fake_request(url, data=None, headers=None, timeout=None):
+            action = (headers or {}).get('SOAPAction', '')
+            if 'AddPortMapping' in action:
+                seen['body'] = data.decode()
+                seen['url'] = url
+                return 200, '<ok/>'
+            return 200, ('<NewInternalClient>192.168.1.8</NewInternalClient>'
+                         '<NewInternalPort>51413</NewInternalPort>')
+
+        with patch.object(upnp, '_request', side_effect=fake_request):
+            status = upnp.add_mapping('http://192.168.1.1:41795/ctl/IPConn',
+                                      'urn:x:WANIPConnection:2', 51413, 51413,
+                                      '192.168.1.8', 'TCP', 'Xiaomi NAS Transmission')
+        self.assertIn('<NewExternalPort>51413</NewExternalPort>', seen['body'])
+        self.assertIn('<NewProtocol>TCP</NewProtocol>', seen['body'])
+        self.assertIn('<NewInternalPort>51413</NewInternalPort>', seen['body'])
+        self.assertIn('<NewInternalClient>192.168.1.8</NewInternalClient>', seen['body'])
+        self.assertIn('<NewEnabled>1</NewEnabled>', seen['body'])
+        self.assertEqual(seen['url'], 'http://192.168.1.1:41795/ctl/IPConn')
+        self.assertEqual(status['internal'], '192.168.1.8')
+
+    def test_mapping_status_none_when_absent(self):
+        fault = ('<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>'
+                 '<s:Fault><detail><UPnPError xmlns="urn:schemas-upnp-org:control-1-0">'
+                 '<errorCode>714</errorCode></UPnPError></detail></s:Fault></s:Body></s:Envelope>')
+        with patch.object(upnp, '_request', return_value=(500, fault)):
+            self.assertIsNone(upnp.mapping_status('http://192.168.1.1/ctl',
+                                                  'urn:x:WANIPConnection:2', 51413, 'TCP'))
+
+    def test_natpmp_success(self):
+        reply = struct.pack('!BBHIHH', 0, 130, 0, 100, 51413, 51413)
+        sock = _FakeSocket([reply])
+        with patch.object(upnp.socket, 'socket', return_value=sock):
+            ok, detail = upnp.natpmp_map('192.168.1.1', 51413, 51413, 'tcp')
+        self.assertTrue(ok)
+        self.assertIn('51413', detail)
+        self.assertEqual(sock.sent[0][1], ('192.168.1.1', 5351))
+        self.assertEqual(sock.sent[0][0][:2], bytes([0, 2]))       # 版本 0，MAP TCP
+
+    def test_natpmp_refused(self):
+        reply = struct.pack('!BBHIHH', 0, 130, 3, 100, 51413, 0)
+        with patch.object(upnp.socket, 'socket', return_value=_FakeSocket([reply])):
+            ok, detail = upnp.natpmp_map('192.168.1.1', 51413, 51413, 'tcp')
+        self.assertFalse(ok)
+        self.assertIn('网络故障', detail)
+
+    def test_natpmp_timeout(self):
+        with patch.object(upnp.socket, 'socket', return_value=_FakeSocket([])):
+            ok, detail = upnp.natpmp_map('192.168.1.1', 51413, 51413, 'udp')
+        self.assertFalse(ok)
+        self.assertIn('没有响应', detail)
+
+    def test_forward_prefers_upnp(self):
+        with patch.object(upnp, '_try_upnp', return_value=(
+                ['TCP', 'UDP'], [], {'gateway': '192.168.1.1', 'external': '1.2.3.4'})):
+            state = upnp.forward_ports(51413, 51413, '192.168.1.8', 'desc')
+        self.assertTrue(state['ok'])
+        self.assertEqual(state['method'], 'UPnP')
+        self.assertEqual(state['external'], '1.2.3.4')
+        self.assertEqual(state['mapped'], ['TCP', 'UDP'])
+
+    def test_forward_falls_back_to_natpmp(self):
+        with patch.object(upnp, '_try_upnp',
+                          side_effect=upnp.UpnpError('路由器没有响应 UPnP 搜索')), \
+                patch.object(upnp, 'gateway', return_value='192.168.1.1'), \
+                patch.object(upnp, '_try_natpmp', return_value=(['TCP', 'UDP'], [])):
+            state = upnp.forward_ports(51413, 51413, '192.168.1.8', 'desc')
+        self.assertTrue(state['ok'])
+        self.assertEqual(state['method'], 'NAT-PMP')
+
+    def test_forward_reports_both_failures(self):
+        with patch.object(upnp, '_try_upnp',
+                          side_effect=upnp.UpnpError('路由器没有响应 UPnP 搜索')), \
+                patch.object(upnp, 'gateway', return_value='192.168.1.1'), \
+                patch.object(upnp, '_try_natpmp', return_value=([], ['TCP NAT-PMP 被拒绝'])):
+            state = upnp.forward_ports(51413, 51413, '192.168.1.8', 'desc')
+        self.assertFalse(state['ok'])
+        self.assertIn('UPnP', state['detail'])
+        self.assertIn('NAT-PMP', state['detail'])
+
+    def test_forward_partial_upnp_keeps_tcp(self):
+        with patch.object(upnp, '_try_upnp',
+                          return_value=(['TCP'], ['UDP UPnP 错误 501'], {})):
+            state = upnp.forward_ports(51413, 51413, '192.168.1.8', 'desc')
+        self.assertFalse(state['ok'])
+        self.assertEqual(state['mapped'], ['TCP'])
+        self.assertIn('部分成功', state['detail'])
+
+    def test_forward_without_any_router(self):
+        with patch.object(upnp, '_try_upnp', side_effect=upnp.UpnpError('没响应')), \
+                patch.object(upnp, 'gateway', return_value=''):
+            state = upnp.forward_ports(51413, 51413, '192.168.1.8', 'desc')
+        self.assertFalse(state['ok'])
+        self.assertIn('没响应', state['detail'])
+        self.assertEqual(state['internal'], '192.168.1.8')
+
+
+class PortForwardEngineTests(unittest.TestCase):
+    """引擎侧的端口映射：尽力而为，绝不阻断启动。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name) / 'root'
+        root.mkdir()
+        self.engine = Engine(Path(self.tmp.name) / 'data', root)
+
+    def test_records_failure_detail(self):
+        with patch.object(engine.upnp, 'lan_address', return_value='192.168.1.8'), \
+                patch.object(engine.upnp, 'forward_ports', return_value={
+                    'ok': False, 'method': '', 'detail': 'UPnP：UPnP 错误 501（Action Failed）',
+                    'at': 1}):
+            state = self.engine.ensure_port_forward(True)
+        self.assertFalse(state['ok'])
+        self.assertIn('501', state['detail'])
+        self.assertIn('501', self.engine.forward_snapshot()['detail'])
+
+    def test_records_success(self):
+        with patch.object(engine.upnp, 'lan_address', return_value='192.168.1.8'), \
+                patch.object(engine.upnp, 'forward_ports', return_value={
+                    'ok': True, 'method': 'UPnP', 'detail': 'UPnP 映射成功', 'at': 1}) as call:
+            self.engine.ensure_port_forward(True)
+        self.assertTrue(self.engine.forward_snapshot()['ok'])
+        self.assertEqual(call.call_args.args[2], '192.168.1.8')      # internal client
+        self.assertEqual(call.call_args.args[0], BT_PORT)
+
+    def test_skips_without_lan_address(self):
+        with patch.object(engine.upnp, 'lan_address', return_value=''), \
+                patch.object(engine.upnp, 'forward_ports') as call:
+            state = self.engine.ensure_port_forward(True)
+        self.assertFalse(state['ok'])
+        self.assertIn('局域网地址', state['detail'])
+        self.assertEqual(call.call_count, 0)
+
+    def test_snapshot_carries_forward_state(self):
+        self.engine.config = {'owner': 'tok', 'config': '/tmp/config'}
+        stopped = {'Config': {'Labels': {LABEL: 'tok'}}, 'State': {'Running': False}}
+        with patch.object(self.engine, 'owned', return_value=stopped):
+            data = self.engine.snapshot()
+        self.assertIn('forward', data)
+        self.assertEqual(data['forward']['externalPort'], BT_PORT)
+        self.assertEqual(sorted(data['forward']['protocols']), ['TCP', 'UDP'])
+
+    def test_start_tries_the_router_mapping(self):
+        self.engine.config = {'owner': 'tok'}
+        with patch.object(self.engine, 'check_directories'), \
+                patch.object(self.engine, 'adopt_legacy_settings', return_value=False), \
+                patch.object(self.engine, 'ensure_settings', return_value=False), \
+                patch.object(self.engine, 'ensure_webui'), \
+                patch.object(self.engine, 'owned', return_value=None), \
+                patch.object(self.engine, 'saved_password', return_value='Secret123!'), \
+                patch.object(self.engine, 'pull'), \
+                patch.object(self.engine, '_call'), \
+                patch('engine.container_config', return_value={}), \
+                patch.object(self.engine, 'ensure_published_ports'), \
+                patch.object(self.engine, 'ensure_port_forward') as forward, \
+                patch('engine.tr_rpc_probe', return_value=True), \
+                patch('engine.atomic_json'):
+            self.engine.start()
+        self.assertEqual(forward.call_count, 1)
+
+
+class _FakeSocket:
+    """NAT-PMP 测试用：recvfrom 依次吐出预设应答，没有应答就模拟超时。"""
+
+    def __init__(self, replies):
+        self.replies = list(replies)
+        self.sent = []
+
+    def settimeout(self, value):
+        return None
+
+    def sendto(self, data, address):
+        self.sent.append((data, address))
+
+    def recvfrom(self, size):
+        if not self.replies:
+            raise socket.timeout
+        return self.replies.pop(0), ('192.168.1.1', 5351)
+
+    def close(self):
+        return None
+
+
 class UiTests(unittest.TestCase):
     def setUp(self):
         self.web = Path(__file__).resolve().parents[1] / 'web'
@@ -922,6 +1193,17 @@ class UiTests(unittest.TestCase):
                 script = (self.web / name).read_text(encoding='utf-8')
                 self.assertIn("$('#portPublish')", script)
                 self.assertIn('入站端口未发布', script)
+
+    def test_page_shows_router_mapping_row(self):
+        html = (self.web / 'index.html').read_text(encoding='utf-8')
+        for name in ('forwardState', 'forwardPort'):
+            with self.subTest(name=name):
+                self.assertIn('id="%s"' % name, html)
+        for name in ('app.js', 'app.bundle.js'):
+            with self.subTest(name=name):
+                script = (self.web / name).read_text(encoding='utf-8')
+                self.assertIn('function renderForward(current)', script)
+                self.assertIn("$('#forwardPort')", script)
 
     def test_page_shows_glance_stats(self):
         html = (self.web / 'index.html').read_text(encoding='utf-8')
