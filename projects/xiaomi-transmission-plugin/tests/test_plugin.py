@@ -8,6 +8,7 @@ import socket
 import struct
 import tempfile
 import threading
+import time
 import types
 import unittest
 import zipfile
@@ -18,6 +19,7 @@ from engine import (
     Engine, Error, IMAGE, NAME, LABEL, PORT, BT_PORT, VERSION, IMAGE_VERSION,
     LEGACY_SETTINGS_FOLDER, confined, container_config, installed_version,
     settings_document, settings_path, WEBUI_SUBDIR, webui_password, webui_username,
+    FORWARD_RETRY_SECONDS,
 )
 import engine  # noqa: E402  （按模块打桩，例如 engine.PROC_NET）
 import upnp  # noqa: E402
@@ -617,6 +619,26 @@ class HTTPTests(unittest.TestCase):
         self.assertFalse(data['forward']['ok'])
         self.assertIn('501', data['forward']['detail'])
 
+    def test_forward_keeper_survives_errors(self):
+        """定时器里的一时失败不能把循环打断（否则 NAT-PMP 就没人续期了）。"""
+        from server import forward_keeper
+
+        ticks = []
+
+        def fake_sleep(_seconds):
+            ticks.append(1)
+            if len(ticks) > 2:
+                raise KeyboardInterrupt
+
+        def boom():
+            raise RuntimeError('路由器抽风')
+
+        stub = types.SimpleNamespace(keep_forward_alive=boom)
+        with patch('server.time.sleep', side_effect=fake_sleep):
+            with self.assertRaises(KeyboardInterrupt):
+                forward_keeper(stub)
+        self.assertGreaterEqual(len(ticks), 3)
+
     def test_forward_endpoint_needs_csrf(self):
         self.assertEqual(
             self.request('POST', '/api/forward', {}, {'X-TR-Session': self.token})[0], 403)
@@ -1003,27 +1025,38 @@ class UpnpTests(unittest.TestCase):
                                                   'urn:x:WANIPConnection:2', 51413, 'TCP'))
 
     def test_natpmp_success(self):
-        reply = struct.pack('!BBHIHH', 0, 130, 0, 100, 51413, 51413)
+        # 16 字节应答：末尾 4 字节是路由器给的租期
+        reply = struct.pack('!BBHIHHI', 0, 130, 0, 100, 51413, 51413, 3600)
         sock = _FakeSocket([reply])
         with patch.object(upnp.socket, 'socket', return_value=sock):
-            ok, detail = upnp.natpmp_map('192.168.1.1', 51413, 51413, 'tcp')
+            ok, detail, lease = upnp.natpmp_map('192.168.1.1', 51413, 51413, 'tcp')
         self.assertTrue(ok)
         self.assertIn('51413', detail)
+        self.assertEqual(lease, 3600)
         self.assertEqual(sock.sent[0][1], ('192.168.1.1', 5351))
         self.assertEqual(sock.sent[0][0][:2], bytes([0, 2]))       # 版本 0，MAP TCP
+
+    def test_natpmp_success_without_lease_field(self):
+        reply = struct.pack('!BBHIHH', 0, 130, 0, 100, 51413, 51413)
+        with patch.object(upnp.socket, 'socket', return_value=_FakeSocket([reply])):
+            ok, _, lease = upnp.natpmp_map('192.168.1.1', 51413, 51413, 'tcp')
+        self.assertTrue(ok)
+        self.assertEqual(lease, 7200)                              # 应答没带租期就用请求值
 
     def test_natpmp_refused(self):
         reply = struct.pack('!BBHIHH', 0, 130, 3, 100, 51413, 0)
         with patch.object(upnp.socket, 'socket', return_value=_FakeSocket([reply])):
-            ok, detail = upnp.natpmp_map('192.168.1.1', 51413, 51413, 'tcp')
+            ok, detail, lease = upnp.natpmp_map('192.168.1.1', 51413, 51413, 'tcp')
         self.assertFalse(ok)
         self.assertIn('网络故障', detail)
+        self.assertEqual(lease, 0)
 
     def test_natpmp_timeout(self):
         with patch.object(upnp.socket, 'socket', return_value=_FakeSocket([])):
-            ok, detail = upnp.natpmp_map('192.168.1.1', 51413, 51413, 'udp')
+            ok, detail, lease = upnp.natpmp_map('192.168.1.1', 51413, 51413, 'udp')
         self.assertFalse(ok)
         self.assertIn('没有响应', detail)
+        self.assertEqual(lease, 0)
 
     def test_forward_prefers_upnp(self):
         with patch.object(upnp, '_try_upnp', return_value=(
@@ -1038,16 +1071,18 @@ class UpnpTests(unittest.TestCase):
         with patch.object(upnp, '_try_upnp',
                           side_effect=upnp.UpnpError('路由器没有响应 UPnP 搜索')), \
                 patch.object(upnp, 'gateway', return_value='192.168.1.1'), \
-                patch.object(upnp, '_try_natpmp', return_value=(['TCP', 'UDP'], [])):
+                patch.object(upnp, '_try_natpmp', return_value=(['TCP', 'UDP'], [], 3600)):
             state = upnp.forward_ports(51413, 51413, '192.168.1.8', 'desc')
         self.assertTrue(state['ok'])
         self.assertEqual(state['method'], 'NAT-PMP')
+        # NAT-PMP 有租期，得让上层知道要续期
+        self.assertEqual(state['lease'], 3600)
 
     def test_forward_reports_both_failures(self):
         with patch.object(upnp, '_try_upnp',
                           side_effect=upnp.UpnpError('路由器没有响应 UPnP 搜索')), \
                 patch.object(upnp, 'gateway', return_value='192.168.1.1'), \
-                patch.object(upnp, '_try_natpmp', return_value=([], ['TCP NAT-PMP 被拒绝'])):
+                patch.object(upnp, '_try_natpmp', return_value=([], ['TCP NAT-PMP 被拒绝'], 0)):
             state = upnp.forward_ports(51413, 51413, '192.168.1.8', 'desc')
         self.assertFalse(state['ok'])
         self.assertIn('UPnP', state['detail'])
@@ -1115,6 +1150,37 @@ class PortForwardEngineTests(unittest.TestCase):
         self.assertIn('forward', data)
         self.assertEqual(data['forward']['externalPort'], BT_PORT)
         self.assertEqual(sorted(data['forward']['protocols']), ['TCP', 'UDP'])
+
+    def test_permanent_upnp_mapping_is_not_renewed(self):
+        self.engine.forward_state = {'ok': True, 'method': 'UPnP', 'lease': 0, 'at': 1000}
+        self.assertFalse(self.engine.forward_due(now=1000 + 86400))
+
+    def test_natpmp_mapping_renews_before_expiry(self):
+        self.engine.forward_state = {'ok': True, 'method': 'NAT-PMP', 'lease': 7200, 'at': 1000}
+        self.assertFalse(self.engine.forward_due(now=1000 + 3599))
+        self.assertTrue(self.engine.forward_due(now=1000 + 3600))
+
+    def test_failed_mapping_is_retried_later(self):
+        self.engine.forward_state = {'ok': False, 'at': 1000, 'detail': 'UPnP 错误 501'}
+        self.assertFalse(self.engine.forward_due(now=1000 + 60))
+        self.assertTrue(self.engine.forward_due(now=1000 + FORWARD_RETRY_SECONDS))
+
+    def test_never_attempted_is_not_due(self):
+        self.assertFalse(self.engine.forward_due(now=10 ** 9))
+
+    def test_keep_forward_alive_renews_when_due(self):
+        self.engine.forward_state = {'ok': True, 'method': 'NAT-PMP', 'lease': 60,
+                                     'at': int(time.time()) - 120}
+        with patch.object(self.engine, 'ensure_port_forward') as call:
+            self.assertTrue(self.engine.keep_forward_alive())
+        self.assertEqual(call.call_count, 1)
+
+    def test_keep_forward_alive_skips_permanent_mapping(self):
+        self.engine.forward_state = {'ok': True, 'method': 'UPnP', 'lease': 0,
+                                     'at': int(time.time()) - 86400}
+        with patch.object(self.engine, 'ensure_port_forward') as call:
+            self.assertFalse(self.engine.keep_forward_alive())
+        self.assertEqual(call.call_count, 0)
 
     def test_start_tries_the_router_mapping(self):
         self.engine.config = {'owner': 'tok'}

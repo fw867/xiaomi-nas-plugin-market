@@ -215,7 +215,11 @@ def delete_mapping(control, service_type, external_port, protocol):
 
 
 def natpmp_map(gateway_address, internal_port, external_port, protocol='tcp', lifetime=7200):
-    """RFC 6886 的 MAP 请求；返回 (是否成功, 说明)。"""
+    """RFC 6886 的 MAP 请求；返回 (是否成功, 说明, 路由器给的租期秒数)。
+
+    NAT-PMP 的映射**不是永久的**（RFC 最多给 7200 秒），到期就没了，
+    调用方要在到期前重建，见 Engine.keep_forward_alive。
+    """
     opcode = 2 if protocol.lower() == 'tcp' else 1
     packet = struct.pack('!BBHHHI', 0, opcode, 0, internal_port, external_port, lifetime)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -224,18 +228,20 @@ def natpmp_map(gateway_address, internal_port, external_port, protocol='tcp', li
         sock.sendto(packet, (gateway_address, NATPMP_PORT))
         data, _ = sock.recvfrom(64)
     except socket.timeout:
-        return False, '路由器没有响应 NAT-PMP'
+        return False, '路由器没有响应 NAT-PMP', 0
     except OSError as exc:
-        return False, 'NAT-PMP 失败：%s' % exc
+        return False, 'NAT-PMP 失败：%s' % exc, 0
     finally:
         sock.close()
     if len(data) < 12:
-        return False, 'NAT-PMP 应答无效'
+        return False, 'NAT-PMP 应答无效', 0
     result = struct.unpack('!H', data[2:4])[0]
     if result != 0:
-        return False, 'NAT-PMP 被拒绝：%s（result=%d）' % (NATPMP_REASONS.get(result, '未知原因'), result)
+        return (False, 'NAT-PMP 被拒绝：%s（result=%d）'
+                % (NATPMP_REASONS.get(result, '未知原因'), result), 0)
     mapped = struct.unpack('!H', data[10:12])[0]
-    return True, 'NAT-PMP 映射成功（外网端口 %d）' % mapped
+    granted = struct.unpack('!I', data[12:16])[0] if len(data) >= 16 else lifetime
+    return True, 'NAT-PMP 映射成功（外网端口 %d）' % mapped, granted or lifetime
 
 
 def _try_upnp(external_port, internal_port, internal_client, description, protocols):
@@ -259,15 +265,18 @@ def _try_upnp(external_port, internal_port, internal_client, description, protoc
 
 
 def _try_natpmp(gateway_address, internal_port, external_port, protocols):
-    mapped, failures = [], []
+    """返回 (成功协议, 失败说明, 租期秒数)——取所有协议里最短的租期，保守续期。"""
+    mapped, failures, leases = [], [], []
     for protocol in protocols:
-        ok, detail = natpmp_map(gateway_address, internal_port, external_port,
-                                protocol=protocol)
+        ok, detail, granted = natpmp_map(gateway_address, internal_port, external_port,
+                                         protocol=protocol)
         if ok:
             mapped.append(protocol)
+            if granted:
+                leases.append(granted)
         else:
             failures.append('%s %s' % (protocol, detail))
-    return mapped, failures
+    return mapped, failures, (min(leases) if leases else 0)
 
 
 def forward_ports(external_port, internal_port, internal_client, description,
@@ -288,6 +297,9 @@ def forward_ports(external_port, internal_port, internal_client, description,
         'externalPort': external_port,
         'protocols': list(protocols),
         'mapped': [],
+        # 映射租期秒数：UPnP 用 lease=0（永久）所以是 0；NAT-PMP 由路由器给定，
+        # 非 0 就要在到期前重建
+        'lease': 0,
         'at': int(time.time()),
     }
     problems = []
@@ -313,13 +325,16 @@ def forward_ports(external_port, internal_port, internal_client, description,
     gateway_address = gateway_address or gateway()
     state['gateway'] = state['gateway'] or gateway_address
     if gateway_address:
-        mapped, failures = _try_natpmp(gateway_address, internal_port, external_port, protocols)
+        mapped, failures, lease = _try_natpmp(gateway_address, internal_port,
+                                              external_port, protocols)
         if mapped:
             state['mapped'] = mapped
             state['method'] = 'NAT-PMP'
+            state['lease'] = lease
             if not failures:
-                state.update(ok=True, detail='NAT-PMP 映射成功（%d → %s:%d）'
-                                             % (external_port, internal_client, internal_port))
+                state.update(ok=True, detail='NAT-PMP 映射成功（%d → %s:%d，租期 %d 秒）'
+                                             % (external_port, internal_client, internal_port,
+                                                lease))
                 return state
             state['detail'] = 'NAT-PMP 部分成功（%s），%s' % ('/'.join(mapped), '；'.join(failures))
             return state

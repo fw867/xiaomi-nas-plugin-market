@@ -123,6 +123,17 @@ BT 要能从外面连上，路由器上得有 `51413` 的转发。**容器里 Tr
   `gateway` / `external` / `mapped` / `detail`。
 - 成不成功以 Transmission 自己的 `port-test` 为准（它问外部检测服务，返回
   `port-is-open`），别只看路由器说「建好了」。
+- **续期**：UPnP 用 `lease=0`（永久映射，建成后不再打扰路由器）；NAT-PMP 的租期由路由器
+  给定（实测 7200 秒），插件在**到期一半**时自动重建；失败的话每 30 分钟重试一次
+  （路由器重启、UPnP 刚被打开这类情况能自愈）。定时器跑在插件服务里，60 秒一轮。
+
+### 实测踩到的坑（UniFi / UCG-Fiber）
+
+- **UPnP 的 Secure Mode 开着时，`AddPortMapping` 一律返回 `501 Action Failed`**，
+  连 NAT-PMP 也返回 `result=3`（网络故障）。现象很有迷惑性：能 SSDP 发现路由器、能读到
+  外网 IP、能查映射表，但**任何端口的映射都建不了**（换 50000/12345/6881 一样 501）。
+  把 UPnP 的 Secure Mode 关掉就通了。
+- 同一个设置页里的 **NAT-PMP 建议一起打开**，UPnP 被拒时才有兜底可退。
 
 实现只用标准库（`upnp.py`），不发任何东西到第三方服务；失败原因都来自路由器返回的
 SOAP fault（如 `501 Action Failed`）或 NAT-PMP 的 result code。

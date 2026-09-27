@@ -32,6 +32,8 @@ PROC_NET = Path(os.environ.get('PROC_NET', '/proc/net'))
 
 # 必须真正发布到宿主机的端口：WebUI 一个 TCP，BT 入站要 TCP + UDP。
 PUBLISHED_PORTS = (('tcp', PORT), ('tcp', BT_PORT), ('udp', BT_PORT))
+# 路由器映射失败后隔多久再试（路由器重启、UPnP 刚打开这类情况能自愈）
+FORWARD_RETRY_SECONDS = 1800
 
 
 class Error(RuntimeError):
@@ -514,10 +516,35 @@ class Engine:
         state.setdefault('externalPort', BT_PORT)
         state.setdefault('protocols', ['TCP', 'UDP'])
         state.setdefault('at', 0)
+        state.setdefault('lease', 0)
         state.setdefault('detail', '尚未尝试')
         state.setdefault('ok', False)
         state.setdefault('method', '')
         return state
+
+    def forward_due(self, now=None):
+        """现在该不该再碰一次路由器。
+
+        - UPnP 用的是永久映射（lease=0），建成之后不用管；
+        - NAT-PMP 的映射有租期，到期前一半就得重建，否则 BT 入站会静默失效；
+        - 失败的话隔 30 分钟重试一次（路由器重启、UPnP 刚被打开这类情况能自愈）。
+        """
+        state = self.forward_state or {}
+        stamp = int(state.get('at') or 0)
+        if not stamp:
+            return False
+        elapsed = int(now if now is not None else time.time()) - stamp
+        if state.get('ok'):
+            lease = int(state.get('lease') or 0)
+            return bool(lease) and elapsed >= max(60, lease // 2)
+        return elapsed >= FORWARD_RETRY_SECONDS
+
+    def keep_forward_alive(self):
+        """给定时器调的：该续期/重试就再跑一次 ensure_port_forward。"""
+        if self.dev or not self.forward_due():
+            return False
+        self.ensure_port_forward(True)
+        return True
 
     def ports_snapshot(self, running):
         """页面用的端口状态；容器没跑时不报缺失（那是用户自己停的）。"""
