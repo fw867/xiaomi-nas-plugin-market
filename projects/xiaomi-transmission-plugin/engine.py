@@ -396,6 +396,8 @@ class Engine:
         self.forward_lock = threading.Lock()
         # 入站端口的自检结果（见 ensure_published_ports）
         self.ports_state = {'missing': [], 'repaired': False, 'checkedAt': 0}
+        # 上一次「因为缺端口而重启容器」的时刻，运行期巡检靠它限流
+        self.last_port_repair = 0.0
         self.worker = None
         self.cfgfile = self.data / 'settings.json'
         self.credentialfile = self.data / 'credential.json'
@@ -611,6 +613,32 @@ class Engine:
             return False
         self.ensure_port_forward(True)
         return True
+
+    def keep_published_ports_alive(self, repair_interval=600):
+        """给定时器调的：容器还在跑，docker-proxy 却掉线了，把端口补回来。
+
+        `ensure_published_ports()` 只在「启动那一刻」自检。实测 proxy 会在容器继续
+        运行时悄悄死掉（进程变僵尸，dmesg 里既没有 OOM 也没有 segfault），而 dockerd
+        带 `iptables: false` 启动、没有 DNAT 兜底，端口就一直不通：局域网和公网同时
+        连不上，页面上那条「入站端未发布」要等到用户下次手动启动才会消失。
+        两次修复至少隔 repair_interval 秒，免得反复重启打断正在下的任务。
+        """
+        if self.dev or not (self.config or {}).get('enabled'):
+            return ''            # 服务是用户自己停的，不能被定时器拉起来
+        if not self.lock.acquire(False):
+            return ''            # 正在启停，这一轮先不动
+        try:
+            missing = self.missing_published_ports()
+            if not missing:
+                return ''
+            now = time.time()
+            if now - self.last_port_repair < repair_interval:
+                return '、'.join(missing)
+            self.last_port_repair = now
+            self.ensure_published_ports()
+            return '、'.join(self.ports_state.get('missing') or [])
+        finally:
+            self.lock.release()
 
     def ports_snapshot(self, running):
         """页面用的端口状态；容器没跑时不报缺失（那是用户自己停的）。"""

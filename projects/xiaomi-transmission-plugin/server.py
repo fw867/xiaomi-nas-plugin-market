@@ -542,6 +542,21 @@ def forward_keeper(engine, interval=60, sleep=time.sleep):
             pass
 
 
+def port_keeper(engine, interval=60, sleep=time.sleep):
+    """后台定时器：入站端口的自检不能只在启动时做一次。
+
+    docker-proxy 会在容器继续运行时悄悄死掉，而 dockerd 带 `iptables: false` 启动、
+    没有 DNAT 兜底，端口一死局域网和公网同时不通。这条腿每 interval 秒看一眼宿主机
+    监听，缺了交给引擎重启容器把端口绑定重新下发。
+    """
+    while True:
+        sleep(interval)
+        try:
+            engine.keep_published_ports_alive()
+        except Exception:                                    # noqa: BLE001 定时器不能死
+            pass
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dev', action='store_true')
@@ -561,6 +576,7 @@ def main():
     if engine.config and engine.config.get('enabled') and not args.dev:
         engine.launch('start', {})
     threading.Thread(target=forward_keeper, args=(engine,), daemon=True).start()
+    threading.Thread(target=port_keeper, args=(engine,), daemon=True).start()
     print('Transmission plugin listening on http://127.0.0.1:' + str(server.server_port), flush=True)
     try:
         server.serve_forever()

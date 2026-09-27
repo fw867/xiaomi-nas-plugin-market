@@ -1,4 +1,4 @@
-import base64
+﻿import base64
 import ast
 import http.client
 import io
@@ -640,6 +640,25 @@ class HTTPTests(unittest.TestCase):
             forward_keeper(stub, sleep=fake_sleep)
         self.assertGreaterEqual(len(ticks), 3)
 
+    def test_port_keeper_survives_errors(self):
+        """端口巡检这条腿也不能因为一次异常就停摆，否则端口掉了没人补。"""
+        from server import port_keeper
+
+        ticks = []
+
+        def fake_sleep(_seconds):
+            ticks.append(1)
+            if len(ticks) > 2:
+                raise KeyboardInterrupt
+
+        def boom():
+            raise RuntimeError('Docker 抽风')
+
+        stub = types.SimpleNamespace(keep_published_ports_alive=boom)
+        with self.assertRaises(KeyboardInterrupt):
+            port_keeper(stub, sleep=fake_sleep)
+        self.assertGreaterEqual(len(ticks), 3)
+
     def test_forward_endpoint_needs_csrf(self):
         self.assertEqual(
             self.request('POST', '/api/forward', {}, {'X-TR-Session': self.token})[0], 403)
@@ -870,7 +889,7 @@ class PortPublishTests(unittest.TestCase):
 
     def test_ensure_does_nothing_when_ports_are_published(self):
         self.write_net(tcp_listen=[9091, 51413], udp=[51413])
-        with patch('engine.docker_api') as api:
+        with patch('engine.docker_api', return_value=(204, b'{}')) as api:
             missing = self.engine.ensure_published_ports()
         self.assertEqual(missing, [])
         self.assertFalse(self.engine.ports_state['repaired'])
@@ -879,8 +898,65 @@ class PortPublishTests(unittest.TestCase):
     def test_dev_mode_never_restarts(self):
         self.engine.dev = True
         self.write_net(tcp_listen=[9091], udp=[51413])
-        with patch('engine.docker_api') as api:
+        with patch('engine.docker_api', return_value=(204, b'{}')) as api:
             self.engine.ensure_published_ports()
+        self.assertEqual(api.call_count, 0)
+
+    def test_running_watchdog_restarts_when_proxy_dies(self):
+        """运行期 proxy 掉线也要补：启动时的自检管不到这一刻（实测 20 分钟内就掉了）。"""
+        self.engine.config = {'enabled': True, 'owner': 'owner-token'}
+        self.write_net(tcp_listen=[9091], udp=[51413])           # 51413/tcp 没了
+        calls = []
+
+        def fake_api(method, path, body=None, timeout=30):
+            calls.append((method, path))
+            if path.startswith('/containers/' + NAME + '/restart'):
+                self.write_net(tcp_listen=[9091, 51413], udp=[51413])
+            return 204, b'{}'
+
+        with patch('engine.docker_api', side_effect=fake_api):
+            missing = self.engine.keep_published_ports_alive(repair_interval=0)
+        self.assertEqual(missing, '')
+        self.assertEqual(calls, [('POST', '/containers/' + NAME + '/restart?t=15')])
+        self.assertTrue(self.engine.ports_state['repaired'])
+
+    def test_running_watchdog_leaves_stopped_service_alone(self):
+        """用户停掉的服务不能被定时器拉起来。"""
+        self.engine.config = {'enabled': False}
+        self.write_net(tcp_listen=[], udp=[])
+        with patch('engine.docker_api', return_value=(204, b'{}')) as api:
+            self.assertEqual(self.engine.keep_published_ports_alive(repair_interval=0), '')
+        self.assertEqual(api.call_count, 0)
+
+    def test_running_watchdog_throttles_repairs(self):
+        """修不好也不能每分钟重启一次容器，那会把下载打断。"""
+        self.engine.config = {'enabled': True}
+        self.write_net(tcp_listen=[9091], udp=[51413])
+        with patch('engine.docker_api', return_value=(204, b'{}')) as api, \
+                patch.object(self.engine, 'wait_published_ports', return_value=['51413/tcp']):
+            self.engine.keep_published_ports_alive(repair_interval=600)
+            self.engine.keep_published_ports_alive(repair_interval=600)
+        self.assertEqual(api.call_count, 1)
+        self.assertGreater(self.engine.last_port_repair, 0)
+
+    def test_running_watchdog_yields_to_user_action(self):
+        """手动启停进行中时，定时器不能同时去重启容器。"""
+        self.engine.config = {'enabled': True}
+        self.write_net(tcp_listen=[9091], udp=[51413])
+        self.engine.lock.acquire()
+        try:
+            with patch('engine.docker_api', return_value=(204, b'{}')) as api:
+                self.assertEqual(self.engine.keep_published_ports_alive(repair_interval=0), '')
+            self.assertEqual(api.call_count, 0)
+        finally:
+            self.engine.lock.release()
+
+    def test_running_watchdog_quiet_when_ports_are_published(self):
+        """一切正常时不产生任何 Docker 调用。"""
+        self.engine.config = {'enabled': True}
+        self.write_net(tcp_listen=[9091, 51413], udp=[51413])
+        with patch('engine.docker_api', return_value=(204, b'{}')) as api:
+            self.assertEqual(self.engine.keep_published_ports_alive(repair_interval=0), '')
         self.assertEqual(api.call_count, 0)
 
     def test_snapshot_exposes_port_state(self):
