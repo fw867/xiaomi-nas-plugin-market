@@ -1057,6 +1057,94 @@ class UpnpTests(unittest.TestCase):
         self.assertIn('没有响应', detail)
         self.assertEqual(lease, 0)
 
+    def test_natpmp_delete_success(self):
+        reply = struct.pack('!BBHIHH', 0, 132, 0, 100, 51413, 51413)
+        sock = _FakeSocket([reply])
+        with patch.object(upnp, '_udp_socket', return_value=sock):
+            ok, detail = upnp.natpmp_delete('192.168.1.1', 51413, 51413, 'tcp')
+        self.assertTrue(ok)
+        self.assertIn('已删除', detail)
+        self.assertEqual(sock.sent[0][0][:2], bytes([0, 4]))       # opcode 4 = 删 TCP
+
+    def test_natpmp_delete_refused(self):
+        reply = struct.pack('!BBHIHH', 0, 131, 3, 100, 51413, 0)
+        with patch.object(upnp, '_udp_socket', return_value=_FakeSocket([reply])):
+            ok, detail = upnp.natpmp_delete('192.168.1.1', 51413, 51413, 'udp')
+        self.assertFalse(ok)
+        self.assertIn('网络故障', detail)
+
+    def test_remove_forward_uses_recorded_control_point(self):
+        seen = []
+
+        def fake_request(url, data=None, headers=None, timeout=None):
+            seen.append((url, (headers or {}).get('SOAPAction', '')))
+            return 200, '<ok/>'
+
+        with patch.object(upnp, '_request', side_effect=fake_request):
+            result = upnp.remove_forward(51413, 51413, method='UPnP',
+                                         control='http://192.168.1.1:41795/ctl/IPConn',
+                                         service_type='urn:x:WANIPConnection:2')
+        self.assertTrue(result['ok'])
+        self.assertIn('已移除', result['detail'])
+        actions = [action for _, action in seen]
+        self.assertTrue(all('DeletePortMapping' in action for action in actions))
+        self.assertEqual(len(actions), 2)                          # TCP + UDP
+        # 记下了控制地址就不该再去 SSDP 发现一次
+        self.assertEqual({url for url, _ in seen}, {'http://192.168.1.1:41795/ctl/IPConn'})
+
+    def test_remove_forward_without_upnp_falls_back_to_natpmp(self):
+        with patch.object(upnp, 'ssdp_location', side_effect=upnp.UpnpError('没响应')), \
+                patch.object(upnp, 'gateway', return_value='192.168.1.1'), \
+                patch.object(upnp, 'natpmp_delete', return_value=(True, '已删除')):
+            result = upnp.remove_forward(51413, 51413)
+        self.assertTrue(result['ok'])
+        self.assertIn('NAT-PMP', result['detail'])
+
+    def test_remove_forward_rediscovers_stale_control_point(self):
+        """路由器重启会换 UPnP 临时端口（实测 41795 → 33299），存下来的地址会失效。"""
+        calls = []
+
+        def fake_request(url, data=None, headers=None, timeout=None):
+            calls.append(url)
+            if url.startswith('http://192.168.1.1:41795'):
+                raise upnp.UpnpError('路由器 192.168.1.1:41795 无响应')
+            if url.endswith('rootDesc.xml'):
+                return 200, ('<?xml version="1.0"?>'
+                             '<root xmlns="urn:schemas-upnp-org:device-1-0"><device><serviceList>'
+                             '<service><serviceType>urn:x:WANIPConnection:2</serviceType>'
+                             '<controlURL>/ctl/IPConn</controlURL></service>'
+                             '</serviceList></device></root>')
+            return 200, '<ok/>'
+
+        with patch.object(upnp, '_request', side_effect=fake_request), \
+                patch.object(upnp, 'ssdp_location',
+                             return_value=('http://192.168.1.1:33299/rootDesc.xml', '192.168.1.1')):
+            result = upnp.remove_forward(51413, 51413, method='UPnP',
+                                         control='http://192.168.1.1:41795/ctl/IPConn',
+                                         service_type='urn:x:WANIPConnection:2')
+        self.assertTrue(result['ok'])
+        self.assertIn('http://192.168.1.1:33299/ctl/IPConn', calls)
+        # 重新发现成功后不该把第一次的失败也写进结果里
+        self.assertNotIn('UPnP：', result['detail'])
+        self.assertIn('UPnP TCP', result['detail'])
+        self.assertIn('UPnP UDP', result['detail'])
+
+    def test_delete_mapping_tolerates_missing_entry(self):
+        fault = ('<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body>'
+                 '<s:Fault><detail><UPnPError xmlns="urn:schemas-upnp-org:control-1-0">'
+                 '<errorCode>714</errorCode></UPnPError></detail></s:Fault></s:Body></s:Envelope>')
+        with patch.object(upnp, '_request', return_value=(500, fault)):
+            self.assertFalse(upnp.delete_mapping('http://192.168.1.1/ctl',
+                                                 'urn:x:WANIPConnection:2', 51413, 'TCP'))
+
+    def test_remove_forward_reports_failure(self):
+        with patch.object(upnp, 'ssdp_location', side_effect=upnp.UpnpError('没响应')), \
+                patch.object(upnp, 'gateway', return_value=''), \
+                patch.object(upnp, 'natpmp_delete', return_value=(False, '失败')):
+            result = upnp.remove_forward(51413, 51413)
+        self.assertFalse(result['ok'])
+        self.assertIn('没响应', result['detail'])
+
     def test_forward_prefers_upnp(self):
         with patch.object(upnp, '_try_upnp', return_value=(
                 ['TCP', 'UDP'], [], {'gateway': '192.168.1.1', 'external': '1.2.3.4'})):
@@ -1168,6 +1256,7 @@ class PortForwardEngineTests(unittest.TestCase):
         self.assertFalse(self.engine.forward_due(now=10 ** 9))
 
     def test_keep_forward_alive_renews_when_due(self):
+        self.engine.config = {'enabled': True}
         self.engine.forward_state = {'ok': True, 'method': 'NAT-PMP', 'lease': 60,
                                      'at': int(time.time()) - 120}
         with patch.object(self.engine, 'ensure_port_forward') as call:
@@ -1180,6 +1269,73 @@ class PortForwardEngineTests(unittest.TestCase):
         with patch.object(self.engine, 'ensure_port_forward') as call:
             self.assertFalse(self.engine.keep_forward_alive())
         self.assertEqual(call.call_count, 0)
+
+    def test_removed_state_is_not_re_added(self):
+        self.engine.forward_state = {'ok': False, 'removed': True, 'at': 1000,
+                                     'detail': '已移除路由器映射'}
+        self.assertFalse(self.engine.forward_due(now=1000 + 86400))
+
+    def test_stop_removes_the_mapping(self):
+        self.engine.config = {'owner': 'tok'}
+        self.engine.forward_state = {'ok': True, 'method': 'UPnP', 'at': 1000,
+                                     'control': 'http://192.168.1.1:41795/ctl/IPConn',
+                                     'service': 'urn:x:WANIPConnection:2',
+                                     'protocols': ['TCP', 'UDP']}
+        running = {'Config': {'Labels': {LABEL: 'tok'}}, 'State': {'Running': True}}
+        with patch.object(self.engine, 'owned', return_value=running), \
+                patch.object(self.engine, '_call') as call, \
+                patch.object(engine.upnp, 'remove_forward',
+                             return_value={'ok': True, 'detail': '已移除路由器映射'}) as remove, \
+                patch('engine.atomic_json'):
+            self.engine.stop()
+        self.assertEqual(remove.call_count, 1)
+        self.assertEqual(remove.call_args.kwargs['control'], 'http://192.168.1.1:41795/ctl/IPConn')
+        self.assertEqual(remove.call_args.kwargs['method'], 'UPnP')
+        self.assertIn('/stop', call.call_args.args[1])              # 容器也停了
+        snapshot = self.engine.forward_snapshot()
+        self.assertTrue(snapshot['removed'])
+        self.assertFalse(snapshot['ok'])
+
+    def test_remove_is_skipped_when_never_mapped(self):
+        with patch.object(engine.upnp, 'remove_forward') as remove:
+            result = self.engine.remove_port_forward()
+        self.assertFalse(result['ok'])
+        self.assertEqual(remove.call_count, 0)
+
+    def test_keep_forward_alive_skips_when_service_disabled(self):
+        self.engine.config = {'enabled': False}
+        self.engine.forward_state = {'ok': True, 'method': 'NAT-PMP', 'lease': 60,
+                                     'at': int(time.time()) - 120}
+        with patch.object(self.engine, 'ensure_port_forward') as call:
+            self.assertFalse(self.engine.keep_forward_alive())
+        self.assertEqual(call.call_count, 0)
+
+    def test_forward_state_survives_a_new_process(self):
+        """停止服务时 systemd 的 ExecStopPost 是另一个进程，得靠这个文件才知道删哪条。"""
+        self.engine.forward_state = {'ok': True, 'method': 'UPnP', 'at': 1000,
+                                     'control': 'http://192.168.1.1:41795/ctl/IPConn',
+                                     'service': 'urn:x:WANIPConnection:2',
+                                     'protocols': ['TCP', 'UDP'],
+                                     'detail': 'UPnP 映射成功'}
+        self.engine.save_forward()
+        fresh = Engine(Path(self.engine.data), Path(self.engine.root))
+        self.assertTrue(fresh.forward_snapshot()['ok'])
+        self.assertEqual(fresh.forward_state['control'], 'http://192.168.1.1:41795/ctl/IPConn')
+        self.assertEqual(fresh.forward_state['method'], 'UPnP')
+
+    def test_removal_works_from_a_fresh_process(self):
+        self.engine.forward_state = {'ok': True, 'method': 'UPnP', 'at': 1000,
+                                     'control': 'http://192.168.1.1:41795/ctl/IPConn',
+                                     'service': 'urn:x:WANIPConnection:2',
+                                     'protocols': ['TCP', 'UDP']}
+        self.engine.save_forward()
+        fresh = Engine(Path(self.engine.data), Path(self.engine.root))
+        with patch.object(engine.upnp, 'remove_forward',
+                          return_value={'ok': True, 'detail': '已移除路由器映射'}) as remove:
+            result = fresh.remove_port_forward()
+        self.assertTrue(result['ok'])
+        self.assertEqual(remove.call_count, 1)
+        self.assertEqual(remove.call_args.kwargs['control'], 'http://192.168.1.1:41795/ctl/IPConn')
 
     def test_start_tries_the_router_mapping(self):
         self.engine.config = {'owner': 'tok'}
@@ -1269,6 +1425,7 @@ class UiTests(unittest.TestCase):
                 script = (self.web / name).read_text(encoding='utf-8')
                 self.assertIn('function renderForward(current)', script)
                 self.assertIn("$('#forwardPort')", script)
+                self.assertIn('路由器映射已移除', script)
 
     def test_page_shows_glance_stats(self):
         html = (self.web / 'index.html').read_text(encoding='utf-8')

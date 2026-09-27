@@ -214,9 +214,19 @@ def add_mapping(control, service_type, external_port, internal_port, internal_cl
 
 
 def delete_mapping(control, service_type, external_port, protocol):
+    """删一条映射。返回 True=确实删掉了；False=本来就没有（errorCode 714）。
+
+    714 不算失败——我们的目的就是"这条映射不存在"。其它错误照旧抛 UpnpError。
+    """
     body = ('<NewRemoteHost></NewRemoteHost><NewExternalPort>%d</NewExternalPort>'
             '<NewProtocol>%s</NewProtocol>' % (external_port, protocol))
-    _soap(control, service_type, 'DeletePortMapping', body)
+    try:
+        _soap(control, service_type, 'DeletePortMapping', body)
+    except UpnpError as exc:
+        if '714' in str(exc):
+            return False
+        raise
+    return True
 
 
 def natpmp_map(gateway_address, internal_port, external_port, protocol='tcp', lifetime=7200):
@@ -253,7 +263,8 @@ def _try_upnp(external_port, internal_port, internal_client, description, protoc
     """走 UPnP 试一遍，返回 (成功协议, 失败说明, 附加信息)。可能抛 UpnpError（找不到路由器）。"""
     location, gateway_address = ssdp_location()
     service_type, control = control_point(location)
-    extra = {'gateway': gateway_address, 'service': service_type}
+    # 记下控制地址：停止服务时要用它把映射删掉，省得再发现一次
+    extra = {'gateway': gateway_address, 'service': service_type, 'control': control}
     try:
         extra['external'] = external_address(control, service_type)
     except UpnpError:
@@ -282,6 +293,90 @@ def _try_natpmp(gateway_address, internal_port, external_port, protocols):
         else:
             failures.append('%s %s' % (protocol, detail))
     return mapped, failures, (min(leases) if leases else 0)
+
+
+def natpmp_delete(gateway_address, internal_port, external_port, protocol='tcp'):
+    """RFC 6886 的删除请求（opcode 3=UDP、4=TCP）；返回 (是否成功, 说明)。"""
+    opcode = 4 if protocol.lower() == 'tcp' else 3
+    packet = struct.pack('!BBHHH', 0, opcode, 0, internal_port, external_port)
+    sock = _udp_socket()
+    sock.settimeout(NATPMP_TIMEOUT)
+    try:
+        sock.sendto(packet, (gateway_address, NATPMP_PORT))
+        data, _ = sock.recvfrom(64)
+    except socket.timeout:
+        return False, '路由器没有响应 NAT-PMP 删除请求'
+    except OSError as exc:
+        return False, 'NAT-PMP 删除失败：%s' % exc
+    finally:
+        sock.close()
+    if len(data) < 4:
+        return False, 'NAT-PMP 应答无效'
+    result = struct.unpack('!H', data[2:4])[0]
+    if result != 0:
+        return (False, 'NAT-PMP 删除被拒绝：%s（result=%d）'
+                % (NATPMP_REASONS.get(result, '未知原因'), result))
+    return True, 'NAT-PMP 映射已删除'
+
+
+def _delete_upnp(control, service_type, external_port, protocols):
+    """逐个协议删；719/714 那种"本来就没有"也算删掉了（见 delete_mapping）。"""
+    deleted = []
+    for protocol in protocols:
+        delete_mapping(control, service_type, external_port, protocol)
+        deleted.append('UPnP ' + protocol)
+    return deleted
+
+
+def remove_forward(external_port, internal_port, method='', gateway_address='',
+                   control='', service_type='', protocols=('TCP', 'UDP')):
+    """撤掉之前建的映射（停止服务时用），永不抛异常。
+
+    按记录下来的方式删：UPnP 用 DeletePortMapping，NAT-PMP 用 opcode 3/4。
+    **存下来的 UPnP 控制地址可能是过期的**——路由器重启会换临时端口（实测
+    41795 → 33299），所以失败时会重新发现一次再试。不知道 method 时两条路都试。
+    """
+    removed, failures = [], []
+    wants = [method] if method else ['UPnP', 'NAT-PMP']
+    if 'UPnP' in wants:
+        points = []
+        if control and service_type:
+            points.append((control, service_type))
+        points.append(None)                       # None = 重新发现兜底
+        upnp_failure = ''
+        for point in points:
+            try:
+                if point is None:
+                    location, found = ssdp_location()
+                    gateway_address = gateway_address or found
+                    service_type, control = control_point(location)
+                else:
+                    control, service_type = point
+                removed.extend(_delete_upnp(control, service_type, external_port, protocols))
+                upnp_failure = ''
+                break
+            except UpnpError as exc:
+                upnp_failure = 'UPnP：%s' % exc
+        if upnp_failure:
+            failures.append(upnp_failure)
+    if 'NAT-PMP' in wants:
+        gateway_address = gateway_address or gateway()
+        if gateway_address:
+            for protocol in protocols:
+                ok, detail = natpmp_delete(gateway_address, internal_port,
+                                           external_port, protocol=protocol)
+                if ok:
+                    removed.append('NAT-PMP ' + protocol)
+                else:
+                    failures.append('%s %s' % (protocol, detail))
+        else:
+            failures.append('NAT-PMP：找不到默认网关')
+    removed = list(dict.fromkeys(removed))
+    if removed and not failures:
+        return {'ok': True, 'detail': '已移除路由器映射（%s）' % '、'.join(removed)}
+    if removed:
+        return {'ok': True, 'detail': '部分移除：%s；%s' % ('、'.join(removed), '；'.join(failures))}
+    return {'ok': False, 'detail': '；'.join(failures) or '没有可移除的映射'}
 
 
 def forward_ports(external_port, internal_port, internal_client, description,
@@ -315,6 +410,8 @@ def forward_ports(external_port, internal_port, internal_client, description,
         gateway_address = extra.get('gateway') or ''
         state['gateway'] = gateway_address
         state['external'] = extra.get('external') or ''
+        state['control'] = extra.get('control') or ''
+        state['service'] = extra.get('service') or ''
         if mapped:
             state['mapped'] = mapped
             state['method'] = 'UPnP'

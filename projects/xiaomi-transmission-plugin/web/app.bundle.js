@@ -148,6 +148,8 @@
       const lease = Number(forward.lease) || 0;
       const renew = lease ? `，${Math.round(lease / 60)} 分钟自动续期` : '';
       box.textContent = `路由器已转发 ${port}（${forward.method}${renew}）`;
+    } else if (forward.removed) {
+      box.textContent = `路由器映射已移除（${port} TCP+UDP），启动服务时会重新映射`;
     } else if (forward.at) {
       box.textContent = `路由器未转发 ${port}：${forward.detail || '原因未知'}`;
     } else {
