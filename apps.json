@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "name": "小米智能存储应用商店",
-  "generatedAt": 1790490527,
+  "generatedAt": 1790502261,
   "repository": "fw867/xiaomi-nas-plugin-market",
   "branch": "main",
   "store": {
@@ -126,12 +126,12 @@
     {
       "id": "transmission",
       "name": "Transmission 下载",
-      "version": "0.1.32",
+      "version": "0.1.33",
       "summary": "Docker 版 BT 下载：可设置下载/配置/监控目录与 WebUI 账号；端口 9091、51413",
       "description": "Docker 容器运行 LinuxServer Transmission；配置页可设置下载目录、配置文件夹目录、监控目录与 WebUI 用户名密码。需要 Docker。",
-      "bundle": "apps/transmission-0.1.32.zip",
-      "sha256": "c6d6bc7a3cb50ef424c0f0df93b4093aea90381ab63b2a39f826c5f34584b722",
-      "size": 868312,
+      "bundle": "apps/transmission-0.1.33.zip",
+      "sha256": "b55f17e7f4b5ba6967bf77cdbe601f62791e50f686282f6d74adbbf67d06f6da",
+      "size": 868792,
       "icon": "apps/icons/transmission.png",
       "channel": "stable",
       "tags": [
@@ -181,12 +181,12 @@
     {
       "id": "jellyfin",
       "name": "Jellyfin",
-      "version": "0.1.6",
+      "version": "0.1.7",
       "summary": "开源媒体服务器；配置/缓存/媒体持久化，HTTP 端口 8097 对局域网开放",
       "description": "官方 Jellyfin 镜像的受限容器；媒体目录、配置目录与缓存持久化，端口映射 8097/8920/7359，可与 Emby 同时安装。需要 Docker。",
-      "bundle": "apps/jellyfin-0.1.6.zip",
-      "sha256": "9ac3948f396ed1fb1d0a617ae747e5ea7cc2fa2b4412e8cb631ff696f0883ad1",
-      "size": 134471,
+      "bundle": "apps/jellyfin-0.1.7.zip",
+      "sha256": "7d1aba625c35bcdd63bb2c5436c60d9b4a5ef8af7fba2d98253515c3d4d0dce5",
+      "size": 136510,
       "icon": "apps/icons/jellyfin.png",
       "channel": "stable",
       "tags": [
