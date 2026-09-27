@@ -17,6 +17,7 @@ from engine import (
     LEGACY_SETTINGS_FOLDER, confined, container_config, installed_version,
     settings_document, settings_path, WEBUI_SUBDIR, webui_password, webui_username,
 )
+import engine  # noqa: E402  （按模块打桩，例如 engine.PROC_NET）
 from server import Server
 
 
@@ -732,6 +733,118 @@ class HTTPTests(unittest.TestCase):
                          'Basic ' + base64.b64encode(b'admin:Example123').decode())
 
 
+class PortPublishTests(unittest.TestCase):
+    """docker-proxy 是用户态进程，掉线后宿主上就没人监听，而 Docker 的
+    inspect 依然说端口已发布——这段自检直接读 /proc/net，丢了就重启容器补回来。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name) / 'root'
+        self.root.mkdir()
+        for name in ('Downloads', 'Config', 'Watch'):
+            (self.root / name).mkdir()
+        self.engine = Engine(Path(self.tmp.name) / 'private', self.root)
+        self.net = Path(self.tmp.name) / 'net'
+        self.net.mkdir()
+        patcher = patch.object(engine, 'PROC_NET', self.net)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def write_net(self, tcp_listen=(), tcp_other=(), udp=()):
+        header = ('  sl  local_address rem_address   st tx_queue rx_queue tr tm->when'
+                  ' retrnsmt   uid  timeout inode\n')
+
+        def body(entries):
+            rows = []
+            for index, (port, state) in enumerate(entries):
+                rows.append('%4d: 00000000:%04X 00000000:0000 %s 00000000:00000000 '
+                            '00:00000000 00000000     0        0 %d 1 0000000000000000 100 0 0 10 0'
+                            % (index, port, state, 1000 + index))
+            return header + '\n'.join(rows) + ('\n' if rows else '')
+
+        (self.net / 'tcp').write_text(
+            body([(p, '0A') for p in tcp_listen] + [(p, '01') for p in tcp_other]), encoding='utf-8')
+        (self.net / 'tcp6').write_text(header, encoding='utf-8')
+        (self.net / 'udp').write_text(body([(p, '07') for p in udp]), encoding='utf-8')
+        (self.net / 'udp6').write_text(header, encoding='utf-8')
+
+    def test_tcp_only_counts_listening_sockets(self):
+        self.write_net(tcp_listen=[9091], tcp_other=[51413], udp=[51413])
+        ports = engine.listening_ports()
+        self.assertIn(('tcp', 9091), ports)
+        self.assertIn(('udp', 51413), ports)
+        self.assertNotIn(('tcp', 51413), ports)          # 已建立连接的 51413 不算发布
+
+    def test_missing_port_is_reported(self):
+        self.write_net(tcp_listen=[9091], udp=[51413])
+        self.assertEqual(self.engine.missing_published_ports(), ['51413/tcp'])
+
+    def test_nothing_missing_when_all_published(self):
+        self.write_net(tcp_listen=[9091, 51413], udp=[51413])
+        self.assertEqual(self.engine.missing_published_ports(), [])
+
+    def test_ensure_restarts_container_and_recovers(self):
+        self.write_net(tcp_listen=[9091], udp=[51413])
+        calls = []
+
+        def fake_api(method, path, body=None, timeout=30):
+            calls.append((method, path))
+            if path.startswith('/containers/' + NAME + '/restart'):
+                self.write_net(tcp_listen=[9091, 51413], udp=[51413])
+            return 204, b'{}'
+
+        with patch('engine.docker_api', side_effect=fake_api):
+            missing = self.engine.ensure_published_ports()
+        self.assertEqual(missing, [])
+        self.assertTrue(self.engine.ports_state['repaired'])
+        self.assertEqual(calls, [('POST', '/containers/' + NAME + '/restart?t=15')])
+
+    def test_ensure_reports_when_restart_does_not_help(self):
+        self.write_net(tcp_listen=[9091], udp=[51413])
+        with patch('engine.docker_api', return_value=(204, b'{}')) as api, \
+                patch.object(self.engine, 'wait_published_ports', return_value=['51413/tcp']):
+            missing = self.engine.ensure_published_ports()
+        self.assertEqual(missing, ['51413/tcp'])
+        self.assertTrue(self.engine.ports_state['repaired'])
+        self.assertEqual(api.call_args.args[1], '/containers/' + NAME + '/restart?t=15')
+
+    def test_ensure_does_nothing_when_ports_are_published(self):
+        self.write_net(tcp_listen=[9091, 51413], udp=[51413])
+        with patch('engine.docker_api') as api:
+            missing = self.engine.ensure_published_ports()
+        self.assertEqual(missing, [])
+        self.assertFalse(self.engine.ports_state['repaired'])
+        self.assertEqual(api.call_count, 0)
+
+    def test_dev_mode_never_restarts(self):
+        self.engine.dev = True
+        self.write_net(tcp_listen=[9091], udp=[51413])
+        with patch('engine.docker_api') as api:
+            self.engine.ensure_published_ports()
+        self.assertEqual(api.call_count, 0)
+
+    def test_snapshot_exposes_port_state(self):
+        self.write_net(tcp_listen=[9091], udp=[51413])
+        self.engine.config = {'owner': 'tok', 'config': str(self.root / 'Config')}
+        running = {'Config': {'Labels': {LABEL: 'tok'}}, 'State': {'Running': True}}
+        with patch.object(self.engine, 'owned', return_value=running), \
+                patch('engine.tr_rpc_probe', return_value=True):
+            data = self.engine.snapshot()
+        self.assertEqual(data['ports']['missing'], ['51413/tcp'])
+        self.assertEqual(sorted(data['ports']['published']),
+                         ['51413/tcp', '51413/udp', '9091/tcp'])
+
+    def test_snapshot_ignores_missing_ports_when_container_is_stopped(self):
+        self.write_net(tcp_listen=[9091], udp=[51413])
+        self.engine.config = {'owner': 'tok', 'config': str(self.root / 'Config')}
+        stopped = {'Config': {'Labels': {LABEL: 'tok'}}, 'State': {'Running': False}}
+        with patch.object(self.engine, 'owned', return_value=stopped):
+            data = self.engine.snapshot()
+        self.assertFalse(data['running'])
+        self.assertEqual(data['ports']['missing'], [])
+
+
 class UiTests(unittest.TestCase):
     def setUp(self):
         self.web = Path(__file__).resolve().parents[1] / 'web'
@@ -759,6 +872,15 @@ class UiTests(unittest.TestCase):
     def test_page_version_comes_from_server(self):
         html = (self.web / 'index.html').read_text(encoding='utf-8')
         self.assertIn('__PLUGIN_VERSION__', html)
+
+    def test_page_warns_when_inbound_ports_are_not_published(self):
+        html = (self.web / 'index.html').read_text(encoding='utf-8')
+        self.assertIn('id="portPublish"', html)
+        for name in ('app.js', 'app.bundle.js'):
+            with self.subTest(name=name):
+                script = (self.web / name).read_text(encoding='utf-8')
+                self.assertIn("$('#portPublish')", script)
+                self.assertIn('入站端口未发布', script)
 
     def test_html_references_existing_files(self):
         html = (self.web / 'index.html').read_text(encoding='utf-8')

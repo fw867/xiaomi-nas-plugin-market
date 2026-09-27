@@ -120,6 +120,7 @@
       if (current.legacySettings) $('#legacyPath').textContent = current.legacyFile || '';
     }
     renderPortState(current);
+    renderPortPublish(current);
     if (!current.busy) showError(current.error);
   }
   function renderPortState(current) {
@@ -133,6 +134,17 @@
     }
     $('#portState').textContent = current.busy ? '正在测试端口…' : text;
     $('#testPort').disabled = current.busy || !current.configured || !current.running;
+  }
+  function renderPortPublish(current) {
+    // Docker 会说端口都发布了，但 docker-proxy 掉线后宿主上其实没人监听
+    const box = $('#portPublish');
+    if (!box) return;
+    const ports = current.ports || {};
+    const missing = ports.missing || [];
+    box.hidden = !missing.length;
+    if (!missing.length) return;
+    const tried = ports.repaired ? '插件已重启容器重试，仍未成功，请停止后重新启动服务' : '插件会在启动服务时自动修复';
+    box.textContent = `入站端口未发布：${missing.join('、')}（${tried}）`;
   }
   function renderTasks() {
     const search = $('#search').value.toLowerCase();

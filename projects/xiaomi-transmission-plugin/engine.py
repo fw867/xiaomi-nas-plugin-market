@@ -26,10 +26,43 @@ LABEL = 'io.xiaomi-plugin.tr.owner'
 PORT = 9091
 BT_PORT = 51413
 DOCKER_SOCKET = os.environ.get('DOCKER_SOCKET', '/var/run/docker.sock')
+PROC_NET = Path(os.environ.get('PROC_NET', '/proc/net'))
+
+# 必须真正发布到宿主机的端口：WebUI 一个 TCP，BT 入站要 TCP + UDP。
+PUBLISHED_PORTS = (('tcp', PORT), ('tcp', BT_PORT), ('udp', BT_PORT))
 
 
 class Error(RuntimeError):
     pass
+
+
+def listening_ports():
+    """宿主机当前真正在监听的 {(协议, 端口)}。
+
+    直接读 /proc/net，而不是问 Docker：`inspect` 里的 PortBindings /
+    NetworkSettings.Ports 只是「声明过要发布」，docker-proxy 是用户态进程，
+    它异常退出后宿主上其实没人监听，而 inspect 依然显示端口已绑定。
+    BT 的 TCP 入站端口就是这样悄悄消失的（UDP 和 WebUI 还正常，很难发现）。
+    """
+    found = set()
+    for name in ('tcp', 'tcp6', 'udp', 'udp6'):
+        try:
+            lines = (PROC_NET / name).read_text().splitlines()[1:]
+        except OSError:
+            continue
+        proto = name.rstrip('6')
+        for line in lines:
+            fields = line.split()
+            if len(fields) < 4:
+                continue
+            if proto == 'tcp' and fields[3] != '0A':        # 0A = LISTEN
+                continue
+            try:
+                port = int(fields[1].split(':')[1], 16)
+            except (IndexError, ValueError):
+                continue
+            found.add((proto, port))
+    return found
 
 
 def installed_version():
@@ -345,6 +378,8 @@ class Engine:
         self.lock = threading.Lock()
         self.busy, self.error = False, ''
         self.port_state = {'testedAt': 0, 'open': None, 'error': ''}
+        # 入站端口的自检结果（见 ensure_published_ports）
+        self.ports_state = {'missing': [], 'repaired': False, 'checkedAt': 0}
         self.worker = None
         self.cfgfile = self.data / 'settings.json'
         self.credentialfile = self.data / 'credential.json'
@@ -409,6 +444,49 @@ class Engine:
                        for p in folder.iterdir() if not p.name.startswith('.') and p.is_dir() and not p.is_symlink()],
                       key=lambda p: p['name'])[:1000]
 
+    def missing_published_ports(self):
+        """该发布、但宿主上其实没在监听的端口，形如 ['51413/tcp']。"""
+        listening = listening_ports()
+        return ['%d/%s' % (port, proto) for proto, port in PUBLISHED_PORTS
+                if (proto, port) not in listening]
+
+    def wait_published_ports(self, timeout=20):
+        deadline = time.time() + timeout
+        missing = self.missing_published_ports()
+        while missing and time.time() < deadline:
+            time.sleep(1)
+            missing = self.missing_published_ports()
+        return missing
+
+    def ensure_published_ports(self):
+        """入站端口自检：宿主机上没人监听就重启容器，把端口绑定重新下发。
+
+        只在真的没监听时动手——Docker 的元数据区分不了「声明过」和「真的绑上了」，
+        拿它当依据会漏掉 docker-proxy 掉线这种情况。重启比重建容器便宜得多
+        （不用重拉镜像，也不动 /config），实测能把丢掉的 docker-proxy 补回来。
+        """
+        missing = self.missing_published_ports()
+        repaired = False
+        if missing and not self.dev:
+            print('transmission: 入站端口未监听 %s，重启容器修复' % '、'.join(missing), flush=True)
+            self._call('POST', '/containers/' + NAME + '/restart?t=15', timeout=120)
+            repaired = True
+            missing = self.wait_published_ports()
+            if missing:
+                print('transmission: 重启后仍未监听 %s' % '、'.join(missing), flush=True)
+        self.ports_state = {'missing': missing, 'repaired': repaired, 'checkedAt': int(time.time())}
+        return missing
+
+    def ports_snapshot(self, running):
+        """页面用的端口状态；容器没跑时不报缺失（那是用户自己停的）。"""
+        missing = self.missing_published_ports() if (running and not self.dev) else []
+        return {
+            'published': ['%d/%s' % (port, proto) for proto, port in PUBLISHED_PORTS],
+            'missing': missing,
+            'repaired': bool(self.ports_state.get('repaired')),
+            'checkedAt': int(self.ports_state.get('checkedAt') or 0),
+        }
+
     def snapshot(self):
         running, ready, error = False, False, self.error
         if self.config and not self.busy:
@@ -443,6 +521,8 @@ class Engine:
                 Path(self.config['config'])).is_file(),
             # BT 端口是否对公网开放：只有点了「测试端口」才有值（port-test 会访问外部检测服务）
             'port': {'peerPort': BT_PORT, **self.port_state},
+            # 入站端口是否真的发布到了宿主机（docker-proxy 掉线会让它悄悄消失）
+            'ports': self.ports_snapshot(running),
         }
 
     def _claim_folder(self, relative, field):
@@ -639,6 +719,9 @@ class Engine:
             self._call('POST', '/containers/' + NAME + '/start')
         self.config['enabled'] = True
         atomic_json(self.cfgfile, self.config)
+        # 先修端口再等就绪：docker-proxy 掉线时宿主上没人监听 51413/tcp，
+        # 重启容器会把绑定重新下发。
+        self.ensure_published_ports()
         for _ in range(60):
             try:
                 tr_rpc_probe()

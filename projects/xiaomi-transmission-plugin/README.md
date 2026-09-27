@@ -68,6 +68,26 @@
   无关的可调项并进真正生效的 `settings.json`，并把旧文件改名成 `settings.json.legacy` 留在原处
   （避免继续改一个不生效的文件）；路径、端口、账号、绑定、脚本文件名这类键不会搬过来。
 
+## 入站端口自检
+
+容器固定发布三个端口：`9091/tcp`（WebUI）、`51413/tcp` 与 `51413/udp`（BT 入站）。
+
+**Docker 会骗人**：`inspect` 里的 `PortBindings` / `NetworkSettings.Ports` 只是「声明过要发布」。
+真正把宿主端口接上的是用户态的 `docker-proxy` 进程，它异常退出后宿主上就没人监听，
+而 `inspect` 依然显示端口已绑定——BT 的 **TCP** 入站就是这样悄悄消失的
+（UDP 与 WebUI 还正常，所以从页面上看不出来，只有「测试端口」报不可达）。
+
+所以插件在「启动服务」时会直接读 `/proc/net/tcp{,6}`、`/proc/net/udp{,6}`，核对这三个端口
+在宿主机上**是否真的有监听**；缺了就重启一次容器把端口绑定重新下发（比重建容器便宜，
+不动 `/config` 也不重拉镜像），并在日志里留一行：
+
+```text
+transmission: 入站端口未监听 51413/tcp，重启容器修复
+```
+
+仍然缺的话，插件页面的端口那一行下方会显示「入站端口未发布：…」，接口
+`/api/status` 的 `ports` 字段里也有 `published` / `missing` / `repaired`。
+
 ## 镜像
 
 - `lscr.io/linuxserver/transmission@sha256:1a12fef3c89eca48b7be9e7d36b17b4eb4e1bcf5e1ee7fbf372e3a38b562939d`

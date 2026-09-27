@@ -122,6 +122,19 @@ code {
   padding-top: 12px;
 }
 
+/* 入站端口没真正发布到宿主机时的提示（docker-proxy 掉线会出现） */
+.port-warning {
+  margin: 10px 0 0;
+  padding: 9px 12px;
+  border-left: 3px solid #dc8059;
+  border-radius: 8px;
+  background: #fff3ef;
+  color: #8d3f2c;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 .status-dot {
   flex: 0 0 auto;
   width: 12px;
