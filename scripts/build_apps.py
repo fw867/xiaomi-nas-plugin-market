@@ -280,6 +280,7 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
         "runtime": {
             "server.py": "server.py",
             "keepalive.sh": "keepalive.sh",
+            "hotplug.sh": "hotplug.sh",
             "web": "web",
             "README.md": "README.md",
         },

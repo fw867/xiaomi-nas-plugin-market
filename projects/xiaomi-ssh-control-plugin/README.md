@@ -5,8 +5,40 @@
 ## 功能
 
 - **启动 / 停止 SSH**：直接控制 `dropbear.socket`，无需登录终端。
-- **开机自动启动**：开启后每次开机自动保持 SSH 可用。
+- **开机自动启动**：开启后每次开机自动保持 SSH 可用，两种守护方式可选（见下）。
 - 状态实时显示：当前 SSH 是否在监听。
+
+## 两种守护方式
+
+| 方式 | 原理 | 特点 |
+| --- | --- | --- |
+| **每分钟巡检**（默认） | crontab 里一条 `* * * * * sh keepalive.sh #@sshcontrol` | 兼容性最好；关机/开机后最多一分钟内恢复；每分钟一次检查 |
+| **存储池挂载时** | 往厂商的 `syshotplug` 框架放钩子 `/etc/syshotplug/pool/98.ssh-control`，池挂载（`ACTION=mounted`）时被调用 | 事件驱动、不轮询；本机实测它比厂商关 SSH 还早几秒，所以钩子内部会 fork 后台任务、等 `ssh_check` 跑完再拉起并复查几分钟 |
+| **两者都开**（推荐） | 上面两条同时启用 | 事件驱动 + 轮询兜底 |
+
+## 这个钩子为什么不能"挂载时立刻 start"
+
+`/etc/syshotplug/<事件>/` 是小米自己的热插拔框架：`/usr/sbin/syshotplug <事件>` 会按
+文件名（`LC_ALL=C`）依次执行目录里**带可执行位**的脚本，并把 `ACTION` 传进去。
+`/etc/syshotplug/pool/` 就是存储池事件组，厂商自己在里面挂了 27 个钩子
+（`00.fs_prepare`、`40.plugin`（`plugincenter boot --third --pool`）、`40.distfs` …），
+阶段划分是 `00-19 基础 / 20-39 业务服务 / 40-59 模块 / 70-79 数据库重载 / 80-89 慢活 /
+90-99 收尾`，所以钩子取名 `98.ssh-control` 落在收尾阶段。
+
+但本机实测（2026-09-28 14:42 那次开机）**池挂载事件比厂商关 SSH 还早**：
+
+```
+pool mounted 事件        14:42:17   ← 钩子被调用（/var/run/distfs_pool_ready 的 mtime）
+minas.boot_check 判定    14:42:22   ← ssh_check 在这里 stop dropbear.socket
+dropbear 重新可用        14:43:01   ← 插件每分钟的 keepalive 拉回来的
+```
+
+所以钩子不能直接 `systemctl start`（会被几秒后的 `ssh_check` 关掉），而是
+**fork 一个后台任务**：先等 20 秒让 `ssh_check` 跑完，再拉起并在随后几分钟里复查几次。
+fork 是刻意的——`syshotplug` 默认并行调用各钩子，串行模式（`-w`/`-s`）下也不该让我们
+这几十秒拖慢别的钩子。社区工具
+[kid0114/xiaomi-nas-ssh-root-tool](https://github.com/kid0114/xiaomi-nas-ssh-root-tool)
+用的是同一个挂载点，本插件在此基础上加了"尊重开关"和"延迟复查"。
 
 ## 为什么需要这个插件
 
@@ -51,13 +83,15 @@ rpmb set verify failed
 xiaomi-ssh-control.service  127.0.0.1:18130
    │
    ├─ 启停：systemctl start/stop dropbear.socket
-   └─ 自启：写 /data/plugin/ssh-control/state.json
-            + 增删 crontab 条目
-                 * * * * * .../current/keepalive.sh #@sshcontrol
+   └─ 自启：写 /data/plugin/ssh-control/state.json（autostart + method）
+            ├─ 方式含 cron：增删 crontab 条目
+            │     * * * * * sh .../current/keepalive.sh #@sshcontrol
+            └─ 方式含 hotplug：写 /etc/syshotplug/pool/98.ssh-control（0755）
+                  → overlay 落到 /data/etc/upper/syshotplug/pool/98.ssh-control
 ```
 
-`keepalive.sh` 每分钟检查一次：开关为开且 SSH 未运行时，执行
-`systemctl start dropbear.socket`。
+`keepalive.sh` 每分钟检查一次：开关为开且 SSH 未运行时，执行 `systemctl start dropbear.socket`。
+`hotplug.sh` 只在 `ACTION=mounted` 且开关为开时动手，且是后台延迟复查（原因见上）。
 
 ## 安全边界
 
@@ -76,8 +110,11 @@ xiaomi-ssh-control.service  127.0.0.1:18130
 
 ## 状态与日志
 
-- 状态文件：`/data/plugin/ssh-control/state.json`
-- 守护日志：`/data/plugin/ssh-control/keepalive.log`
+- 状态文件：`/data/plugin/ssh-control/state.json`（`autostart`、`method`）
+- 巡检日志：`/data/plugin/ssh-control/keepalive.log`
+- 钩子路径：`/etc/syshotplug/pool/98.ssh-control`（持久层
+  `/data/etc/upper/syshotplug/pool/98.ssh-control`）
+- 钩子日志：`logger -t sshcontrol.hotplug`（系统日志里搜 `sshcontrol.hotplug`）
 - 系统日志：`journalctl -u xiaomi-ssh-control.service`
 - 本插件注册的 crontab 行带 `#@sshcontrol` 标记，可据此定位或清理。
 

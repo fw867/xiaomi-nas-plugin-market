@@ -33,6 +33,18 @@
             <span class="slider" aria-hidden="true"></span>
           </label>
         </div>
+        <div class="row method-row" id="methodRow">
+          <div class="row-copy">
+            <strong>守护方式</strong>
+            <small id="methodHint">每分钟巡检一次，发现 SSH 没跑就拉起</small>
+          </div>
+          <select id="methodSelect" aria-label="守护方式">
+            <option value="cron">每分钟巡检</option>
+            <option value="hotplug">存储池挂载时</option>
+            <option value="both">两者都开</option>
+          </select>
+        </div>
+        <p class="hook-note" id="hookNote" hidden></p>
       </section>
 
       <section class="actions">

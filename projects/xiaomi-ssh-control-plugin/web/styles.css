@@ -77,6 +77,30 @@ main { width: min(560px, calc(100% - 40px)); margin: 0 auto; padding: 24px 0 60p
 .row-copy strong { font-size: 16px; }
 .row-copy small { color: var(--muted); font-size: 12.5px; line-height: 1.45; }
 
+.method-row { margin-top: 14px; padding-top: 14px; border-top: 1px solid #e6eaf0; }
+.method-row select {
+  flex: 0 0 auto;
+  max-width: 46%;
+  padding: 7px 9px;
+  border: 1px solid #d5dbe4;
+  border-radius: 9px;
+  background: #fff;
+  color: inherit;
+  font: inherit;
+  font-size: 13.5px;
+}
+.hook-note {
+  margin: 12px 0 0;
+  padding: 8px 11px;
+  border-left: 3px solid #dc8059;
+  border-radius: 8px;
+  background: #fff3ef;
+  color: #8d3f2c;
+  font-size: 12.5px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
 .switch { position: relative; display: inline-block; width: 50px; height: 30px; flex: 0 0 auto; }
 .switch input { position: absolute; opacity: 0; width: 0; height: 0; }
 .slider {

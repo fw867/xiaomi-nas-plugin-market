@@ -6,7 +6,14 @@ sysmode=factory / channel=develop / RPMB 标志 ssh_en=true，
 三者皆不满足时执行 `systemctl stop dropbear.socket` 关闭 SSH。
 部分设备 RPMB 写入失效（mitee_tool rpmb set ssh_en true 报
 "rpmb set verify failed"），该标志无法持久化。
-本插件通过 cron 守护在开机后重新拉起 dropbear.socket，实现可开关的开机自启。
+
+插件提供两种「开机自动保持」的守护方式（可单独用，也可同时用）：
+
+- cron：每分钟巡检一次，发现 dropbear 没跑就拉起。兼容性最好，代价是每分钟一次检查。
+- hotplug：往厂商的 syshotplug 框架里放一个存储池挂载钩子
+  （/etc/syshotplug/pool/98.ssh-control，ACTION=mounted 时被调用）。事件驱动、不轮询；
+  但本机实测池挂载事件比 boot_check 的 ssh_check 早几秒，所以钩子内部会 fork 一个
+  后台任务、等 ssh_check 跑完再拉起并复查几分钟（见 hotplug.sh 的注释）。
 """
 
 from __future__ import annotations
@@ -32,6 +39,17 @@ DROPBEAR_UNIT = "dropbear.socket"
 KEEPALIVE_SCRIPT = RUNTIME_DIR / "keepalive.sh"
 CRON_TAG = "sshcontrol"
 LOCK = threading.Lock()
+
+# 存储池挂载钩子（厂商 syshotplug 框架）。路径可用环境变量覆盖，便于测试。
+HOTPLUG_SCRIPT = RUNTIME_DIR / "hotplug.sh"
+HOTPLUG_DIR = Path(os.environ.get("HOTPLUG_DIR", "/etc/syshotplug/pool"))
+HOTPLUG_NAME = "98.ssh-control"
+# /etc 是 overlay，写入 /etc/syshotplug/pool 会落到这里；用来向用户报告"已持久化"
+HOTPLUG_UPPER_DIR = Path(os.environ.get("HOTPLUG_UPPER_DIR", "/data/etc/upper/syshotplug/pool"))
+
+# 守护方式：cron / hotplug / both
+METHODS = ("cron", "hotplug", "both")
+DEFAULT_METHOD = "cron"
 
 
 # ---------------------------------------------------------------------------
@@ -114,13 +132,105 @@ def sync_cron(enabled: bool) -> tuple[bool, str]:
     return True, ""
 
 
+# ---------------------------------------------------------------------------
+# 存储池挂载钩子（厂商 syshotplug 框架）
+# ---------------------------------------------------------------------------
+
+def hotplug_path() -> Path:
+    return HOTPLUG_DIR / HOTPLUG_NAME
+
+
+def hotplug_installed() -> bool:
+    """钩子在位且可执行——syshotplug 只执行带可执行位的文件。"""
+    target = hotplug_path()
+    return target.is_file() and os.access(target, os.X_OK)
+
+
+def hotplug_persisted() -> bool:
+    """是否已经落在 overlay 的持久层（/data/etc/upper/...），重启后还在。"""
+    return (HOTPLUG_UPPER_DIR / HOTPLUG_NAME).is_file()
+
+
+def hotplug_up_to_date() -> bool:
+    try:
+        return hotplug_path().read_bytes() == HOTPLUG_SCRIPT.read_bytes()
+    except OSError:
+        return False
+
+
+def install_hotplug() -> tuple[bool, str]:
+    try:
+        payload = HOTPLUG_SCRIPT.read_bytes()
+    except OSError as error:
+        return False, f"读取钩子脚本失败：{error}"
+    target = hotplug_path()
+    temporary = target.with_name(target.name + ".tmp")
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_bytes(payload)
+        # 必须补可执行位：发布包解压出来是 0644，而 syshotplug 会跳过不可执行的文件
+        os.chmod(temporary, 0o755)
+        temporary.replace(target)
+    except OSError as error:
+        return False, f"安装钩子失败：{error}"
+    return True, ""
+
+
+def remove_hotplug() -> tuple[bool, str]:
+    target = hotplug_path()
+    try:
+        target.unlink()
+    except FileNotFoundError:
+        return True, ""
+    except OSError as error:
+        return False, f"删除钩子失败：{error}"
+    return True, ""
+
+
+def sync_hotplug(enabled: bool) -> tuple[bool, str]:
+    if enabled:
+        return install_hotplug()
+    return remove_hotplug()
+
+
+def current_method() -> str:
+    method = read_state().get("method")
+    return method if method in METHODS else DEFAULT_METHOD
+
+
+def sync_methods(enabled: bool) -> tuple[bool, str]:
+    """按当前方式开关 cron 与 hotplug 两条守护路径。"""
+    method = current_method()
+    ok, error = sync_cron(enabled and method in ("cron", "both"))
+    if not ok:
+        return False, error
+    ok, error = sync_hotplug(enabled and method in ("hotplug", "both"))
+    if not ok:
+        return False, error
+    return True, ""
+
+
 def set_autostart(enabled: bool) -> tuple[bool, str]:
-    ok, error = sync_cron(enabled)
+    ok, error = sync_methods(enabled)
     if not ok:
         return False, error
     state = read_state()
     state["autostart"] = enabled
+    state.setdefault("method", current_method())
     write_state(state)
+    return True, ""
+
+
+def set_method(method: str) -> tuple[bool, str]:
+    if method not in METHODS:
+        return False, f"未知方式：{method}"
+    state = read_state()
+    state["method"] = method
+    write_state(state)
+    if autostart_enabled():
+        ok, error = sync_methods(True)
+        if not ok:
+            return False, error
     return True, ""
 
 
@@ -151,12 +261,21 @@ class Handler(BaseHTTPRequestHandler):
         self._send(status, json_bytes(value), "application/json; charset=utf-8")
 
     def _status(self) -> dict:
+        method = current_method()
         return {
             "ok": True,
             "sshRunning": ssh_running(),
             "sshEnabled": ssh_enabled(),
             "autostart": autostart_enabled(),
             "unit": DROPBEAR_UNIT,
+            "method": method,
+            "hotplug": {
+                "installed": hotplug_installed(),
+                "persisted": hotplug_persisted(),
+                "upToDate": hotplug_up_to_date(),
+                "path": str(hotplug_path()),
+                "name": HOTPLUG_NAME,
+            },
         }
 
     def _serve_static(self, path: str) -> None:
@@ -232,11 +351,27 @@ class Handler(BaseHTTPRequestHandler):
 
             if path == "/api/autostart":
                 enabled = bool(body.get("enabled"))
+                chosen = body.get("method")
+                if chosen is not None:
+                    ok, error = set_method(str(chosen))
+                    if not ok:
+                        self._json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": error})
+                        return
                 ok, error = set_autostart(enabled)
                 if not ok:
                     self._json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": error})
                     return
                 if enabled and not ssh_running():
+                    start_ssh()
+                self._json(HTTPStatus.OK, self._status())
+                return
+
+            if path == "/api/method":
+                ok, error = set_method(str(body.get("method", "")))
+                if not ok:
+                    self._json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": error})
+                    return
+                if autostart_enabled() and not ssh_running():
                     start_ssh()
                 self._json(HTTPStatus.OK, self._status())
                 return

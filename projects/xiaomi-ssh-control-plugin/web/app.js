@@ -2,12 +2,22 @@ const statusDot = document.getElementById('statusDot');
 const statusText = document.getElementById('statusText');
 const statusHint = document.getElementById('statusHint');
 const autostartToggle = document.getElementById('autostartToggle');
+const methodSelect = document.getElementById('methodSelect');
+const methodHint = document.getElementById('methodHint');
+const hookNote = document.getElementById('hookNote');
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
 const note = document.getElementById('note');
 const toast = document.getElementById('toast');
 
 let busy = false;
+let firstRender = true;
+
+const METHOD_HINTS = {
+  cron: '每分钟巡检一次，发现 SSH 没跑就拉起；兼容性最好。',
+  hotplug: '存储池挂载时触发一次（钩子内部会等系统关 SSH 后再拉起并复查）。',
+  both: '两条路都开：存储池挂载时触发，加上每分钟巡检兜底。',
+};
 
 function showToast(message) {
   toast.textContent = message;
@@ -25,12 +35,33 @@ function render(data) {
     : 'SSH 端口未监听，远程登录不可用';
 
   autostartToggle.checked = Boolean(data.autostart);
+  const method = data.method || 'cron';
+  if (firstRender || document.activeElement !== methodSelect) methodSelect.value = method;
+  methodHint.textContent = METHOD_HINTS[method] || METHOD_HINTS.cron;
+  methodSelect.disabled = busy;
   startBtn.disabled = busy || running;
   stopBtn.disabled = busy || !running;
 
+  const hook = data.hotplug || {};
+  const wantsHook = Boolean(data.autostart) && (method === 'hotplug' || method === 'both');
+  if (wantsHook && !hook.installed) {
+    hookNote.hidden = false;
+    hookNote.textContent = `存储池钩子未安装（应为 ${hook.path || '/etc/syshotplug/pool/98.ssh-control'}），请重新选择一次守护方式。`;
+  } else if (wantsHook && hook.installed && hook.upToDate === false) {
+    hookNote.hidden = false;
+    hookNote.textContent = '存储池钩子版本较旧（插件升级后需重新安装），请重新选择一次守护方式。';
+  } else if (wantsHook && hook.installed && hook.persisted === false) {
+    hookNote.hidden = false;
+    hookNote.textContent = '存储池钩子已安装，但没落在持久层，重启后可能失效（请检查存储挂载）。';
+  } else {
+    hookNote.hidden = true;
+  }
+
+  const how = { cron: '每分钟巡检', hotplug: '存储池挂载时', both: '存储池挂载 + 每分钟巡检' }[method];
   note.textContent = data.autostart
-    ? '开机自启已开启：系统每次启动后会在一分钟内自动拉起 SSH。'
+    ? `开机自启已开启（${how}）：系统每次启动后会自动把 SSH 拉回来。`
     : '开机自启已关闭：小 Mi 系统会在每次开机时关闭 SSH，手动启动只在本次开机内有效。';
+  firstRender = false;
 }
 
 // Windows 客户端 location 可能带盘符（/D:/plugin/...），相对 fetch 会 400。
@@ -104,9 +135,18 @@ autostartToggle.addEventListener('change', () => {
   const enabled = autostartToggle.checked;
   autostartToggle.disabled = true;
   act(
-    () => request('/autostart', { enabled }),
+    () => request('/autostart', { enabled, method: methodSelect.value }),
     enabled ? '已开启开机自启' : '已关闭开机自启',
   ).finally(() => { autostartToggle.disabled = false; });
+});
+
+methodSelect.addEventListener('change', () => {
+  const method = methodSelect.value;
+  methodSelect.disabled = true;
+  act(
+    () => request('/method', { method }),
+    `守护方式已切换为「${(METHOD_HINTS[method] || '').split('；')[0]}」`,
+  ).finally(() => { methodSelect.disabled = false; });
 });
 
 document.getElementById('refreshButton').addEventListener('click', refresh);
