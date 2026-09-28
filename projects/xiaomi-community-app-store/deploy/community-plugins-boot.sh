@@ -27,6 +27,10 @@
 #   DOCKER_FD_MIN=65536    dockerd fd 软上限低于此值就修复（默认 65536）
 #   DOCKER_REPAIR_RETRY=600   修复失败/被推迟后，隔多少秒才再试（默认 600 秒）
 #   DOCKER_READY_WAIT=90   拉起插件服务前最多等 docker 就绪多少秒（默认 90）
+#   DOCKER_NAT_ENFORCE=1   把 UCI 的 mi_docker.globals.iptables 保持为 1（默认 0=不管）。
+#                          出厂默认是 0（Docker 不碰 iptables，发布端口全走用户态代理）；
+#                          显式开了 DNAT 的机器可以置 1：固件升级若把这个开关重置回 0，
+#                          钩子会设回 1 并重启 docker，把 DNAT 恢复回来。
 #   DOCKER_FD_LIMITS=      仅测试用：改成读某个假的 limits 文件
 #   DOCKER_NAT_MISSING=    仅测试用：假装这些发布端口缺 DNAT 规则（如 "9091 51413"）
 #   DOCKER_REPAIR_DRYRUN=1 仅测试用：只记录、不写文件也不重启 docker
@@ -41,6 +45,7 @@ EXTRA_UNITS=""
 DOCKER_FD_MIN=${DOCKER_FD_MIN:-65536}
 DOCKER_REPAIR_RETRY=${DOCKER_REPAIR_RETRY:-${DOCKER_FD_RETRY:-600}}
 DOCKER_READY_WAIT=${DOCKER_READY_WAIT:-90}
+DOCKER_NAT_ENFORCE=${DOCKER_NAT_ENFORCE:-0}
 DOCKER_FD_LIMITS=${DOCKER_FD_LIMITS:-}
 DOCKER_NAT_MISSING=${DOCKER_NAT_MISSING:-}
 DOCKER_REPAIR_DRYRUN=${DOCKER_REPAIR_DRYRUN:-${DOCKER_FD_DRYRUN:-0}}
@@ -149,6 +154,37 @@ dockerd_fd_soft_limit() {
     awk '/Max open files/ {print $4}' "/proc/$pid/limits" 2>/dev/null
 }
 
+# Docker 现在是否托管 iptables（daemon.json 里 "iptables" 为 false 才算不托管；缺省=托管）
+docker_manages_iptables() {
+    config=/tmp/dockerd/daemon.json
+    [ -f "$config" ] || return 0
+    value="$(python3 -c '
+import json, sys
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    print("true")
+    raise SystemExit
+print("false" if data.get("iptables") is False else "true")' "$config" 2>/dev/null)"
+    [ "$value" != "false" ]
+}
+
+# 把 UCI 的 iptables 开关设回 1（只有 DOCKER_NAT_ENFORCE=1 时才做）
+# 输出：set / would-set / 空
+enforce_docker_nat() {
+    [ "$DOCKER_NAT_ENFORCE" = "1" ] || return 0
+    command -v uci >/dev/null 2>&1 || return 0
+    current="$(uci -q get mi_docker.globals.iptables 2>/dev/null)"
+    [ "$current" = "1" ] && return 0
+    if [ "$DOCKER_REPAIR_DRYRUN" = "1" ]; then
+        printf 'would-set'
+        return 0
+    fi
+    if uci set mi_docker.globals.iptables='1' 2>/dev/null && uci commit mi_docker 2>/dev/null; then
+        printf 'set'
+    fi
+}
+
 # 返回"正在运行且发布了端口、却没有对应 DNAT 规则"的端口；没有则输出空
 docker_nat_missing_ports() {
     if [ -n "$DOCKER_NAT_MISSING" ]; then          # 仅测试用：假装这些端口缺规则
@@ -201,9 +237,19 @@ docker_repair_reason() {
             fi
             ;;
     esac
-    missing="$(docker_nat_missing_ports 2>/dev/null)"
-    if [ -n "$missing" ]; then
-        reason="${reason:+$reason；}发布端口 $missing 缺少 DNAT 规则"
+    nat_state="$(enforce_docker_nat)"
+    if [ "$nat_state" = "set" ]; then
+        reason="${reason:+$reason；}iptables 开关曾被重置，已设回 mi_docker.globals.iptables=1"
+    elif [ "$nat_state" = "would-set" ]; then
+        reason="${reason:+$reason；}iptables 开关被重置（dry-run：会设回 1）"
+    fi
+    # 只有 Docker 确实托管 iptables 时才要求 DNAT 规则：否则出厂默认（iptables=0）的
+    # 机器会被误判成"端口缺规则"，每分钟重启一次 docker。
+    if [ "$nat_state" = "set" ] || docker_manages_iptables; then
+        missing="$(docker_nat_missing_ports 2>/dev/null)"
+        if [ -n "$missing" ]; then
+            reason="${reason:+$reason；}发布端口 $missing 缺少 DNAT 规则"
+        fi
     fi
     printf '%s' "$reason"
 }
