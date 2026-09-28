@@ -226,6 +226,27 @@ async function saveHostname() {
   }
 }
 
+// 恢复默认：清掉插件里存的名字，回到系统配置（/etc/config/samba 的 option name）里的名字
+async function resetHostname() {
+  const button = $('hostnameReset');
+  button.disabled = true;
+  busy = true;
+  try {
+    const data = await call('hostname', { reset: true });
+    render(data.status);
+    const settings = data.status.settings || {};
+    const discovery = data.status.discovery || {};
+    toast(`已恢复默认主机名 ${settings.hostname || discovery.hostname || ''}`.trim());
+    showError('');
+  } catch (error) {
+    showError(error.message);
+    toast('恢复失败');
+  } finally {
+    busy = false;
+    button.disabled = false;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 共享目录
 // ---------------------------------------------------------------------------
@@ -315,7 +336,10 @@ async function confirmAddShares() {
     const result = data.result || {};
     const added = (result.added || []).length;
     const errors = (result.errors || []).map((item) => item.error || String(item));
-    if (added) toast(`已添加 ${added} 个共享`);
+    if (added) {
+      // SMB 客户端会缓存共享列表：刚加完立刻双击可能报错，提示一句省得以为是没生效
+      toast(`已添加 ${added} 个共享（Windows 里可能要重开资源管理器才看得到）`);
+    }
     showError(errors.length ? `已完成，但有提示：${errors.join('；')}` : '');
   } catch (error) {
     $('dirError').textContent = error.message;
@@ -336,6 +360,7 @@ $('discoverySwitch').addEventListener('change', (event) => {
   toggleDiscovery(event.target.checked);
 });
 $('hostnameSave').onclick = saveHostname;
+$('hostnameReset').onclick = resetHostname;
 $('hostnameInput').addEventListener('keydown', (event) => {
   if (event.key === 'Enter') { event.preventDefault(); saveHostname(); }
 });

@@ -386,6 +386,21 @@ class HostnameApiTests(ServerHarness):
         saved = json.loads((self.sandbox.data / 'settings.json').read_text(encoding='utf-8'))
         self.assertEqual(saved['hostname'], 'XiaoMiNAS')
 
+    def test_reset_clears_saved_name_and_falls_back_to_default(self):
+        self.engine.start()
+        self.engine.set_hostname('XiaoMiNAS')
+        status, data = self.json_request('POST', '/api/hostname', {'reset': True},
+                                         self.auth(write=True))
+        self.assertEqual(status, 200)
+        self.assertTrue(data['ok'])
+        # 生效名回到 samba 配置里的那个；落盘值被清空（见下面的文件断言）
+        self.assertEqual(data['status']['settings']['hostname'], 'SmartStorage')
+        self.assertEqual(data['status']['discovery']['hostname'], 'SmartStorage')
+        self.assertEqual(self.engine.responder.hostname, 'SmartStorage')
+        self.assertIn('恢复默认', data['status']['discovery']['message'])
+        saved = json.loads((self.sandbox.data / 'settings.json').read_text(encoding='utf-8'))
+        self.assertEqual(saved['hostname'], '')
+
     def test_invalid_names_are_rejected_in_chinese(self):
         self.engine.start()
         responder = self.engine.responder

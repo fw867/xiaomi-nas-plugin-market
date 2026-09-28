@@ -122,7 +122,7 @@ $ net view \\192.168.1.8          # 同一账号下出现两个共享
 | GET | `/api/log` | 最近日志 |
 | GET | `/api/dirs?account=fw867` | 账号数据根目录下的子目录（`shared` 标记已共享的），弹窗用 |
 | POST | `/api/discovery` | `{"enabled": true\|false}`：开 = 接管官方 wsdd + 起回应器；关 = 发 Bye + 还原官方 wsdd（幂等） |
-| POST | `/api/hostname` | `{"hostname": "..."}`：校验 → 落盘 → 重建回应器并重发 Hello |
+| POST | `/api/hostname` | `{"hostname": "..."}`：校验 → 落盘 → 重建回应器并重发 Hello；`{"reset": true}` 为**恢复默认**（清掉落盘值，回到 `/etc/config/samba` 的 `option name`，页面上是「恢复默认」按钮） |
 | POST | `/api/share/add` | `{"account","path","sharePoint"}`（单个，兼容旧版）或 `{"account","paths":[...]}`（多选；所有 `add_dir` 之后只跑一次 `init_config` + reload） |
 | POST | `/api/share/delete` | 删除插件自建的共享（`{"shareName": "<账号>_nb_<序号>"}`） |
 | POST | `/api/detect/restart` | 重启回应器并重发 Hello（排查用，页面上没有按钮） |
@@ -148,6 +148,11 @@ SMB 服务名仍然由官方共享 app 的配置决定，改这里不会动 `smb
 
 校验：长度 1–15，`[A-Za-z0-9][A-Za-z0-9._-]*`（NetBIOS 友好；对外宣告时按
 `wsd.py` 现有实现大写化）；非法输入返回 400 + 中文原因。
+
+「恢复默认」按钮 = `POST /api/hostname {"reset": true}`：把落盘的 `hostname` 清空，名字
+回退到系统配置里的那个（`/etc/config/samba` 的 `option name`，读不到才是内置 `SmartStorage`），
+同样会重建回应器并重发 Hello。注意 `/api/status` 的 `settings.hostname` 给的是**生效**的名字，
+「是否被插件改过」看 `<DATA_DIR>/settings.json` 里的值（清空后是空串）。
 
 「网络发现」开关的状态同样落盘在 `settings.json`：关闭后服务重启**不会**自动接管，
 直到用户在页面上重新打开。
@@ -199,7 +204,8 @@ python3 -m unittest discover -s tests -v
 - **刚新增的共享在 Windows 里可能要等一下才能打开**：`smb.conf` 是即时生效的
   （`testparm` 立刻能看到那一段），但 SMB 客户端会缓存共享列表与已建立的会话，刚点完
   「确定」就双击新共享可能报「找不到网络路径 / 无法访问」；重开一次资源管理器窗口、
-  或断开重连（`net use \\<NAS-IP> /delete`）之后就正常了。2026-09-28 用户实测确认过这个现象。
+  或断开重连（`net use \\<NAS-IP> /delete`）之后就正常了。2026-09-28 用户实测确认过这个现象，
+  页面添加成功后也会提示一句「Windows 里可能要重开资源管理器才看得到」。
 - **`list dirs` 与共享段不同步**：`sambauser` 的 `list dirs` 存的是目录路径，
   `sambashare` 才是共享段。若某目录只在 `list dirs` 里（例如共享段被删掉），页面会把它
   显示成「未共享」，此时可以用插件重新共享它；反过来，插件不会去动 `list dirs`，

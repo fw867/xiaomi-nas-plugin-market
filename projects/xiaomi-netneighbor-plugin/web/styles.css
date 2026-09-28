@@ -158,21 +158,21 @@ main {
 .status-dot.off { background: #b9c2cf; box-shadow: 0 0 0 4px rgba(185, 194, 207, .18); }
 #serviceState { font-size: 14.5px; font-weight: 600; }
 
-/* 主机名：一个输入框 + 保存 */
-.host-row { display: flex; gap: 8px; margin-top: 10px; }
+/* 主机名：输入框 + 保存 + 恢复默认，固定一行（窄屏靠压缩按钮内边距，不换行） */
+.host-row { display: flex; flex-wrap: nowrap; gap: 6px; margin-top: 10px; }
 .host-row input[type="text"] {
   flex: 1 1 auto;
   min-width: 0;
   min-height: var(--tap);
   border: 1px solid var(--line);
   border-radius: 12px;
-  padding: 10px 12px;
+  padding: 10px 10px;
   font-size: 16px;
   font-family: inherit;
   background: #fff;
   color: var(--ink);
 }
-.host-row .btn { flex: 0 0 auto; }
+.host-row .btn { flex: 0 0 auto; padding: 10px 12px; font-size: 14px; }
 
 /* 按钮 */
 .btn {

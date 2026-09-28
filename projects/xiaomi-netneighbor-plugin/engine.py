@@ -1742,9 +1742,17 @@ class Engine:
                 self.log(self.discovery['msg'])
         return self.snapshot()
 
-    def set_hostname(self, name) -> dict:
-        """改 WSD 宣告的主机名：校验 → 落盘 → 重建回应器并重发 Hello。"""
-        value = validate_hostname(name)
+    def set_hostname(self, name=None, reset: bool = False) -> dict:
+        """改 WSD 宣告的主机名：校验 → 落盘 → 重建回应器并重发 Hello。
+
+        `reset=True` 表示**恢复默认**：清掉 `settings['hostname']`，回退到从
+        `/etc/config/samba` 读到的名字（读不到才是内置默认值）。`name` 为空串仍然
+        按非法输入处理（页面上的「保存」会先挡住空输入）。
+        """
+        if reset:
+            value = ''
+        else:
+            value = validate_hostname(name)
         with self.lock:
             self.settings['hostname'] = value
             save_settings(self.settings, self.state_file)
@@ -1754,20 +1762,26 @@ class Engine:
             self.hostname = self._resolve_hostname()
         if not bool(self.settings.get('discoveryEnabled', True)):
             # 关闭状态下不起回应器：名字已经落盘，下次打开时生效
-            self.log('主机名已保存为 %s（网络发现已关闭，下次打开时生效）' % value)
+            self.log('主机名已保存为 %s（网络发现已关闭，下次打开时生效）'
+                     % (value or self.hostname))
             return self.snapshot()
         with self.lock:
             self.stop_responder()                               # 先发 Bye，Windows 里的旧名字消失
             if not self._start_responder_locked():
                 raise Error('主机名已保存为 %s，但回应器重建失败：%s'
-                            % (value, self.discovery['msg']))
+                            % (value or self.hostname, self.discovery['msg']))
             responder = self.responder
             try:
                 responder.announce_hello(times=2)               # 用新名字立刻重新宣告
             except Exception as error:                          # noqa: BLE001
                 self.log('重新宣告失败（主机名已生效）：%s' % error)
-            self.discovery['msg'] = '已切换到主机名 %s' % value
-            self.log('主机名 %s → %s（已重建回应器并重发 Hello）' % (previous or '—', value))
+            if reset:
+                self.discovery['msg'] = '已恢复默认主机名 %s' % self.hostname
+                self.log('主机名 %s → %s（恢复默认，已重建回应器并重发 Hello）'
+                         % (previous or '—', self.hostname))
+            else:
+                self.discovery['msg'] = '已切换到主机名 %s' % value
+                self.log('主机名 %s → %s（已重建回应器并重发 Hello）' % (previous or '—', value))
         return self.snapshot()
 
     def shutdown(self) -> None:

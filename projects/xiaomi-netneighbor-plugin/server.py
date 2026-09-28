@@ -275,8 +275,12 @@ class Handler(BaseHTTPRequestHandler):
                 snapshot = self.server.engine.set_discovery_enabled(body.get('enabled'))
                 self.json_out(200, {'ok': True, 'status': snapshot})
             elif path == '/api/hostname':
-                # 改 Windows「网络」里显示的名字：落盘 + 重建回应器 + 重发 Hello
-                snapshot = self.server.engine.set_hostname(body.get('hostname', ''))
+                # 改 Windows「网络」里显示的名字：落盘 + 重建回应器 + 重发 Hello；
+                # {"reset": true} 是恢复默认（清掉落盘值，回退到 samba 配置里的名字）
+                if body.get('reset'):
+                    snapshot = self.server.engine.set_hostname(reset=True)
+                else:
+                    snapshot = self.server.engine.set_hostname(body.get('hostname', ''))
                 self.json_out(200, {'ok': True, 'status': snapshot})
             elif path == '/api/detect/restart':
                 # 重新宣告：重建回应器 + 重发 Hello，同步做完再回（几百毫秒量级）

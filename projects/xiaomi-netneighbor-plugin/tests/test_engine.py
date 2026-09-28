@@ -1654,6 +1654,53 @@ class SetHostnameTests(EngineHarness):
         self.assertEqual(self.engine.hostname, 'OffMode01')
         self.assertEqual(self.engine.responder.hostname, 'OffMode01')
 
+    def test_reset_clears_saved_name_and_falls_back_to_samba(self):
+        """恢复默认 = 清掉落盘值，回到 `/etc/config/samba` 里的名字。"""
+        self.build()
+        self.manager()
+        self.engine.start()
+        self.engine.set_hostname('XiaoMiNAS')
+        self.assertEqual(self.engine.hostname, 'XiaoMiNAS')
+
+        snapshot = self.engine.set_hostname(reset=True)
+
+        # 快照给的是**生效**的名字（回退到 samba 配置里的 SmartStorage），落盘值才是被清掉的那个
+        self.assertEqual(snapshot['settings']['hostname'], 'SmartStorage')
+        self.assertEqual(snapshot['discovery']['hostname'], 'SmartStorage')
+        self.assertEqual(self.engine.responder.hostname, 'SmartStorage')  # 立刻生效
+        self.assertEqual(self.engine.responder.hellos, [2])               # 重发 Hello
+        self.assertIn('恢复默认', snapshot['discovery']['message'])
+        saved = json.loads((self.sandbox.data / 'settings.json').read_text(encoding='utf-8'))
+        self.assertEqual(saved['hostname'], '')                           # 落盘值已清空
+        self.assertEqual(self.engine.new_responder().hostname, 'SmartStorage')
+
+    def test_reset_follows_a_changed_samba_name(self):
+        """恢复默认之后，名字跟着系统配置走（不再是插件里那个）。"""
+        self.build()
+        self.manager()
+        self.engine.start()
+        self.engine.set_hostname('XiaoMiNAS')
+        (self.sandbox.root / 'etc' / 'config' / 'samba').write_text(
+            "config samba 'global'\n\toption name 'MyNAS'\n", encoding='utf-8')
+        self.assertEqual(self.engine._resolve_hostname(), 'XiaoMiNAS')    # 落盘值仍优先
+
+        snapshot = self.engine.set_hostname(reset=True)
+
+        self.assertEqual(snapshot['discovery']['hostname'], 'MyNAS')
+        self.assertEqual(self.engine.responder.hostname, 'MyNAS')
+
+    def test_reset_while_discovery_is_off_starts_no_responder(self):
+        self.build()
+        self.manager()
+        self.engine.set_discovery_enabled(False)
+        snapshot = self.engine.set_hostname(reset=True)
+        self.assertIsNone(self.engine.responder)
+        self.assertEqual(snapshot['settings']['hostname'], 'SmartStorage')   # 生效名
+        saved = json.loads((self.sandbox.data / 'settings.json').read_text(encoding='utf-8'))
+        self.assertEqual(saved['hostname'], '')                               # 落盘值已清空
+        self.engine.set_discovery_enabled(True)
+        self.assertEqual(self.engine.responder.hostname, 'SmartStorage')
+
 
 class AccountDataRootTests(EngineHarness):
     """数据根目录的推导：账号 → sambauser 的 option user → /home/<uXXXX>/pool0/data。"""
