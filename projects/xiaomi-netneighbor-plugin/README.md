@@ -113,18 +113,19 @@ $ net view \\192.168.1.8          # 同一账号下出现两个共享
 
 插件服务监听 `127.0.0.1:18190`，页面经 nginx 走 `/plugin/<用户>/netneighbor/`。
 
-页面只有三块：**网络发现开关 + 主机名**、**共享目录列表**、**添加共享弹窗**。
+页面只有三块：**网络发现开关 + 主机名**、**共享目录列表（只读）**、**「编辑共享」弹窗**。
+共享的增删都在弹窗里用勾选完成：**勾选＝添加、取消勾选＝移除**（官方 app 建的那条锁死不可取消）。
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/healthz` | `{"ok": true, "version": "0.1.0"}` |
 | GET | `/api/status` | 设置（开关/主机名）、发现服务状态、账号与共享列表；工作组、XAddrs、官方 wsdd 状态、最近取元数据时间仍在返回里（便于排查），页面不显示 |
 | GET | `/api/log` | 最近日志 |
-| GET | `/api/dirs?account=fw867` | 账号数据根目录下的子目录（`shared` 标记已共享的），弹窗用 |
+| GET | `/api/dirs?account=fw867` | 账号数据根目录下的子目录；每项带 `shared`（是否已共享）、`shareName`/`display` 与 `deletable`（只有插件自建的才为 true），弹窗用它决定锁定哪一项 |
 | POST | `/api/discovery` | `{"enabled": true\|false}`：开 = 接管官方 wsdd + 起回应器；关 = 发 Bye + 还原官方 wsdd（幂等） |
 | POST | `/api/hostname` | `{"hostname": "..."}`：校验 → 落盘 → 重建回应器并重发 Hello；`{"reset": true}` 为**恢复默认**（清掉落盘值，回到 `/etc/config/samba` 的 `option name`，页面上是「恢复默认」按钮） |
 | POST | `/api/share/add` | `{"account","path","sharePoint"}`（单个，兼容旧版）或 `{"account","paths":[...]}`（多选；所有 `add_dir` 之后只跑一次 `init_config` + reload） |
-| POST | `/api/share/delete` | 删除插件自建的共享（`{"shareName": "<账号>_nb_<序号>"}`） |
+| POST | `/api/share/delete` | 删除插件自建的共享：`{"shareName": "<账号>_nb_<序号>"}`（单个，返回结构同旧版）或 `{"shareNames": [...]}`（批量；所有 `del_dir` 之后只跑一次 `init_config` + reload，返回 `removed/verified/errors/initReturncode/reloadReturncode`）。**含受保护共享（`public` 等）时整批拒绝、一条命令都不跑** |
 | POST | `/api/detect/restart` | 重启回应器并重发 Hello（排查用，页面上没有按钮） |
 
 写操作需要会话令牌 + `X-CSRF-Token`（与仓库其它插件一致）。页面由**插件服务**发出

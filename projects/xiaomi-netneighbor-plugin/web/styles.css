@@ -194,7 +194,7 @@ main {
 .btn.primary:active { background: #2a76dd; }
 .btn.block { display: block; width: 100%; margin-top: 12px; }
 
-/* 共享目录列表：每行「目录名 + X」 */
+/* 共享目录列表：每行「目录名 + 共享名」（只读，增删都在弹窗里勾选） */
 .accounts { display: flex; flex-direction: column; margin-top: 4px; }
 .share-row {
   display: flex;
@@ -208,25 +208,8 @@ main {
 .share-info { flex: 1 1 auto; min-width: 0; }
 .share-name { font-size: 14.5px; font-weight: 600; overflow-wrap: anywhere; }
 .share-sub { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
-.share-remove {
-  flex: 0 0 auto;
-  width: 36px;
-  height: 36px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid transparent;
-  border-radius: 50%;
-  background: transparent;
-  color: var(--muted);
-  font-size: 20px;
-  line-height: 1;
-  cursor: pointer;
-  touch-action: manipulation;
-}
-.share-remove:hover, .share-remove:active { background: #fdeceb; color: var(--danger); }
 
-/* 添加共享弹窗 */
+/* 编辑共享弹窗 */
 .dialog {
   width: min(480px, calc(100vw - 32px));
   max-height: 80vh;
@@ -264,7 +247,6 @@ main {
   cursor: pointer;
 }
 .dir-item:active { background: #eef3fa; }
-.dir-item.shared { cursor: default; }
 .dir-box { width: 20px; height: 20px; flex: 0 0 auto; }
 .dir-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 .chip {
@@ -326,7 +308,6 @@ footer { text-align: center; color: var(--muted); font-size: 12.5px; margin-top:
   .btn, .host-row input[type="text"] { background: #1b2330; color: var(--ink); border-color: #333f4f; }
   .btn:active { background: #232d3b; }
   .btn.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
-  .share-remove:hover, .share-remove:active { background: #2a1f1c; }
   .dir-item:active { background: #232d3b; }
   .chip { background: #232d3b; }
   .alert { background: #2a1f1c; color: #e8b4a3; }

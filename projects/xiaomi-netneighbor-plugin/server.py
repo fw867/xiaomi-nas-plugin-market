@@ -267,7 +267,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.json_out(200, {'ok': True, 'result': result,
                                     'status': self.server.engine.snapshot()})
             elif path == '/api/share/delete':
-                result = self.server.engine.delete_share(body.get('shareName', ''))
+                # 兼容旧的单条 `{"shareName":"fw867_nb_1"}`，以及新的
+                # `{"shareNames":[...]}`（弹窗里一次取消勾选多个目录）
+                names = body.get('shareNames')
+                if isinstance(names, (list, tuple)):
+                    result = self.server.engine.delete_shares(list(names))
+                else:
+                    result = self.server.engine.delete_share(body.get('shareName', ''))
                 self.json_out(200, {'ok': True, 'result': result,
                                     'status': self.server.engine.snapshot()})
             elif path == '/api/discovery':

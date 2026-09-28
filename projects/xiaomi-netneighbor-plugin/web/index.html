@@ -51,14 +51,15 @@
                 <h2>共享目录</h2>
                 <p id="accountLine" class="muted"></p>
                 <div id="accounts" class="accounts"></div>
-                <button id="addShare" class="btn primary block" type="button">添加共享</button>
+                <button id="editShare" class="btn primary block" type="button">编辑共享</button>
             </section>
 
-            <!-- 添加共享弹窗：列出数据根目录下的子目录，多选提交 -->
+            <!-- 编辑共享弹窗：列出数据根目录下的子目录，勾选=添加、取消勾选=移除 -->
             <dialog id="dirDialog" class="dialog">
                 <div class="dialog-body">
-                    <h2>添加共享</h2>
+                    <h2>编辑共享</h2>
                     <p id="dirRoot" class="dialog-hint"></p>
+                    <p class="dialog-hint">勾选添加，取消勾选移除</p>
                     <div id="dirList" class="dir-list"></div>
                     <p id="dirError" class="dialog-error" role="alert"></p>
                     <div class="dialog-actions">

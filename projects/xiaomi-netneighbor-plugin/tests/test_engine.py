@@ -1230,6 +1230,152 @@ class AddShareTests(EngineHarness):
         self.assertTrue(result['verified'])
 
 
+class ApplySambaBatchDirectionTests(EngineHarness):
+    """`apply_samba_batch(expect_present=...)` 的两种判定方向。"""
+
+    def test_default_direction_means_present(self):
+        """默认形参必须与批量新增路径完全一致：配置里有段才算 verified。"""
+        self.build()
+        self.manager()
+        applied = self.engine.apply_samba_batch(['u3943892_nb_1'])
+        self.assertEqual(applied['shares']['u3943892_nb_1'],
+                         {'present': True, 'verified': True})
+        self.assertTrue(applied['inConfig'])
+
+    def test_expect_present_false_verifies_disappearance(self):
+        """删除路径：配置里**没有**该段才算 verified，inConfig 表示「全都不在配置里」。"""
+        self.build()
+        self.manager()
+        self.drop_list_dirs()
+        target = self.data_child('下载')
+        self.engine.add_share('fw867', target)
+        self.engine.shares(force=True)
+        # 先真的把段删掉（这里只测 `apply_samba_batch` 的判定方向，不测 del_dir）
+        self.engine.exec([self.sandbox.smb_mgr, 'shares', 'del_dir', 'fw867_nb_1'])
+
+        applied = self.engine.apply_samba_batch(['fw867_nb_1'], expect_present=False)
+        self.assertTrue(applied['shares']['fw867_nb_1']['verified'])
+        self.assertFalse(applied['shares']['fw867_nb_1']['present'])
+        self.assertTrue(applied['inConfig'])          # 段确实不在了
+        # 删除路径不去问 is-active
+        self.assertFalse(applied['smbActive'])
+        self.assertIsNone(self.runner.argv_for('is-active'))
+
+    def test_expect_present_false_reports_still_present(self):
+        """段还在配置里：verified=False，inConfig=False（但函数本身不抛错）。"""
+        self.build()
+        self.manager()
+        applied = self.engine.apply_samba_batch(['u3943892_nb_1'], expect_present=False)
+        entry = applied['shares']['u3943892_nb_1']
+        self.assertFalse(entry['verified'])
+        self.assertTrue(entry['present'])
+        self.assertFalse(applied['inConfig'])
+
+
+class DeleteSharesBatchTests(EngineHarness):
+    """批量删除：`del_dir` × N → 只跑一次 init_config + reload，先全部校验后动手。"""
+
+    def prepare(self):
+        self.build()
+        runner = self.manager()
+        self.drop_list_dirs()
+        targets = [self.data_child(name) for name in ('照片', '视频', '音乐')]
+        self.engine.add_shares('fw867', targets)
+        self.engine.shares(force=True)
+        return runner
+
+    def test_deletes_all_names_with_one_reload(self):
+        runner = self.prepare()
+        runner.calls.clear()
+        result = self.engine.delete_shares(['fw867_nb_1', 'fw867_nb_2'])
+
+        self.assertEqual([item['shareName'] for item in result['removed']],
+                         ['fw867_nb_1', 'fw867_nb_2'])
+        self.assertEqual([item['account'] for item in result['removed']],
+                         ['fw867', 'fw867'])
+        self.assertTrue(all(item['verified'] for item in result['removed']))
+        self.assertFalse(any(item['inConfig'] for item in result['removed']))
+        self.assertTrue(result['verified'])
+        self.assertEqual(result['errors'], [])
+        self.assertEqual(result['reloadReturncode'], 0)
+        self.assertEqual(runner.count('del_dir'), 2)
+        self.assertIsNone(runner.argv_for('del_dir', 2))          # 没有第三条
+        self.assertEqual(runner.count('init_config'), 1)
+        self.assertEqual(
+            runner.calls.count(['/bin/systemctl', 'reload', 'smb', 'nmb']), 1)
+        # 收尾命令只跑一次，而且必须排在所有 del_dir 之后
+        last_del = max(index for index, call in enumerate(runner.calls) if 'del_dir' in call)
+        init_at = runner.calls.index([self.sandbox.smb_mgr, 'init_config'])
+        reload_at = runner.calls.index(['/bin/systemctl', 'reload', 'smb', 'nmb'])
+        self.assertLess(last_del, init_at)
+        self.assertLess(init_at, reload_at)
+        # 配置与缓存都刷新了
+        self.assertNotIn('fw867_nb_1', [item['name'] for item in self.engine.shares()])
+        self.assertNotIn('fw867_nb_2', [item['name'] for item in self.engine.shares()])
+        self.assertIn('fw867_nb_3', [item['name'] for item in self.engine.shares()])
+
+    def test_deduplicates_and_ignores_blanks(self):
+        runner = self.prepare()
+        runner.calls.clear()
+        result = self.engine.delete_shares(['fw867_nb_1', '', '  ', 'fw867_nb_1', None])
+        self.assertEqual([item['shareName'] for item in result['removed']], ['fw867_nb_1'])
+        self.assertEqual(runner.count('del_dir'), 1)
+        self.assertEqual(runner.count('init_config'), 1)
+
+    def test_empty_list_is_rejected_without_commands(self):
+        runner = self.prepare()
+        runner.calls.clear()
+        for value in ([], ['', '  '], None):
+            with self.subTest(value=value):
+                with self.assertRaises(Error) as caught:
+                    self.engine.delete_shares(value)
+                self.assertIn('请选择要删除的共享', str(caught.exception))
+        self.assertIsNone(runner.argv_for('del_dir'))
+        self.assertIsNone(runner.argv_for('init_config'))
+
+    def test_protected_share_aborts_everything(self):
+        """列表里有受保护的共享：一条命令都不许跑（连合法的也不能先删）。"""
+        runner = self.prepare()
+        runner.calls.clear()
+        with self.assertRaises(Error) as caught:
+            self.engine.delete_shares(['fw867_nb_1', 'public'])
+        self.assertIn('不允许删除', str(caught.exception))
+        self.assertIsNone(runner.argv_for('del_dir'))
+        self.assertIsNone(runner.argv_for('init_config'))
+        self.assertIn('fw867_nb_1', [item['name'] for item in self.engine.shares()])
+
+    def test_unknown_and_app_managed_shares_abort_everything(self):
+        runner = self.prepare()
+        runner.calls.clear()
+        with self.assertRaises(Error) as caught:
+            self.engine.delete_shares(['fw867_nb_1', 'does_not_exist'])
+        self.assertIn('没有找到共享', str(caught.exception))
+        with self.assertRaises(Error) as caught:
+            self.engine.delete_shares(['fw867_nb_1', 'u3943892_nb_1'])
+        self.assertIn('只允许删除插件自己添加的共享', str(caught.exception))
+        self.assertIsNone(runner.argv_for('del_dir'))
+        self.assertIsNone(runner.argv_for('init_config'))
+
+    def test_reports_when_config_still_has_the_share(self):
+        """del_dir 成功但配置没变：如实报出来，不假装删掉了。"""
+        runner = self.prepare()
+        runner.calls.clear()
+
+        def handler(inner, key, timeout):
+            if 'del_dir' in key:
+                inner.calls.append(key)
+                return Result(0, '', '')               # 什么都不删
+            return None
+
+        runner.handler = handler
+        result = self.engine.delete_shares(['fw867_nb_1'])
+        self.assertEqual(result['removed'][0]['verified'], False)
+        self.assertEqual(result['removed'][0]['inConfig'], True)
+        self.assertFalse(result['verified'])
+        self.assertTrue(any('删除未生效' in item for item in result['errors']))
+        self.assertEqual(runner.count('init_config'), 1)      # 收尾还是只跑一次
+
+
 class DeleteShareTests(EngineHarness):
     def prepare(self):
         self.build()
@@ -1776,6 +1922,32 @@ class BrowseAccountDirsTests(EngineHarness):
         self.assertTrue(item['shared'])
         self.assertEqual(item['shareName'], 'fw867_nb_1')
         self.assertEqual(item['display'], '下载')
+        # 插件自建的共享可以删：弹窗里的勾选框要能取消
+        self.assertTrue(item['deletable'])
+
+    def test_deletable_flag_distinguishes_owner_and_unshared(self):
+        """`deletable`：插件自建 True、官方 App 建的那条 False、未共享 False。"""
+        self.build()
+        self.manager()
+        self.drop_list_dirs()
+        own = self.data_child('下载')
+        self.engine.add_share('fw867', own)
+        official = self.data_child('我的照片')           # 默认配置里由段 id u3943892_nb_1 共享
+        free = self.data_child('笔记')
+
+        by_path = {item['path']: item
+                   for item in self.engine.browse_account_dirs('fw867')['dirs']}
+
+        self.assertTrue(by_path[own]['shared'])
+        self.assertTrue(by_path[own]['deletable'])
+        self.assertTrue(by_path[official]['shared'])
+        self.assertFalse(by_path[official]['deletable'])       # 官方 App 建的：锁死
+        self.assertFalse(by_path[free]['shared'])
+        self.assertFalse(by_path[free]['deletable'])
+        # 其它字段一个都没变
+        for item in by_path.values():
+            self.assertEqual(sorted(item),
+                             ['deletable', 'display', 'name', 'path', 'shareName', 'shared'])
 
     def test_directory_listed_without_a_share_section_is_not_shared(self):
         """`list dirs` 里有目录但没有共享段：它不是共享，仍要能勾选。"""

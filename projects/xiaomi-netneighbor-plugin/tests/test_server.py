@@ -510,6 +510,85 @@ class ShareApiBatchTests(ServerHarness):
         self.assertIsNone(self.runner.argv_for('add_dir'))
 
 
+class ShareApiBatchDeleteTests(ServerHarness):
+    """`POST /api/share/delete` 的多选分支：一次提交多个共享名。"""
+
+    def add(self, *names):
+        for name in names:
+            self.json_request('POST', '/api/share/add',
+                              {'account': 'fw867', 'path': self.target_dir(name),
+                               'sharePoint': name}, self.auth(write=True))
+        return [item['name'] for item in self.engine.shares() if item['name'].startswith('fw867_')]
+
+    def test_multiple_names_delete_in_one_batch(self):
+        names = self.add('照片', '视频')
+        self.assertEqual(names[:2], ['fw867_nb_1', 'fw867_nb_2'])
+        self.runner.calls.clear()
+
+        status, data = self.json_request(
+            'POST', '/api/share/delete', {'shareNames': names[:2]}, self.auth(write=True))
+
+        self.assertEqual(status, 200)
+        self.assertTrue(data['ok'])
+        result = data['result']
+        self.assertEqual(sorted(result), ['errors', 'initReturncode', 'output',
+                                         'reloadReturncode', 'removed', 'verified'])
+        self.assertEqual([item['shareName'] for item in result['removed']], names[:2])
+        self.assertTrue(result['verified'])
+        self.assertEqual(result['errors'], [])
+        self.assertEqual(self.runner.count('del_dir'), 2)
+        self.assertEqual(self.runner.count('init_config'), 1)
+        self.assertEqual(
+            self.runner.calls.count(['/bin/systemctl', 'reload', 'smb', 'nmb']), 1)
+        # 返回里带上最新状态，页面一次渲染
+        self.assertIn('status', data)
+        remaining = [item['name'] for item in data['status']['accounts'][0]['shares']]
+        for name in names[:2]:
+            self.assertNotIn(name, remaining)
+
+    def test_batch_delete_rejects_protected_without_commands(self):
+        names = self.add('照片')
+        self.runner.calls.clear()
+        status, data = self.json_request(
+            'POST', '/api/share/delete', {'shareNames': names[:1] + ['public']},
+            self.auth(write=True))
+        self.assertEqual(status, 400)
+        self.assertFalse(data['ok'])
+        self.assertIn('不允许删除', data['error'])
+        self.assertIsNone(self.runner.argv_for('del_dir'))
+        self.assertIsNone(self.runner.argv_for('init_config'))
+
+    def test_batch_delete_is_empty_when_all_names_are_blank(self):
+        status, data = self.json_request(
+            'POST', '/api/share/delete', {'shareNames': ['', '  ']}, self.auth(write=True))
+        self.assertEqual(status, 400)
+        self.assertIn('请选择要删除的共享', data['error'])
+
+    def test_batch_delete_requires_session_and_csrf(self):
+        names = self.add('照片')
+        status, data = self.json_request(
+            'POST', '/api/share/delete', {'shareNames': names},
+            {'X-NN-Session': self.token, 'Content-Type': 'application/json'})
+        self.assertEqual(status, 403)
+        self.assertFalse(data['ok'])
+        status, data = self.json_request(
+            'POST', '/api/share/delete', {'shareNames': names},
+            {'X-CSRF-Token': self.csrf, 'Content-Type': 'application/json'})
+        self.assertEqual(status, 401)
+        self.assertFalse(data['ok'])
+        self.assertIsNone(self.runner.argv_for('del_dir'))
+
+    def test_single_share_name_still_uses_the_old_shape(self):
+        """旧的单条 body 返回结构不变（没有 removed/verified 这批批量字段）。"""
+        names = self.add('照片')
+        status, data = self.json_request('POST', '/api/share/delete',
+                                         {'shareName': names[0]}, self.auth(write=True))
+        self.assertEqual(status, 200)
+        self.assertEqual(data['result']['shareName'], names[0])
+        self.assertNotIn('removed', data['result'])
+        self.assertTrue(data['result']['verified'])
+
+
 class RestoreCliTests(unittest.TestCase):
     def test_restore_flag_is_an_early_exit(self):
         """--restore-wsdd 只恢复官方发现服务，不建 Engine、不开 HTTP 端口。"""

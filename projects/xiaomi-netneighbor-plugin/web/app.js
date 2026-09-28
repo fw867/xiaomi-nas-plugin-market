@@ -120,8 +120,8 @@ function renderDiscovery(data) {
 }
 
 function shareRow(share) {
-  // 每行：目录名（+ Windows 里显示的共享名），行尾一个 X 删除按钮。
-  // 只有插件自建（deletable）的行才有 X；官方 App 建的那条不显示。
+  // 只读的一行：目录名（+ Windows 里显示的共享名）。
+  // 增删都在「编辑共享」弹窗里用勾选/取消勾选完成，这里不再有行尾的 X 按钮。
   const row = element('div', 'share-row');
   const info = element('div', 'share-info');
   info.append(element('div', 'share-name', share.display || share.name || '（未命名）'));
@@ -129,14 +129,6 @@ function shareRow(share) {
     info.append(element('div', 'share-sub', `共享名 ${share.name}`));
   }
   row.append(info);
-  if (share.deletable) {
-    const remove = element('button', 'share-remove', '\u00d7');
-    remove.type = 'button';
-    remove.title = `删除共享 ${share.display || share.name}`;
-    remove.setAttribute('aria-label', `删除共享 ${share.display || share.name}`);
-    remove.addEventListener('click', () => deleteShare(share));
-    row.append(remove);
-  }
   return row;
 }
 
@@ -251,27 +243,6 @@ async function resetHostname() {
 // 共享目录
 // ---------------------------------------------------------------------------
 
-async function deleteShare(share) {
-  const label = share.display || share.name;
-  if (!window.confirm(`确定删除共享「${label}」？\n只删除共享，不会删除目录里的文件。`)) return;
-  busy = true;
-  try {
-    const data = await call('share/delete', { shareName: share.name });
-    render(data.status);
-    toast(`已删除共享「${label}」`);
-    if (data.result && data.result.errors && data.result.errors.length) {
-      showError(`已完成，但收尾有提示：${data.result.errors.join('；')}`);
-    } else {
-      showError('');
-    }
-  } catch (error) {
-    showError(error.message);
-    toast('删除失败');
-  } finally {
-    busy = false;
-  }
-}
-
 function currentAccount() {
   const accounts = (state && state.accounts) || [];
   return accounts.length ? accounts[0].account : '';
@@ -283,11 +254,18 @@ function dirRow(item) {
   box.type = 'checkbox';
   box.value = item.path;
   box.className = 'dir-box';
+  // 记住原始状态：确定时用它算差异（勾上的是新增、取消勾选的是删除）
+  box.dataset.shared = item.shared ? '1' : '0';
+  box.dataset.shareName = item.shareName || '';
+  const locked = Boolean(item.shared) && !item.deletable;
   if (item.shared) {
-    // 已经共享的目录：默认选中且禁用（删除走列表行尾的 X）
     box.checked = true;
-    box.disabled = true;
     row.classList.add('shared');
+  }
+  if (locked) {
+    // 官方 App 建的共享（deletable === false）：插件删不了，锁死别让用户白点
+    box.disabled = true;
+    box.title = '由小米 App 管理的共享，插件不能删除';
   }
   row.append(box);
   row.append(element('span', 'dir-name', item.name));
@@ -295,12 +273,18 @@ function dirRow(item) {
   return row;
 }
 
+function setDialogError(message) {
+  const box = $('dirError');
+  if (box) box.textContent = message || '';
+  showError(message || '');
+}
+
 async function openDirDialog() {
   const account = currentAccount();
   if (!account) { toast('没有读到账号'); return; }
   const dialog = $('dirDialog');
   $('dirRoot').textContent = '';
-  $('dirError').textContent = '';
+  setDialogError('');
   $('dirList').replaceChildren(element('p', 'muted', '读取中…'));
   dialog.showModal();
   try {
@@ -318,35 +302,66 @@ async function openDirDialog() {
   }
 }
 
-async function confirmAddShares() {
+// 「编辑共享」的确定：只按**差异**发请求（先加后删），一次请求处理一类改动。
+async function confirmEditShares() {
   const account = currentAccount();
-  const boxes = [...document.querySelectorAll('#dirList .dir-box')]
-    .filter((box) => box.checked && !box.disabled);
-  if (!boxes.length) { toast('请勾选要共享的目录'); return; }
+  const boxes = [...document.querySelectorAll('#dirList .dir-box')];
+  const toAdd = boxes.filter((box) => box.checked && box.dataset.shared === '0');
+  const toRemove = boxes.filter(
+    (box) => !box.checked && box.dataset.shared === '1' && !box.disabled);
+  if (!toAdd.length && !toRemove.length) {
+    toast('没有改动');
+    $('dirDialog').close();
+    return;
+  }
   const button = $('dirConfirm');
   button.disabled = true;
   busy = true;
+  let error = '';
   try {
-    const data = await call('share/add', {
-      account,
-      paths: boxes.map((box) => box.value),
-    });
-    render(data.status);
+    let status = null;
+    let added = 0;
+    let removed = 0;
+    let notes = [];
+    if (toAdd.length) {
+      const data = await call('share/add', { account, paths: toAdd.map((box) => box.value) });
+      status = data.status || status;
+      const result = data.result || {};
+      added = (result.added || []).length;
+      notes = notes.concat(
+        (result.errors || []).map((item) => item.error || String(item)));
+    }
+    if (toRemove.length) {
+      // 一次请求删掉所有取消勾选的（不要循环发单条删除）
+      const data = await call('share/delete', {
+        shareNames: toRemove.map((box) => box.dataset.shareName).filter(Boolean),
+      });
+      status = data.status || status;
+      const result = data.result || {};
+      removed = (result.removed || []).length;
+      notes = notes.concat(result.errors || []);
+    }
+    if (status) render(status);
     $('dirDialog').close();
-    const result = data.result || {};
-    const added = (result.added || []).length;
-    const errors = (result.errors || []).map((item) => item.error || String(item));
-    if (added) {
+    if (added && removed) {
+      toast(`已添加 ${added} 个、移除 ${removed} 个共享（Windows 里可能要重开资源管理器才看得到）`);
+    } else if (added) {
       // SMB 客户端会缓存共享列表：刚加完立刻双击可能报错，提示一句省得以为是没生效
       toast(`已添加 ${added} 个共享（Windows 里可能要重开资源管理器才看得到）`);
+    } else {
+      toast(`已移除 ${removed} 个共享（Windows 里可能要重开资源管理器才看得到）`);
     }
-    showError(errors.length ? `已完成，但有提示：${errors.join('；')}` : '');
-  } catch (error) {
-    $('dirError').textContent = error.message;
-    showError(error.message);
+    showError(notes.length ? `已完成，但有提示：${notes.join('；')}` : '');
+  } catch (err) {
+    error = err.message || '操作失败';
   } finally {
     busy = false;
     button.disabled = false;
+  }
+  if (error) {
+    // 弹窗已经关掉（请求中途被关）时错误只能给全局提示，避免提示丢失
+    if ($('dirDialog').open) setDialogError(error);
+    else showError(error);
   }
 }
 
@@ -364,9 +379,9 @@ $('hostnameReset').onclick = resetHostname;
 $('hostnameInput').addEventListener('keydown', (event) => {
   if (event.key === 'Enter') { event.preventDefault(); saveHostname(); }
 });
-$('addShare').onclick = openDirDialog;
+$('editShare').onclick = openDirDialog;
 $('dirCancel').onclick = () => { $('dirDialog').close(); };
-$('dirConfirm').onclick = confirmAddShares;
+$('dirConfirm').onclick = confirmEditShares;
 // 点遮罩关闭（点 dialog 自身而不是内容区）
 $('dirDialog').addEventListener('click', (event) => {
   if (event.target === $('dirDialog')) $('dirDialog').close();

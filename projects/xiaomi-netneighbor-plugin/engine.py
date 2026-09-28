@@ -1281,11 +1281,15 @@ class Engine:
         return {'added': added, 'skipped': [dict(item) for item in (skipped or [])],
                 'errors': errors, 'account': account, 'apply': applied}
 
-    def apply_samba_batch(self, share_names) -> dict:
+    def apply_samba_batch(self, share_names, expect_present: bool = True) -> dict:
         """`init_config` + `systemctl reload smb nmb` **一次**，然后核对每个共享。
 
         与 `apply_samba` 的区别只有一个：批量增删时只跑一次收尾命令。
-        `verified` 的判定沿用 `apply_samba`：配置里有段、或者服务确实是 active。
+
+        `expect_present=True`（默认，新增路径，行为与以前完全一致）：`verified` 是
+        「配置里有这个段、或者服务确实是 active」；`inConfig` 表示「全都在配置里」。
+        `expect_present=False`（批量删除）：判定反过来，`verified` 是「配置里**没有**
+        这个段」，`inConfig` 表示「全都不在配置里」。
         """
         names = [str(item) for item in (share_names or []) if str(item or '').strip()]
         commands = []
@@ -1300,13 +1304,24 @@ class Engine:
         if not reload_result.ok:
             errors.append('重新加载 Samba 服务返回非 0（exit %d）' % reload_result.returncode)
         present = {name: self.share_in_config(name) for name in names}
-        # 与 `apply_samba` 一致：只有配置里真的缺段时才去问服务状态
-        active = self.smb_service_active() if not all(present.values()) else False
+        shares: dict = {}
+        for name in names:
+            found = bool(present[name])
+            shares[name] = {'present': found,
+                            'verified': found if expect_present else not found}
+        if expect_present:
+            # 与 `apply_samba` 一致：只有配置里真的缺段时才去问服务状态
+            active = self.smb_service_active() if not all(present.values()) else False
+            for name in names:
+                shares[name]['verified'] = bool(present[name]) or active
+            in_config = all(present.values()) if names else True
+        else:
+            # 删除路径不去问 is-active：段已从配置里消失本身就是证据
+            active = False
+            in_config = all(not value for value in present.values()) if names else False
         return {
-            'shares': {name: {'present': bool(present[name]),
-                              'verified': bool(present[name]) or active}
-                       for name in names},
-            'inConfig': all(present.values()) if names else True,
+            'shares': shares,
+            'inConfig': in_config,
             'smbActive': active,
             'initReturncode': result.returncode,
             'reloadReturncode': reload_result.returncode,
@@ -1380,12 +1395,20 @@ class Engine:
                 'shared': share is not None,
                 'shareName': (share or {}).get('name', ''),
                 'display': (share or {}).get('display', ''),
+                # 能不能由插件删掉（弹窗里决定这个勾选框可不可以取消）：
+                # 只有插件自己建的 `<账号>_nb_<序号>` 才为 True；官方 App 建的那条
+                # 与未共享的目录都是 False。
+                'deletable': bool((share or {}).get('deletable')),
             })
         return {'ok': True, 'account': account, 'root': root, 'dirs': dirs}
 
     # ---- 共享目录：删除 -------------------------------------------------
-    def delete_share(self, share_name) -> dict:
-        """只允许删插件自己建的：`<账号>_nb_<序号>`。"""
+    def _deletable_share(self, share_name) -> dict:
+        """「这个共享能不能删」的校验：能删就返回它的配置条目，否则抛中文 Error。
+
+        `delete_share` 与 `delete_shares` 共用，报错文案完全一致：
+        空名 / 系统共享 / 找不到 / 不是插件自建的 `<账号>_nb_<序号>`。
+        """
         share_name = str(share_name or '').strip()
         if not share_name:
             raise Error('请选择要删除的共享')
@@ -1398,15 +1421,24 @@ class Engine:
         if not account or not is_plugin_share(share_name, account):
             raise Error('只允许删除插件自己添加的共享（<账号>_nb_<序号>）；'
                         '%s 由系统或小米 App 管理' % share_name)
-        command = del_dir_command(share_name, self.samba_mgr_path())
-        result = self.smb(command, '删除共享目录')
-        self.log('删除共享 %s' % share_name)
-        applied = self.apply_samba(share_name, expect_present=False)
+        return share
+
+    def _clear_share_caches(self) -> None:
         self.account_cache = (0.0, None)
         self.share_cache = (0.0, None)
+
+    def delete_share(self, share_name) -> dict:
+        """只允许删插件自己建的：`<账号>_nb_<序号>`。"""
+        share = self._deletable_share(share_name)
+        name = str(share_name).strip()
+        command = del_dir_command(name, self.samba_mgr_path())
+        result = self.smb(command, '删除共享目录')
+        self.log('删除共享 %s' % name)
+        applied = self.apply_samba(name, expect_present=False)
+        self._clear_share_caches()
         return {
-            'shareName': share_name,
-            'account': account,
+            'shareName': name,
+            'account': share.get('account', ''),
             'path': share.get('path', ''),
             'reloaded': applied['reloadReturncode'] == 0 or applied['verified'],
             'stdout': result.stdout,
@@ -1414,6 +1446,63 @@ class Engine:
             'output': describe(command, result) + '\n' + applied['output'],
             **{key: applied[key] for key in
                ('verified', 'inConfig', 'smbActive', 'reloadReturncode', 'errors')},
+        }
+
+    def delete_shares(self, share_names) -> dict:
+        """一次删多个插件自建共享：`del_dir` × N → **只跑一次** init_config + reload。
+
+        语义与 `delete_share` 完全一致（同样的校验、同样的报错文案），区别只有一个：
+        收尾命令只跑一次。先**全部**校验通过再动手：列表里只要有一条不合法
+        （受保护的 / 找不到的 / 官方 App 建的），一条 `del_dir` 都不会执行。
+        """
+        raw = share_names if isinstance(share_names, (list, tuple)) else \
+            ([] if share_names in (None, '') else [share_names])
+        names: list = []
+        for item in raw:
+            text = str(item or '').strip()
+            if text and text not in names:              # 去重 + 忽略空值
+                names.append(text)
+        if not names:
+            raise Error('请选择要删除的共享')
+
+        # 第一遍：全部校验（任何一条不合法都在这里抛错，此时还没跑过任何命令）
+        shares = [self._deletable_share(name) for name in names]
+
+        removed: list = []
+        for share, name in zip(shares, names):
+            command = del_dir_command(name, self.samba_mgr_path())
+            result = self.smb(command, '删除共享目录')
+            self.log('删除共享 %s' % name)
+            removed.append({
+                'shareName': name,
+                'account': share.get('account', ''),
+                'path': share.get('path', ''),
+                'inConfig': True,                       # 下面按核对结果改写
+                'verified': False,
+                'command': describe(command, result),
+                'stdout': result.stdout,
+                'stderr': result.stderr,
+            })
+
+        applied = self.apply_samba_batch(names, expect_present=False)
+        for item in removed:
+            state = applied['shares'].get(item['shareName'], {})
+            item['inConfig'] = bool(state.get('present'))
+            item['verified'] = bool(state.get('verified'))
+        self._clear_share_caches()
+
+        errors = list(applied['errors'])
+        for item in removed:
+            if not item['verified']:
+                errors.append('共享 %s 仍然出现在 /var/etc/smb.conf 里，删除未生效'
+                              % item['shareName'])
+        return {
+            'removed': removed,
+            'verified': all(item['verified'] for item in removed),
+            'errors': list(dict.fromkeys(errors)),
+            'initReturncode': applied['initReturncode'],
+            'reloadReturncode': applied['reloadReturncode'],
+            'output': applied['output'],
         }
 
     # ---- 官方 wsdd 接管 -------------------------------------------------
