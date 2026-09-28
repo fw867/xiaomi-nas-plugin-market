@@ -33,6 +33,38 @@ from storelib import (
 
 PROJECT = Path(__file__).resolve().parent
 WEB = PROJECT / "web"
+# 开机钩子的安装位置（由 deploy/install-boot-hook.sh 维护，与发行包里的副本同步）
+BOOT_SCRIPT = Path("/data/plugin/community-plugins-boot.sh")
+BOOT_HOOK = PROJECT / "deploy" / "install-boot-hook.sh"
+BOOT_SOURCE = PROJECT / "deploy" / "community-plugins-boot.sh"
+
+
+def sync_boot_hook() -> str:
+    """让已安装的开机钩子脚本跟当前发行包里的副本一致。
+
+    钩子脚本负责几件全设备共用的 Docker 修复（MASQUERADE 规则、dockerd 的 fd
+    软上限——后者掉了会让发布端口的 docker-proxy 撞 EMFILE 后退出），而这些修复
+    必须是最新版才有用。市场升级时 systemd 只会替换发行目录，不会去动
+    /data/plugin/community-plugins-boot.sh，所以在这里比对一次、不一致就重装；
+    重装本身只写文件 + 维护一条 crontab 条目，不碰 docker，也不会打断别的插件。
+
+    只做比对和拷贝，任何失败都只记录、不影响市场服务启动。
+    """
+    try:
+        if not BOOT_HOOK.is_file() or not BOOT_SOURCE.is_file():
+            return "boot hook sources missing"
+        want = hashlib.sha256(BOOT_SOURCE.read_bytes()).hexdigest()
+        have = hashlib.sha256(BOOT_SCRIPT.read_bytes()).hexdigest() if BOOT_SCRIPT.is_file() else ""
+        if want == have:
+            return "boot hook up to date"
+        import subprocess
+
+        result = subprocess.run(["sh", str(BOOT_HOOK), "add"], capture_output=True, timeout=60, text=True)
+        if result.returncode != 0:
+            return f"boot hook install failed: {(result.stderr or result.stdout).strip()[:200]}"
+        return "boot hook reinstalled"
+    except Exception as error:  # noqa: BLE001 钩子同步失败不能挡住市场服务
+        return f"boot hook sync error: {error}"
 
 
 def _read_store_version() -> str:
@@ -451,7 +483,8 @@ def main() -> int:
     else:
         admin_token = "preview-only-token-not-for-production"
     server = StoreServer((args.host, args.port), args.dev, manager, admin_token)
-    print(f"Xiaomi community store v{STORE_VERSION} on http://{args.host}:{args.port} ({'preview' if args.dev else 'active'})")
+    hook = sync_boot_hook()
+    print(f"Xiaomi community store v{STORE_VERSION} on http://{args.host}:{args.port} ({'preview' if args.dev else 'active'}); {hook}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
