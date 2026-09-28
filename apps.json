@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "name": "小米智能存储应用商店",
-  "generatedAt": 1790603080,
+  "generatedAt": 1790603273,
   "repository": "fw867/xiaomi-nas-plugin-market",
   "branch": "main",
   "store": {
@@ -237,12 +237,12 @@
     {
       "id": "netneighbor",
       "name": "网络邻居",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "summary": "让小米存储在 Windows「网络」里直接可见，并支持一个账号挂多个共享目录",
       "description": "Windows 的资源管理器「网络」里一直看不到小米存储，只能手输 IP 访问。本插件自带 WSD 回应器（Hello/Bye/Probe/Resolve 与设备描述服务）接管系统那套不完整的发现服务，主机即可出现在网络里；同时调用官方 smb_mgr.sh 让同一个账号挂多个共享目录，绕开共享 app 只能配一个的限制。",
-      "bundle": "apps/netneighbor-0.1.0.zip",
-      "sha256": "d39dc1c5c602bfd39663ea92c91a21562c5d8b19be0c84c95875bf938a6e528b",
-      "size": 106890,
+      "bundle": "apps/netneighbor-0.1.1.zip",
+      "sha256": "d50eb514f5323d8438dda39a7034eb498917ac0f2939ae4f802dc4fc04f91776",
+      "size": 107615,
       "icon": "apps/icons/netneighbor.png",
       "channel": "stable",
       "tags": [
