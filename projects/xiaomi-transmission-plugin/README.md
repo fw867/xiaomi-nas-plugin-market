@@ -94,6 +94,48 @@ dmesg 里既没有 OOM 也没有 segfault），而 dockerd 是带 `iptables: fal
 仍然缺的话，插件页面的端口那一行下方会显示「入站端口未发布：…」，接口
 `/api/status` 的 `ports` 字段里也有 `published` / `missing` / `repaired`。
 
+### docker-proxy 为什么会死：fd 上限（2026-09-28 定位）
+
+一开始只知道「51413/tcp 会消失、UDP 和 9091 一直好、dmesg 里既没有 OOM 也没有
+segfault」，所以先加了运行期巡检兜着。后来抓到了完整链条：
+
+1. `/tmp/dockerd/daemon.json` 里是 `"iptables": false`，**发布的端口完全靠用户态
+   `docker-proxy`**，没有 DNAT 兜底；
+2. `docker-proxy` 每条代理连接占 **2 个 fd**，而 systemd 给 `docker.service` 的
+   **软**上限只有 1024（`LimitNOFILESoft=1024`，硬上限 524288，即 systemd 默认值）；
+3. transmission 的 `peer-limit-global` 是 1000，入站连接一多就撞上 1024，
+   `Accept()` 返回 `EMFILE`，docker-proxy 的 accept 循环**出错后直接 return**
+   （进程是正常退出，所以没有任何"被杀"的痕迹），监听端口随之消失；
+4. UDP 代理走的是另一套循环、9091 连接数很少，所以**只有 51413/tcp 反复死**。
+   实测 01:25–07:13 之间死了 14 次，巡检每次重启容器都能修好，但连接涨回来又死——
+   这就是"巡检自动重启还是没用"的真相。
+
+自查（把 `<pid>` 换成 51413/tcp 那个 docker-proxy）：
+
+```bash
+systemctl show docker.service -p LimitNOFILESoft          # 1024 就是病根
+grep 'Max open files' /proc/<pid>/limits                  # soft / hard
+ls /proc/<pid>/fd | wc -l                                 # 当前用量
+```
+
+一次性修法（写 drop-in 后重启 dockerd，重启后依然生效）：
+
+```bash
+mkdir -p /etc/systemd/system/docker.service.d
+cat > /etc/systemd/system/docker.service.d/override.conf <<'EOF'
+[Service]
+LimitNOFILE=524288
+EOF
+systemctl daemon-reload
+systemctl restart docker          # 容器会全部停下
+systemctl restart xiaomi-transmission.service   # RestartPolicy=no，得手动拉回
+```
+
+修复后实测：所有 docker-proxy 的 fd 软上限从 1024 变成 **524288**，
+51413/tcp 当前用量约 400 fd（原来是上限的 40%），`port-test` 仍返回
+`port-is-open: true`。运行期巡检**保留作兜底**，正常情况下不会再被触发；
+如果哪天 NAS 固件升级把 drop-in 冲掉了，按上面三条命令再确认一次即可。
+
 ## 首页小组件：为什么做不了
 
 试过把 transmission 注册成 app 首页的小组件，结论是**第三方插件做不了**。实测过程：
