@@ -138,6 +138,46 @@ code {
   padding-top: 12px;
 }
 
+/* 测试端口 / 映射端口：状态用圆点表示，两个按钮挤在一行 */
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+.check { display: inline-flex; align-items: center; gap: 8px; }
+.check .status-dot { width: 11px; height: 11px; }
+
+/* 定时开启/关闭全部任务 */
+.schedule {
+  border-top: 1px solid var(--line);
+  margin-top: 12px;
+  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.schedule-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+}
+.schedule-row select {
+  flex: 0 0 auto;
+  min-width: 92px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--ink);
+  font-size: 13px;
+}
+#scheduleHint { font-size: 12px; }
+
 /* 入站端口没真正发布到宿主机时的提示（docker-proxy 掉线会出现） */
 .port-warning {
   margin: 10px 0 0;
@@ -160,6 +200,8 @@ code {
 }
 .status-dot.on { background: var(--green); box-shadow: 0 0 0 4px rgba(31, 157, 99, .15); }
 .status-dot.off { background: #b9c2cf; box-shadow: 0 0 0 4px rgba(185, 194, 207, .18); }
+/* 端口/映射这类"明确失败"的状态用红色，和服务是否在跑区分开 */
+.status-dot.bad { background: #e2584d; box-shadow: 0 0 0 4px rgba(226, 88, 77, .16); }
 
 .status-copy { flex: 1 1 auto; min-width: 0; }
 .status-copy strong { display: block; font-size: 15.5px; font-weight: 650; }
@@ -435,6 +477,10 @@ dialog::backdrop { background: rgba(29, 41, 61, .45); }
   .status-port .btn { margin-left: auto; }
   /* 地址先独占一行，两个按钮留在下一行，避免地址被挤成一两个字宽 */
   .address-row code { flex: 1 1 100%; }
+  /* 手机上也要把「测试端口 / 映射端口」压在一行里：缩小间距和按钮内边距 */
+  .check-row { gap: 10px; }
+  .check { gap: 6px; }
+  .check .btn { padding-left: 10px; padding-right: 10px; }
 }
 
 /* ---------- 原生控制台（参照 qB） ---------- */

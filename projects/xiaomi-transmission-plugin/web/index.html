@@ -42,13 +42,15 @@
                     <span class="stat"><em>下载中</em><b id="statsDownloading">—</b></span>
                     <span class="stat wide"><em>本次运行</em>↓<b id="statsSessionDown">—</b> ↑<b id="statsSessionUp">—</b></span>
                 </div>
-                <div class="status-port">
-                    <span class="muted" id="portState">BT 端口状态未测试</span>
-                    <button id="testPort" type="button" class="btn">测试端口</button>
-                </div>
-                <div class="status-port">
-                    <span class="muted" id="forwardState">路由器端口映射未尝试</span>
-                    <button id="forwardPort" type="button" class="btn">映射端口</button>
+                <div class="check-row">
+                    <span class="check">
+                        <span class="status-dot" id="portDot" role="img" aria-label="BT 端口状态"></span>
+                        <button id="testPort" type="button" class="btn">测试端口</button>
+                    </span>
+                    <span class="check">
+                        <span class="status-dot" id="forwardDot" role="img" aria-label="路由器端口映射状态"></span>
+                        <button id="forwardPort" type="button" class="btn">映射端口</button>
+                    </span>
                 </div>
                 <p class="port-warning" id="portPublish" hidden></p>
             </section>
@@ -104,7 +106,23 @@
                     <div><span class="muted">监控目录</span><strong id="watchDir">—</strong></div>
                     <div><span class="muted">WebUI 用户</span><strong id="username">—</strong></div>
                 </div>
-                <p class="muted" id="peerPortHint">WebUI 9091 · BT 51413</p>
+                <div class="schedule">
+                    <div class="schedule-row">
+                        <span>定时开启全部任务</span>
+                        <select id="scheduleStart" aria-label="定时开启全部任务">
+                            <option value="off">关闭</option>
+                            <option value="24h">24 小时</option>
+                        </select>
+                    </div>
+                    <div class="schedule-row">
+                        <span>定时关闭全部任务</span>
+                        <select id="scheduleStop" aria-label="定时关闭全部任务">
+                            <option value="off">关闭</option>
+                            <option value="24h">24 小时</option>
+                        </select>
+                    </div>
+                    <small class="muted" id="scheduleHint" hidden></small>
+                </div>
             </section>
 
             <section class="card" id="access" hidden>

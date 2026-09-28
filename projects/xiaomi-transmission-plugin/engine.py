@@ -34,6 +34,11 @@ PROC_NET = Path(os.environ.get('PROC_NET', '/proc/net'))
 PUBLISHED_PORTS = (('tcp', PORT), ('tcp', BT_PORT), ('udp', BT_PORT))
 # 路由器映射失败后隔多久再试（路由器重启、UPnP 刚打开这类情况能自愈）
 FORWARD_RETRY_SECONDS = 1800
+# 定时「开启/关闭全部任务」的可选间隔：off=不做，24h=每 24 小时一次（自开启那刻起算）。
+# 两个定时器各自独立计时——想让它们错开，先后开启即可。
+SCHEDULE_VALUES = ('off', '24h')
+SCHEDULE_SECONDS = {'24h': 24 * 3600}
+SCHEDULE_KINDS = (('start', 'torrent-start'), ('stop', 'torrent-stop'))
 # 容器资源上限。内存原来是 512 MiB，实测做种多的时候 transmission-daemon 的 RSS
 # 会涨到 440 MiB 以上，撞上限就被内核 OOM 杀掉、由 s6 反复拉起（dmesg 里 5 分钟内
 # 9 次 "Memory cgroup out of memory: Killed process ... (transmission-da)"），
@@ -688,6 +693,8 @@ class Engine:
             'ports': self.ports_snapshot(running),
             # 路由器上的端口映射（UPnP/NAT-PMP）
             'forward': self.forward_snapshot(),
+            # 定时开启/关闭全部任务
+            'schedule': self.schedule_snapshot(),
         }
 
     def _claim_folder(self, relative, field):
@@ -863,6 +870,67 @@ class Engine:
         opened = bool(payload.get('arguments', {}).get('port-is-open'))
         self.port_state = {'testedAt': int(time.time()), 'open': opened, 'error': ''}
         return self.port_state
+
+    def schedule_snapshot(self):
+        """页面用的定时设置：{'start': {'value','next'}, 'stop': {...}}。"""
+        state = (self.config or {}).get('schedule') or {}
+        out = {}
+        for kind, _method in SCHEDULE_KINDS:
+            entry = state.get(kind) or {}
+            value = entry.get('value') if entry.get('value') in SCHEDULE_VALUES else 'off'
+            out[kind] = {'value': value, 'next': int(entry.get('next') or 0) if value != 'off' else 0}
+        return out
+
+    def set_schedule(self, kind, value):
+        """设置定时开启/关闭全部任务；value 只接受 off / 24h。
+
+        开启时从**这一刻**开始计时（下一次执行 = 现在 + 间隔），不立即执行——
+        「定时」就该等到时间点，想马上生效就手动点控制台里的启动。
+        """
+        if not self.config:
+            raise Error('请先初始化')
+        if kind not in [name for name, _ in SCHEDULE_KINDS]:
+            raise Error('未知的定时类型')
+        if value not in SCHEDULE_VALUES:
+            raise Error('不支持的间隔')
+        entry = self.config.setdefault('schedule', {}).setdefault(kind, {})
+        entry['value'] = value
+        entry['next'] = int(time.time()) + SCHEDULE_SECONDS[value] if value != 'off' else 0
+        atomic_json(self.cfgfile, self.config)
+        return self.schedule_snapshot()
+
+    def run_schedule_due(self, now=None):
+        """到点就执行「开启全部任务」/「关闭全部任务」，返回这次做了哪些动作。
+
+        跑在插件的定时线程里，尽力而为：失败（例如服务没在跑）只记录，并把下一次
+        挪到一个间隔之后，避免每分钟重试。
+        """
+        if not self.config:
+            return []
+        moment = int(now if now is not None else time.time())
+        state = self.config.get('schedule') or {}
+        username, password = (self.config.get('username', ''), self.saved_password())
+        done = []
+        for kind, method in SCHEDULE_KINDS:
+            entry = state.get(kind) or {}
+            value = entry.get('value')
+            due = int(entry.get('next') or 0)
+            if value not in SCHEDULE_SECONDS or not due or moment < due:
+                continue
+            entry['next'] = moment + SCHEDULE_SECONDS[value]
+            if not username or not password:
+                print('transmission: 定时%s全部任务跳过（缺少 WebUI 账号）' % ('开启' if kind == 'start' else '关闭'), flush=True)
+                continue
+            try:
+                # 不带 ids = 全部任务
+                tr_call(method, username, password)
+                done.append(kind)
+                print('transmission: 定时%s全部任务' % ('开启' if kind == 'start' else '关闭'), flush=True)
+            except Error as exc:
+                print('transmission: 定时%s全部任务失败：%s' % ('开启' if kind == 'start' else '关闭', exc), flush=True)
+        if done or any((state.get(kind) or {}).get('next') for kind, _ in SCHEDULE_KINDS):
+            atomic_json(self.cfgfile, self.config)
+        return done
 
     def start(self):
         if not self.config:

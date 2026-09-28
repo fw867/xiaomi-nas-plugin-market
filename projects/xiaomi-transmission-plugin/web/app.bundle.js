@@ -123,6 +123,7 @@
     renderPortPublish(current);
     renderForward(current);
     renderStats(current);
+    renderSchedule(current);
     if (!current.busy) showError(current.error);
   }
   function renderStats(current) {
@@ -139,35 +140,85 @@
     $('#statsSessionDown').textContent = bytes(t.downloaded);
     $('#statsSessionUp').textContent = bytes(t.uploaded);
   }
+  // 状态用圆点表示（绿=正常，红=异常，灰=未知/未测），完整说明放在 title 里
+  function setDot(selector, state, title) {
+    const dot = $(selector);
+    if (!dot) return;
+    dot.className = state ? 'status-dot ' + state : 'status-dot';
+    if (title) dot.title = title;
+  }
   function renderForward(current) {
-    const box = $('#forwardState');
-    if (!box) return;
     const forward = current.forward || {};
     const port = forward.externalPort || 51413;
+    let text = `路由器端口映射未尝试（${port} TCP+UDP）`, state = '';
     if (forward.ok) {
       const lease = Number(forward.lease) || 0;
       const renew = lease ? `，${Math.round(lease / 60)} 分钟自动续期` : '';
-      box.textContent = `路由器已转发 ${port}（${forward.method}${renew}）`;
+      text = `路由器已转发 ${port}（${forward.method}${renew}）`;
+      state = 'on';
     } else if (forward.removed) {
-      box.textContent = `路由器映射已移除（${port} TCP+UDP），启动服务时会重新映射`;
+      text = `路由器映射已移除（${port} TCP+UDP），启动服务时会重新映射`;
     } else if (forward.at) {
-      box.textContent = `路由器未转发 ${port}：${forward.detail || '原因未知'}`;
-    } else {
-      box.textContent = `路由器端口映射未尝试（${port} TCP+UDP）`;
+      text = `路由器未转发 ${port}：${forward.detail || '原因未知'}`;
+      state = 'bad';
     }
+    setDot('#forwardDot', current.busy ? '' : state, text);
     $('#forwardPort').disabled = current.busy || !current.running;
+  }
+  function forwardText(current) {
+    const forward = current.forward || {};
+    const port = forward.externalPort || 51413;
+    if (forward.ok) return `路由器已转发 ${port}（${forward.method || 'UPnP'}）`;
+    if (forward.removed) return `路由器映射已移除（${port}）`;
+    if (forward.at) return `未能转发 ${port}：${forward.detail || '原因未知'}`;
+    return `路由器端口映射未尝试（${port}）`;
   }
   function renderPortState(current) {
     const port = current.port || {};
     const value = port.peerPort || 51413;
-    let text = `BT 端口 ${value} 状态未测试`;
+    let text = `BT 端口 ${value} 状态未测试`, state = '';
     if (port.testedAt) {
-      text = port.open
-        ? `BT 端口 ${value} 公网可达`
-        : `BT 端口 ${value} 仅局域网可达 · 需在路由器转发 TCP+UDP`;
+      if (port.open) {
+        text = `BT 端口 ${value} 公网可达`;
+        state = 'on';
+      } else {
+        text = `BT 端口 ${value} 仅局域网可达 · 需在路由器转发 TCP+UDP`;
+        state = 'bad';
+      }
     }
-    $('#portState').textContent = current.busy ? '正在测试端口…' : text;
+    setDot('#portDot', current.busy ? '' : state, text);
     $('#testPort').disabled = current.busy || !current.configured || !current.running;
+  }
+  function portText(current) {
+    const port = (current || {}).port || {};
+    const value = port.peerPort || 51413;
+    if (port.testedAt && port.open) return `BT 端口 ${value} 公网可达`;
+    if (port.testedAt) return `BT 端口 ${value} 仅局域网可达 · 需在路由器转发 TCP+UDP`;
+    return `BT 端口 ${value} 状态未测试`;
+  }
+  function stamp(epoch) {
+    const d = new Date(Number(epoch) * 1000);
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+  function renderSchedule(current) {
+    const schedule = current.schedule || {};
+    const targets = [['start', '#scheduleStart', '开启'], ['stop', '#scheduleStop', '关闭']];
+    for (const [kind, selector] of targets) {
+      const select = $(selector);
+      if (!select) continue;
+      const value = ((schedule[kind] || {}).value === '24h') ? '24h' : 'off';
+      if (select.value !== value) select.value = value;
+    }
+    const hint = $('#scheduleHint');
+    if (!hint) return;
+    const parts = [];
+    for (const [kind, , label] of targets) {
+      const entry = schedule[kind] || {};
+      if (entry.value !== 'off' && entry.next) parts.push(`${label} ${stamp(entry.next)}`);
+    }
+    hint.hidden = !parts.length;
+    hint.textContent = parts.length ? `下次：${parts.join(' · ')}` : '';
   }
   function renderPortPublish(current) {
     // Docker 会说端口都发布了，但 docker-proxy 掉线后宿主上其实没人监听
@@ -296,15 +347,27 @@
   });
   $('#testPort').onclick = () => busy($('#testPort'), async () => {
     await api('service/port-test', {});
-    toast('端口测试完成');
     await refresh();
+    toast(portText(state));
   });
   $('#forwardPort').onclick = () => busy($('#forwardPort'), async () => {
     const result = await api('forward', {});
-    const forward = result.forward || {};
-    toast(forward.ok ? '路由器已转发 BT 端口' : '未能转发：' + (forward.detail || '原因未知'));
     await refresh();
+    toast(result.forward && result.forward.ok
+      ? forwardText(state)
+      : '未能转发：' + ((result.forward || {}).detail || '原因未知'));
   });
+  function saveSchedule(kind, value, select) {
+    select.disabled = true;
+    api('schedule', { kind, value })
+      .then(() => { toast(value === 'off' ? '已关闭该定时' : '已设为每 24 小时执行一次'); return refresh(); })
+      .catch(async (e) => { toast(e.message); await refresh(); })
+      .finally(() => { select.disabled = false; });
+  }
+  const scheduleStart = $('#scheduleStart');
+  if (scheduleStart) scheduleStart.onchange = (e) => saveSchedule('start', e.target.value, e.target);
+  const scheduleStop = $('#scheduleStop');
+  if (scheduleStop) scheduleStop.onchange = (e) => saveSchedule('stop', e.target.value, e.target);
   $('#setupForm').onsubmit = e => {
     e.preventDefault();
     const form = e.target;

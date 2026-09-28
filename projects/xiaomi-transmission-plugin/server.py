@@ -509,6 +509,10 @@ class Handler(BaseHTTPRequestHandler):
                 # 同步跑：SSDP 2.5s + SOAP 4s 量级，页面按钮带进度提示
                 return self.send(200, {'ok': True,
                                        'forward': self.server.engine.ensure_port_forward(True)})
+            if action == 'schedule':
+                schedule = self.server.engine.set_schedule(
+                    str(data.get('kind') or ''), str(data.get('value') or ''))
+                return self.send(200, {'ok': True, 'schedule': schedule})
             raise Error('不支持此操作')
         except (Error, ValueError, OSError) as exc:
             self.send(400, {'ok': False, 'error': str(exc) if isinstance(exc, Error) else '操作失败，请检查输入'})
@@ -557,6 +561,20 @@ def port_keeper(engine, interval=60, sleep=time.sleep):
             pass
 
 
+def schedule_keeper(engine, interval=60, sleep=time.sleep):
+    """定时「开启/关闭全部任务」的看护线程。
+
+    到点就调 Transmission 的 torrent-start / torrent-stop（不带 ids = 全部）。
+    和 forward_keeper 一样跑在守护线程里，出错不打断循环。
+    """
+    while True:
+        sleep(interval)
+        try:
+            engine.run_schedule_due()
+        except Exception:                                    # noqa: BLE001 定时器不能死
+            pass
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dev', action='store_true')
@@ -576,6 +594,7 @@ def main():
     if engine.config and engine.config.get('enabled') and not args.dev:
         engine.launch('start', {})
     threading.Thread(target=forward_keeper, args=(engine,), daemon=True).start()
+    threading.Thread(target=schedule_keeper, args=(engine,), daemon=True).start()
     threading.Thread(target=port_keeper, args=(engine,), daemon=True).start()
     print('Transmission plugin listening on http://127.0.0.1:' + str(server.server_port), flush=True)
     try:
