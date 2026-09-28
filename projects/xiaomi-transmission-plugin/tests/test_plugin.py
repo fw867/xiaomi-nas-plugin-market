@@ -1928,6 +1928,51 @@ class UiTests(unittest.TestCase):
                 self.assertIn("api('all-start'", script)
                 self.assertIn("api('all-stop'", script)
 
+    def test_task_progress_colors_and_active_first(self):
+        """进度条按状态配色（暂停灰/下载中蓝/完成绿/报错红），活动中的任务排最前面。"""
+        css = (self.web / 'styles.css').read_text(encoding='utf-8')
+        for state, color in (('paused', '#9aa4b2'), ('active', '#2f7be0'),
+                             ('done', 'var(--green)'), ('error', '#e5484d')):
+            with self.subTest(state=state):
+                self.assertIn('progress.p-%s::-webkit-progress-value' % state, css)
+                self.assertIn(color, css)
+        for name in ('app.js', 'app.bundle.js'):
+            with self.subTest(name=name):
+                script = (self.web / name).read_text(encoding='utf-8')
+                self.assertIn('function progressState(item)', script)
+                self.assertIn("if (item.error) return 'error';", script)
+                self.assertIn("if (isStopped(Number(item.status))) return 'paused';", script)
+                self.assertIn("if (Number(item.progress || 0) >= 1) return 'done';", script)
+                self.assertIn("return 'active';", script)
+                # 判定顺序：报错 > 暂停 > 完成 > 下载中（下完再停止的要显示灰色）
+                body = script.split('function progressState(item)', 1)[1].split('return \'active\';', 1)[0]
+                self.assertLess(body.index('item.error'), body.index('isStopped'))
+                self.assertLess(body.index('isStopped'), body.index('progress || 0) >= 1'))
+                self.assertIn('class="p-${progressState(item)}"', script)
+                # 活动中的排最前面，其余保持服务端顺序（两段拼接）
+                self.assertIn('const isActive = (item) => !isStopped(Number(item.status));', script)
+                self.assertIn('.concat(visible.filter(item => !isActive(item)))', script)
+                self.assertNotIn("$('#tasks').innerHTML = visible.map", script)
+
+    def test_console_shows_uploaded_beside_downloaded(self):
+        """控制台「本次已下载」后面再加一个「本次已上传」，四格并排。"""
+        html = (self.web / 'index.html').read_text(encoding='utf-8')
+        card = html.split('class="card stats"', 1)[1].split('</section>', 1)[0]
+        self.assertIn('<small>本次已下载</small>', card)
+        self.assertIn('<small>本次已上传</small>', card)
+        for name in ('downloaded', 'uploaded'):
+            with self.subTest(name=name):
+                self.assertIn('id="%s"' % name, card)
+        # 上传紧跟在下载后面
+        self.assertLess(card.index('id="downloaded"'), card.index('id="uploaded"'))
+        css = (self.web / 'styles.css').read_text(encoding='utf-8')
+        self.assertIn('grid-template-columns: repeat(4, minmax(0, 1fr));', css)
+        for name in ('app.js', 'app.bundle.js'):
+            with self.subTest(name=name):
+                script = (self.web / name).read_text(encoding='utf-8')
+                self.assertIn("$('#downloaded').textContent", script)
+                self.assertIn("$('#uploaded').textContent = bytes(t.uploaded);", script)
+
     def test_page_has_schedule_controls(self):
         """第二个卡片底部原来的「WebUI 9091 · BT 51413」换成两个定时选择框。"""
         html = (self.web / 'index.html').read_text(encoding='utf-8')

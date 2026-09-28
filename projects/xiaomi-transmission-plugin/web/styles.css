@@ -530,7 +530,7 @@ dialog::backdrop { background: rgba(29, 41, 61, .45); }
 }
 .stats {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
   text-align: center;
   margin-bottom: 10px;
@@ -586,6 +586,11 @@ progress {
 }
 progress::-webkit-progress-bar { border-radius: 3px; background: #e7ecf1; }
 progress::-webkit-progress-value { border-radius: 3px; background: var(--green); }
+/* 进度条按任务状态配色：暂停灰、下载中蓝、完成绿、报错红 */
+progress.p-paused::-webkit-progress-value { background: #9aa4b2; }
+progress.p-active::-webkit-progress-value { background: #2f7be0; }
+progress.p-done::-webkit-progress-value { background: var(--green); }
+progress.p-error::-webkit-progress-value { background: #e5484d; }
 .task-actions { display: flex; gap: 2px; }
 .task-actions button {
   width: 38px;

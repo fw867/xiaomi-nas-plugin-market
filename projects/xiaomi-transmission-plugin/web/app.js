@@ -43,6 +43,17 @@
     5: '下载中', 6: '下载中', 7: '做种中', 8: '做种中',
   };
   const isStopped = (s) => s === 0;
+  // 活动中的任务（没暂停）排到列表最前面；暂停/停止的留在后面
+  const isActive = (item) => !isStopped(Number(item.status));
+  // 进度条配色：报错红 > 暂停灰 > 完成绿 > 下载中蓝。
+  // 暂停排在完成前面：下完再被停止的任务显示灰色（用户要求），只有仍在做种/运行的
+  // 完成态才是绿色。
+  function progressState(item) {
+    if (item.error) return 'error';
+    if (isStopped(Number(item.status))) return 'paused';
+    if (Number(item.progress || 0) >= 1) return 'done';
+    return 'active';
+  }
 
   function toast(message) {
     $('#toast').textContent = message;
@@ -269,12 +280,15 @@
     });
     $('#count').textContent = `${visible.length} 个任务`;
     $('#empty').hidden = visible.length > 0;
-    $('#tasks').innerHTML = visible.map(item => {
+    // 活动中的排最前面，其余保持服务端给的顺序（分两段拼接，稳定且不依赖 sort 的稳定性）
+    const ordered = visible.filter(item => isActive(item))
+      .concat(visible.filter(item => !isActive(item)));
+    $('#tasks').innerHTML = ordered.map(item => {
       const stopped = isStopped(item.status);
       const label = TR_STATUS_LABEL[item.status] || ('状态 ' + item.status);
       return `<article class="task"><div class="task-body">
         <strong class="task-name">${escape(item.name)}</strong>
-        <progress max="1" value="${Math.max(0, Math.min(1, Number(item.progress) || 0))}" aria-label="下载进度"></progress>
+        <progress class="p-${progressState(item)}" max="1" value="${Math.max(0, Math.min(1, Number(item.progress) || 0))}" aria-label="下载进度"></progress>
         <small>${(Number(item.progress || 0) * 100).toFixed(1)}% · ${bytes(item.size)} · ${escape(label)} · ↓ ${bytes(item.dlspeed)}/s · ↑ ${bytes(item.upspeed)}/s${item.error ? ' · ' + escape(item.error) : ''}</small>
       </div><div class="task-actions">
         <button title="${stopped ? '继续' : '暂停'}" aria-label="${stopped ? '继续' : '暂停'}" data-action="${stopped ? 'start' : 'stop'}" data-id="${item.id}">${icon(stopped ? 'play' : 'stop')}</button>
@@ -320,6 +334,7 @@
             $('#downSpeed').textContent = bytes(t.dlspeed) + '/s';
             $('#upSpeed').textContent = bytes(t.upspeed) + '/s';
             $('#downloaded').textContent = bytes(t.downloaded);
+            $('#uploaded').textContent = bytes(t.uploaded);
             showError('');
             renderTasks();
           } catch (e) {
