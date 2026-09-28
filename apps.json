@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "name": "小米智能存储应用商店",
-  "generatedAt": 1790603273,
+  "generatedAt": 1790605986,
   "repository": "fw867/xiaomi-nas-plugin-market",
   "branch": "main",
   "store": {
@@ -218,12 +218,12 @@
     {
       "id": "disksleep",
       "name": "硬盘休眠",
-      "version": "0.1.7",
+      "version": "0.1.8",
       "summary": "与系统休眠开关联动，可自定义休眠时间并查看休眠/唤醒日志",
       "description": "系统设置的硬盘休眠只有开关且固定 30 分钟。本插件沿用同一个开关，用 systemd drop-in 覆盖 hdidle 的时长，并提供休眠/唤醒事件与 hdidle 原始日志。",
-      "bundle": "apps/disksleep-0.1.7.zip",
-      "sha256": "cdf1b7862ccd382ef441502702285b9c913af3b53cdaa3c5a3c90c108c7682d6",
-      "size": 285026,
+      "bundle": "apps/disksleep-0.1.8.zip",
+      "sha256": "abee8cdf7ee1d3295237dc20b22fd31d57d83dfabcf7ad4c71e2108c2021700c",
+      "size": 285278,
       "icon": "apps/icons/disksleep.png",
       "channel": "stable",
       "tags": [
@@ -237,12 +237,12 @@
     {
       "id": "netneighbor",
       "name": "网络邻居",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "summary": "让小米存储在 Windows「网络」里直接可见，并支持一个账号挂多个共享目录",
       "description": "Windows 的资源管理器「网络」里一直看不到小米存储，只能手输 IP 访问。本插件自带 WSD 回应器（Hello/Bye/Probe/Resolve 与设备描述服务）接管系统那套不完整的发现服务，主机即可出现在网络里；同时调用官方 smb_mgr.sh 让同一个账号挂多个共享目录，绕开共享 app 只能配一个的限制。",
-      "bundle": "apps/netneighbor-0.1.1.zip",
-      "sha256": "d50eb514f5323d8438dda39a7034eb498917ac0f2939ae4f802dc4fc04f91776",
-      "size": 107615,
+      "bundle": "apps/netneighbor-0.1.2.zip",
+      "sha256": "2291a4b237980395632fc63ad53078e20b92572214d6f45551a6d66fc0c979ab",
+      "size": 111489,
       "icon": "apps/icons/netneighbor.png",
       "channel": "stable",
       "tags": [
