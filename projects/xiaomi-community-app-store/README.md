@@ -52,18 +52,35 @@ Windows PowerShell 无人值守安装：
 补启动这些服务（目标都在跑时立即退出，几乎无开销；只在开机后
 `BOOT_WINDOW`（默认 600 秒）内动手，不会干扰管理员手动停掉的服务）。
 
-同一支脚本顺带维护两件**全设备共用**的 Docker 修复，都幂等、都排在「拉起插件服务」
+同一支脚本顺带维护几件**全设备共用**的 Docker 修复，都幂等、都排在「拉起插件服务」
 之前，免得和插件的启动流程互相干扰：
 
 1. **iptables NAT 的 MASQUERADE 规则**：开机早期 `iptables-restore` 会用空规则清链，
    把 Docker 的 MASQUERADE/DOCKER 链一并抹掉，结果所有容器都出不了网；
-2. **dockerd 的 fd 软上限**：systemd 默认软上限只有 1024，而 `iptables:false` 时发布的
-   端口全靠用户态 docker-proxy（一条代理连接占 2 个 fd）——BT 类插件把
-   `peer-limit-global` 开大后代理会撞上 1024，`Accept()` 报 EMFILE，代理进程正常退出、
-   宿主机端口随之消失。脚本发现软上限低于 `DOCKER_FD_MIN`（默认 65536）就写
-   `/etc/systemd/system/docker.service.d/override.conf` 并重启 dockerd；重启前会记下
-   在跑的容器、重启后按原样拉起（插件容器的 `RestartPolicy` 是 `no`，不拉回来会一直停着），
-   有插件服务在启动或容器在重启时则推迟到下一分钟。
+2. **发布端口的 DNAT 规则**：本机把 dockerd 配成托管 iptables 后（UCI
+   `mi_docker.globals.iptables=1`），外部流量走内核 DNAT，不再经过用户态 docker-proxy
+   （省掉每连接 2 个 fd 与两次用户态拷贝）；回环流量仍由 docker-proxy 兜着，所以
+   `127.0.0.1:<端口>` 不受影响。脚本用「正在运行且发布了端口的容器，是否有对应 DNAT
+   规则」作判据，缺了就重启 docker 修（重启会自动重建规则）；
+3. **dockerd 的 fd 软上限**：systemd 默认软上限只有 1024，而发布端口退回用户态代理时
+   一条连接占 2 个 fd，BT 把 peer 上限开大就会撞穿（`Accept()` 报 EMFILE，代理进程正常
+   退出、宿主端口消失）。脚本发现软上限低于 `DOCKER_FD_MIN`（默认 65536）就写
+   `/etc/systemd/system/docker.service.d/override.conf`。
+
+修复动作（重启 dockerd）会停掉所有容器，因此：
+
+- 位置排在「拉起插件服务」**之前**，并且先等 docker 就绪（`DOCKER_READY_WAIT`，默认
+  90 秒）——插件服务一起来就要启动自己的容器，docker 没就绪会让它失败一次；
+- 有插件服务在 activating、或容器在 restarting 时推迟到下一分钟；
+- 失败/推迟后 `DOCKER_REPAIR_RETRY` 秒内不重试，但**开机窗口内忽略这个冷却**：
+  systemd 在 `/etc` overlay 挂载前就读完了单元目录，所以开机时看不到那个 drop-in，
+  dockerd 会带着旧上限起来，这种情况必须立刻修；
+- 重启前记下在跑的容器、重启后按原样拉起，并**重启对应的插件服务**让它重新同步
+  （容器名 `xiaomi-plugin-xxx` ↔ 服务名 `xiaomi-xxx.service`）——插件不知道容器被换过，
+  路由器端口映射这类状态不会自己回来；
+- 另外每分钟把「当前在跑的容器」记到 `/data/plugin/.docker-last-running`，开机后按这份
+  清单兜底恢复：容器 `RestartPolicy` 是 `no`，重启后不会自己回来，而插件服务只启动自己的
+  HTTP 服务、不一定去启动容器（例如 Jellyfin）。
 
 市场服务启动时会比对 `/data/plugin/community-plugins-boot.sh` 与发行包里这份副本，
 哈希不一致就重装一次（`server.py` 的 `sync_boot_hook()`）——市场升级只替换发行目录、
