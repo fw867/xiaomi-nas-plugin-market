@@ -1,0 +1,27 @@
+[Unit]
+Description=Xiaomi NetNeighbor Plugin
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/data/plugin/netneighbor/current
+Environment=HOST=127.0.0.1
+Environment=PORT=18190
+Environment=DATA_DIR=/data/plugin/netneighbor/data
+Environment=WEB_DIR=/data/plugin/netneighbor/current/web
+ExecStart=/usr/bin/python3 /data/plugin/netneighbor/current/server.py
+Restart=on-failure
+RestartSec=3
+# 停止时把官方发现服务放回去：本进程退出时已经发过 Bye 并删掉了 drop-in，
+# 这一步是第二道保险（比如进程被 kill -9 时不会走到清理代码）。
+ExecStopPost=/usr/bin/python3 /data/plugin/netneighbor/current/server.py --restore-wsdd
+NoNewPrivileges=true
+ProtectSystem=full
+# 需要 root 执行 systemctl（stop/start wsdd、daemon-reload、reload smb）、写
+# /etc/systemd/system/wsdd.service.d/netneighbor.conf，以及 /usr/bin/smb_mgr.sh
+# （它会写 /etc/config/sambashare、生成 /var/etc/smb.conf、重启 smb/nmb），
+# 所以不设 User=；能写的路径只放开这几处，其余保持只读。
+ReadWritePaths=/etc/config /etc/systemd/system /data/plugin/netneighbor
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,16 @@
+{
+  "plugin": "netneighbor",
+  "name": "网络邻居",
+  "id": 11012,
+  "desc": "让 Windows 的「网络」里出现小米存储，并给同一个账号添加多个共享目录",
+  "tags": [
+    "tool",
+    "network"
+  ],
+  "developer": "community",
+  "publisher": "community",
+  "system": false,
+  "type": "standard",
+  "service": "xiaomi-netneighbor.service",
+  "uiKey": "netneighbor"
+}

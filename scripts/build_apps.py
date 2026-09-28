@@ -584,6 +584,54 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
             "info": {"tags": ["tool", "system"], "publisher": "community", "ext": {"admin": True}},
         },
     },
+    {
+        "id": "netneighbor",
+        "name": "网络邻居",
+        "version": "0.1.0",
+        "summary": "让小米存储在 Windows「网络」里直接可见，并支持一个账号挂多个共享目录",
+        "description": "Windows 的资源管理器「网络」里一直看不到小米存储，只能手输 IP 访问。本插件自带 WSD "
+                       "回应器（Hello/Bye/Probe/Resolve 与设备描述服务）接管系统那套不完整的发现服务，主机即可出现在"
+                       "网络里；同时调用官方 smb_mgr.sh 让同一个账号挂多个共享目录，绕开共享 app 只能配一个的限制。",
+        "project": "xiaomi-netneighbor-plugin",
+        "pluginId": 11012,
+        "port": 18190,
+        "releaseRoot": "/data/plugin/netneighbor",
+        "uiKey": "netneighbor",
+        "iconSource": "web/assets/netneighbor-icon.png",
+        "iconName": "netneighbor.icon",
+        "runtime": {
+            "server.py": "server.py",
+            "engine.py": "engine.py",
+            "wsd.py": "wsd.py",
+            "web": "web",
+            "README.md": "README.md",
+        },
+        "ui": "web",
+        "serviceSource": "deploy/xiaomi-netneighbor.service",
+        "service": "xiaomi-netneighbor.service",
+        "nginxSource": "deploy/xiaomi-netneighbor.nginx.conf",
+        "nginx": "xiaomi-netneighbor.conf",
+        "healthPath": "/healthz",
+        "tags": ["tool", "network"],
+        "author": "community",
+        "registry": {
+            "icon": "/icon/netneighbor.icon?v=0.1.0",
+            "frontend": {
+                "title": "网络邻居",
+                "desc": "网络可见性与共享目录",
+                "type": "url",
+                "permission": ["admin"],
+                "dev_type": [1, 2, 3, 4],
+                "url": [
+                    {"dev_type": [1], "url": "/index.html#/netNeighbor_app"},
+                    {"dev_type": [2, 3, 4], "url": "/index.html#/netNeighbor_pc"},
+                ],
+                "sortid": 11012,
+                "widget": [],
+            },
+            "info": {"tags": ["tool", "network"], "publisher": "community", "ext": {"admin": True}},
+        },
+    },
 ]
 
 

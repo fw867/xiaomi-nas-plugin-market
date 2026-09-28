@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="light dark">
+    <meta name="theme-color" content="#f5f7fa" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#141b26" media="(prefers-color-scheme: dark)">
+    <meta name="nn-session" content="__SESSION_TOKEN__">
+    <meta name="csrf-token" content="__CSRF_TOKEN__">
+    <title>网络邻居</title>
+    <link rel="stylesheet" href="styles.css?v=0.1.0">
+</head>
+<body>
+    <div id="nn-app">
+        <header class="topbar">
+            <button id="back" class="icon-button" title="返回" aria-label="返回">&#8249;</button>
+            <strong>网络邻居</strong>
+            <button id="refresh" class="icon-button" title="刷新" aria-label="刷新">&#8635;</button>
+        </header>
+
+        <main>
+            <p id="error" class="alert" role="alert" hidden></p>
+
+            <!-- 卡片一：发现服务 -->
+            <section class="card">
+                <h2>网络邻居发现</h2>
+                <div class="status-main">
+                    <span class="status-dot" id="statusDot" aria-hidden="true"></span>
+                    <div class="status-copy">
+                        <strong id="serviceState" role="status">正在读取</strong>
+                        <small id="serviceInfo"></small>
+                    </div>
+                </div>
+                <dl class="kv">
+                    <div><dt>主机名</dt><dd id="hostname">—</dd></div>
+                    <div><dt>工作组</dt><dd id="workgroup">—</dd></div>
+                    <div><dt>设备地址</dt><dd id="xaddrs">—</dd></div>
+                    <div><dt>官方 wsdd</dt><dd id="wsddState">—</dd></div>
+                    <div><dt>最近取元数据</dt><dd id="lastMetadata">—</dd></div>
+                </dl>
+                <button id="announce" class="btn primary block">重新宣告</button>
+                <p class="muted">「重新宣告」会重建 WSD 回应器并重发 Hello。Windows 的「网络」
+                    一般几秒到几十秒内刷新；如果还是看不到，在资源管理器地址栏直接输入
+                    设备地址也能打开。</p>
+            </section>
+
+            <!-- 卡片二：共享目录 -->
+            <section class="card">
+                <h2>账号的共享目录</h2>
+                <p class="muted" id="rootsHint"></p>
+                <div id="accounts" class="accounts"></div>
+            </section>
+
+            <!-- 卡片三：添加 -->
+            <section class="card">
+                <h2>给账号再加一个目录</h2>
+                <div class="form">
+                    <label for="account">账号</label>
+                    <select id="account"></select>
+
+                    <label for="path">目录路径</label>
+                    <input id="path" type="text" inputmode="text" autocomplete="off"
+                           placeholder="/home/u3943892/pool0/data/我的照片">
+                    <p class="hint">必须是 NAS 上已存在、且在允许根目录内的绝对路径。</p>
+
+                    <label for="sharePoint">共享名（资源管理器里显示的名字）</label>
+                    <input id="sharePoint" type="text" inputmode="text" autocomplete="off"
+                           placeholder="留空则用目录名">
+
+                    <label class="check" for="useForce">
+                        <input id="useForce" type="checkbox" checked>
+                        <span>使用账号的强制用户（user_force，让文件权限归属正确）</span>
+                    </label>
+
+                    <button id="addShare" class="btn primary block">添加共享目录</button>
+                </div>
+                <p class="muted">命令实际执行的是
+                    <code>smb_mgr.sh shares add_dir &lt;账号_nb_序号&gt; &lt;路径&gt; "&lt;账号&gt;" &lt;显示名&gt; [force_user]</code>，
+                    然后由插件自己跑 <code>init_config</code> + <code>systemctl reload smb nmb</code>
+                    并核对配置是否生效。</p>
+            </section>
+
+            <details class="card fold-card">
+                <summary>说明与限制</summary>
+                <ul>
+                    <li>发现服务的原理：官方 <code>/usr/bin/wsdd</code> 发出的消息缺
+                        <code>wsd:AppSequence</code>，而且它的元数据服务不响应
+                        WS-Transfer <code>Get</code>（SOAP POST），所以 Windows 拿不到设备描述、
+                        不把它列出来。插件启动时先 <code>systemctl stop wsdd</code>（并用
+                        <code>pkill -x wsdd</code> 兜底），再用一个 systemd drop-in
+                        （<code>/etc/systemd/system/wsdd.service.d/netneighbor.conf</code>）
+                        把官方单元改成空操作，然后在插件进程内跑完整的 WSD 服务端
+                        （Hello/Bye/ProbeMatches + 元数据 HTTP）。</li>
+                    <li>用 drop-in 而不是 <code>systemctl mask</code>：mask 之后官方
+                        <code>smb_mgr.sh</code> 收尾那句 <code>systemctl restart wsdd</code>
+                        会失败并让整条命令返回 1，用户在手机端保存共享时会看到失败提示
+                        （虽然配置其实已经写好）。空操作 drop-in 让 <code>restart</code>
+                        依旧返回 0。</li>
+                    <li>插件停止（或卸载）时会先发 Bye，再删掉 drop-in、
+                        <code>daemon-reload</code> 并 <code>start wsdd</code>，系统回到原样。</li>
+                    <li>插件新增的共享只用 <code>&lt;账号&gt;_nb_&lt;序号&gt;</code> 命名，
+                        不会和 App 生成的 <code>&lt;账号&gt;_&lt;id&gt;</code> 冲突；
+                        删除也只允许删这一族。</li>
+                    <li>添加/删除共享后，Samba 会 reload，已经连上的 Windows 客户端建议
+                        断开重连（或在资源管理器里刷新）才能看到新共享。</li>
+                </ul>
+            </details>
+
+            <details class="card fold-card">
+                <summary>运行日志</summary>
+                <pre id="logBox" class="log">读取中…</pre>
+                <button id="copyLog" class="btn block">复制日志</button>
+            </details>
+
+            <footer>网络邻居 · <span id="version">—</span></footer>
+        </main>
+        <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    </div>
+    <script src="app.js?v=0.1.0"></script>
+</body>
+</html>
