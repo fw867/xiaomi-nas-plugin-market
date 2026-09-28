@@ -249,6 +249,30 @@ class HealthcheckTests(unittest.TestCase):
             self.engine.config['healthcheck_off'] = False
             self.assertFalse(self.engine.snapshot()['healthcheckOff'])
 
+    def test_fuse_mount_identity_is_refreshed_not_rejected(self):
+        """厂商存储池是 FUSE：每次挂载都会换设备号/inode 号，不该据此拒绝启动。"""
+        folder = self.root / 'MT'
+        folder.mkdir(exist_ok=True)
+        s = folder.stat()
+        self.engine.config = {'media': str(folder), 'media_relative': 'MT',
+                              'media_device': s.st_dev + 7, 'media_inode': s.st_ino + 7}
+        with patch('engine.covering_mount', return_value=('/nas/pool0', 'fuse.cfs')), \
+                patch('engine.atomic_json') as saved:
+            self.engine.check_directories()
+        self.assertEqual(self.engine.config['media_device'], s.st_dev)
+        self.assertEqual(self.engine.config['media_inode'], s.st_ino)
+        self.assertTrue(saved.called)                 # 新值要写回配置
+        # 普通盘（设备号稳定）仍然按老规矩拒绝
+        self.engine.config['media_device'] = s.st_dev + 7
+        with patch('engine.covering_mount', return_value=('/', 'ext4')), \
+                patch('engine.atomic_json'), self.assertRaises(Error):
+            self.engine.check_directories()
+        # 目录不在任何挂载点下（没挂盘）也要拒绝
+        self.engine.config['media_device'] = s.st_dev + 7
+        with patch('engine.covering_mount', return_value=(None, '')), \
+                patch('engine.atomic_json'), self.assertRaises(Error):
+            self.engine.check_directories()
+
 
 class HTTPTests(unittest.TestCase):
     def setUp(self):

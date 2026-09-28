@@ -335,6 +335,29 @@ class EngineTests(unittest.TestCase):
         with self.assertRaises(Error):
             self.engine.setup('../etc')
 
+    def test_fuse_mount_identity_is_refreshed_not_rejected(self):
+        """厂商存储池是 FUSE：每次挂载都会换设备号/inode 号，不该据此拒绝启动。"""
+        folder = self.root / 'MiShare'
+        s = folder.stat()
+        self.engine.config = {'relative': 'MiShare', 'media': str(folder),
+                              'device': s.st_dev + 7, 'inode': s.st_ino + 7}
+        with patch('engine.covering_mount', return_value=('/nas/pool0', 'fuse.cfs')), \
+                patch('engine.atomic_json') as saved:
+            self.engine.check_directory()
+        self.assertEqual(self.engine.config['device'], s.st_dev)
+        self.assertEqual(self.engine.config['inode'], s.st_ino)
+        self.assertTrue(saved.called)                 # 新值要写回配置
+        # 普通盘（设备号稳定）仍然按老规矩拒绝
+        self.engine.config['device'] = s.st_dev + 7
+        with patch('engine.covering_mount', return_value=('/', 'ext4')), \
+                patch('engine.atomic_json'), self.assertRaises(Error):
+            self.engine.check_directory()
+        # 目录不在任何挂载点下（没挂盘）也要拒绝
+        self.engine.config['device'] = s.st_dev + 7
+        with patch('engine.covering_mount', return_value=(None, '')), \
+                patch('engine.atomic_json'), self.assertRaises(Error):
+            self.engine.check_directory()
+
 
 class HealthcheckTests(unittest.TestCase):
     """容器健康检查必须显式关掉。

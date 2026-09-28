@@ -21,7 +21,7 @@ from engine import (
     LEGACY_SETTINGS_FOLDER, confined, container_config, installed_version,
     settings_document, settings_path, WEBUI_SUBDIR, webui_password, webui_username,
     FORWARD_RETRY_SECONDS, MEMORY_LIMIT, CPU_LIMIT, WEBUI_HOME,
-    SCHEDULE_VALUES, next_hour_epoch,
+    SCHEDULE_VALUES, next_hour_epoch, covering_mount, volatile_identity,
 )
 import datetime  # noqa: E402 定时按钟点算，测试里要构造具体时刻
 import engine  # noqa: E402  （按模块打桩，例如 engine.PROC_NET）
@@ -526,6 +526,45 @@ class EngineTests(unittest.TestCase):
         with patch('engine.tr_rpc', return_value=(200, body, '')):
             with self.assertRaises(Error):
                 self.engine.test_port()
+
+    def test_fuse_mount_identity_is_refreshed_not_rejected(self):
+        """厂商存储池是 FUSE：每次挂载都会换设备号/inode 号，不该据此拒绝启动。"""
+        folder = self.root / 'Downloads'
+        s = folder.stat()
+        self.engine.config = {
+            'download': str(folder), 'download_relative': 'Downloads',
+            'download_device': s.st_dev + 7, 'download_inode': s.st_ino + 7,
+            'config': str(self.root / 'Config'), 'config_relative': 'Config',
+            'config_device': s.st_dev, 'config_inode': s.st_ino,
+            'watch': str(self.root / 'Watch'), 'watch_relative': 'Watch',
+            'watch_device': s.st_dev, 'watch_inode': s.st_ino,
+        }
+        with patch('engine.covering_mount', return_value=('/nas/pool0', 'fuse.cfs')), \
+                patch('engine.atomic_json') as saved:
+            self.engine.check_directories()
+        self.assertEqual(self.engine.config['download_device'], s.st_dev)
+        self.assertEqual(self.engine.config['download_inode'], s.st_ino)
+        self.assertTrue(saved.called)                 # 新值要写回配置
+        # 普通盘（设备号稳定）仍然按老规矩拒绝
+        self.engine.config['download_device'] = s.st_dev + 7
+        with patch('engine.covering_mount', return_value=('/', 'ext4')), \
+                patch('engine.atomic_json'), self.assertRaises(Error):
+            self.engine.check_directories()
+        # 目录不在任何挂载点下（没挂盘）也要拒绝
+        self.engine.config['download_device'] = s.st_dev + 7
+        with patch('engine.covering_mount', return_value=(None, '')), \
+                patch('engine.atomic_json'), self.assertRaises(Error):
+            self.engine.check_directories()
+
+    def test_fuse_is_recognised_as_volatile_identity(self):
+        self.assertFalse(volatile_identity('ext4'))
+        self.assertFalse(volatile_identity('btrfs'))
+        self.assertTrue(volatile_identity('fuse.cfs'))
+        self.assertTrue(volatile_identity('fuseblk'))
+        point, fstype = covering_mount('/')
+        if point is not None:
+            self.assertTrue('/'.startswith(point.rstrip('/') + '/') or point == '/')
+            self.assertTrue(isinstance(fstype, str))
 
 
 class HTTPTests(unittest.TestCase):

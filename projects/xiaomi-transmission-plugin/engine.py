@@ -139,6 +139,38 @@ def webui_password(password):
     return password
 
 
+def covering_mount(path):
+    """返回覆盖该路径的挂载点与文件系统类型（最长前缀匹配）；没有则 (None, '')。
+
+    用途见 check_directory()：厂商的存储池 /nas/pool0 是 FUSE（fuse.cfs），
+    **每次挂载都会换一套匿名设备号并重新合成 inode 号**，所以 st_dev/st_ino
+    天然对不上；"这个目录到底在不在一个挂载点下面"才是稳定且有意义的判据。
+    """
+    best_point, best_type = None, ''
+    try:
+        with open('/proc/self/mountinfo', encoding='utf-8') as handle:
+            for line in handle:
+                left, separator, right = line.partition(' - ')
+                fields = left.split()
+                if not separator or len(fields) < 5:
+                    continue
+                point = (fields[4].replace('\\040', ' ')
+                                  .replace('\\011', '\t')
+                                  .replace('\\134', '\\'))
+                if path != point and not path.startswith(point.rstrip('/') + '/'):
+                    continue
+                if best_point is None or len(point) > len(best_point):
+                    best_point, best_type = point, right.split()[0]
+    except OSError:
+        return None, ''
+    return best_point, best_type
+
+
+def volatile_identity(fstype):
+    """该文件系统的设备号/inode 号是否"每次挂载都变"——FUSE 都是。"""
+    return fstype.startswith('fuse')
+
+
 def confined(root, relative):
     if not isinstance(relative, str) or relative.startswith('/') or '\\' in relative:
         raise Error('目录路径无效')
@@ -781,12 +813,31 @@ class Engine:
             ('config', 'config_relative', 'config_device', 'config_inode', '配置文件夹目录'),
             ('watch', 'watch_relative', 'watch_device', 'watch_inode', '监控目录'),
         ]
+        refreshed = []
         for path_key, rel_key, dev_key, ino_key, label in pairs:
             folder = confined(self.root, self.config[rel_key])
-            stat = folder.stat()
-            if str(folder) != self.config[path_key] or (stat.st_dev, stat.st_ino) != (
-                    self.config[dev_key], self.config[ino_key]):
+            try:
+                stat = folder.stat()
+            except OSError as exc:
+                raise Error(label + '不可用（%s），拒绝启动；请先检查存储挂载' % exc.strerror) from exc
+            if str(folder) != self.config[path_key]:
                 raise Error(label + '身份已变化，拒绝启动；请先检查存储挂载')
+            if (stat.st_dev, stat.st_ino) == (self.config[dev_key], self.config[ino_key]):
+                continue
+            # 设备号/inode 号对不上：先看这块盘是不是"每次挂载都会换号"的文件系统。
+            # 厂商的存储池 /nas/pool0 就是 FUSE（fuse.cfs），每次挂载都换一套匿名
+            # 设备号并重新合成 inode 号，所以重启后必然对不上——只要目录确实落在某个
+            # 挂载点下面（没挂盘时会落在 /nas 的空目录上），就更新记录继续用。
+            point, fstype = covering_mount(str(folder))
+            if not point or not volatile_identity(fstype):
+                raise Error(label + '身份已变化，拒绝启动；请先检查存储挂载')
+            self.config[dev_key], self.config[ino_key] = stat.st_dev, stat.st_ino
+            refreshed.append((label, fstype, point))
+        if refreshed:
+            atomic_json(self.cfgfile, self.config)
+            for label, fstype, point in refreshed:
+                print('transmission: %s 所在的 %s（%s）每次挂载都会换设备号/inode 号，已更新记录'
+                      % (label, fstype, point), flush=True)
 
     def ensure_settings(self):
         """补上缺失的配置键，返回配置文件是否被改动。

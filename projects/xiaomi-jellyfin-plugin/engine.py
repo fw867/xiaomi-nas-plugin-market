@@ -93,6 +93,38 @@ def docker_api(method, path, body=None, timeout=30):
         connection.close()
 
 
+def covering_mount(path):
+    """返回覆盖该路径的挂载点与文件系统类型（最长前缀匹配）；没有则 (None, '')。
+
+    用途见 check_directory()：厂商的存储池 /nas/pool0 是 FUSE（fuse.cfs），
+    **每次挂载都会换一套匿名设备号并重新合成 inode 号**，所以 st_dev/st_ino
+    天然对不上；"这个目录到底在不在一个挂载点下面"才是稳定且有意义的判据。
+    """
+    best_point, best_type = None, ''
+    try:
+        with open('/proc/self/mountinfo', encoding='utf-8') as handle:
+            for line in handle:
+                left, separator, right = line.partition(' - ')
+                fields = left.split()
+                if not separator or len(fields) < 5:
+                    continue
+                point = (fields[4].replace('\\040', ' ')
+                                  .replace('\\011', '\t')
+                                  .replace('\\134', '\\'))
+                if path != point and not path.startswith(point.rstrip('/') + '/'):
+                    continue
+                if best_point is None or len(point) > len(best_point):
+                    best_point, best_type = point, right.split()[0]
+    except OSError:
+        return None, ''
+    return best_point, best_type
+
+
+def volatile_identity(fstype):
+    """该文件系统的设备号/inode 号是否"每次挂载都变"——FUSE 都是。"""
+    return fstype.startswith('fuse')
+
+
 def confined(root, relative):
     if not isinstance(relative, str) or relative.startswith('/') or '\\' in relative:
         raise Error('目录路径无效')
@@ -396,19 +428,39 @@ class Engine:
         }
         atomic_json(self.cfgfile, self.config)
 
+    def _identity_ok(self, folder, stat, dev_key, ino_key, label):
+        """目录身份是否可信。
+
+        FUSE（厂商存储池 /nas/pool0 是 fuse.cfs）每次挂载都会换匿名设备号、重新合成
+        inode 号，dev/ino 对不上是正常的；这时只要目录确实落在某个挂载点下面
+        （没挂盘会落到 /nas 的空目录上）就算通过，并把新值记下来。
+        """
+        if (stat.st_dev, stat.st_ino) == (self.config[dev_key], self.config[ino_key]):
+            return False
+        point, fstype = covering_mount(str(folder))
+        if not point or not volatile_identity(fstype):
+            raise Error(label + '身份已变化，拒绝启动；请先检查存储挂载')
+        self.config[dev_key], self.config[ino_key] = stat.st_dev, stat.st_ino
+        print('jellyfin: %s 所在的 %s（%s）每次挂载都会换设备号/inode 号，已更新记录'
+              % (label, fstype, point), flush=True)
+        return True
+
     def check_directories(self):
-        media = confined(self.root, self.config['media_relative'])
-        stat = media.stat()
-        if str(media) != self.config['media'] or (stat.st_dev, stat.st_ino) != (
-                self.config['media_device'], self.config['media_inode']):
-            raise Error('媒体目录身份已变化，拒绝启动；请先检查存储挂载')
-        cfg_relative = self.config.get('config_relative')
-        if cfg_relative:
-            cfgdir = confined(self.root, cfg_relative)
-            cstat = cfgdir.stat()
-            if str(cfgdir) != self.config['config'] or (cstat.st_dev, cstat.st_ino) != (
-                    self.config['config_device'], self.config['config_inode']):
-                raise Error('配置目录身份已变化，拒绝启动；请先检查存储挂载')
+        targets = [('media', 'media_device', 'media_inode', '媒体目录')]
+        if self.config.get('config_relative'):
+            targets.append(('config', 'config_device', 'config_inode', '配置目录'))
+        refreshed = False
+        for path_key, dev_key, ino_key, label in targets:
+            folder = confined(self.root, self.config[path_key + '_relative'])
+            try:
+                stat = folder.stat()
+            except OSError as exc:
+                raise Error(label + '不可用（%s），拒绝启动；请先检查存储挂载' % exc.strerror) from exc
+            if str(folder) != self.config[path_key]:
+                raise Error(label + '身份已变化，拒绝启动；请先检查存储挂载')
+            refreshed = self._identity_ok(folder, stat, dev_key, ino_key, label) or refreshed
+        if refreshed:
+            atomic_json(self.cfgfile, self.config)
 
     def create_container(self):
         """按当前配置建容器并启动；调用方保证镜像已在本地。"""

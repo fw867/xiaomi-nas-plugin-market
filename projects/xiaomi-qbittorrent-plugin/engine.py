@@ -96,6 +96,38 @@ def password_hash(password):
     return base64.b64encode(salt).decode() + ':' + base64.b64encode(key).decode()
 
 
+def covering_mount(path):
+    """返回覆盖该路径的挂载点与文件系统类型（最长前缀匹配）；没有则 (None, '')。
+
+    用途见 check_directory()：厂商的存储池 /nas/pool0 是 FUSE（fuse.cfs），
+    **每次挂载都会换一套匿名设备号并重新合成 inode 号**，所以 st_dev/st_ino
+    天然对不上；"这个目录到底在不在一个挂载点下面"才是稳定且有意义的判据。
+    """
+    best_point, best_type = None, ''
+    try:
+        with open('/proc/self/mountinfo', encoding='utf-8') as handle:
+            for line in handle:
+                left, separator, right = line.partition(' - ')
+                fields = left.split()
+                if not separator or len(fields) < 5:
+                    continue
+                point = (fields[4].replace('\\040', ' ')
+                                  .replace('\\011', '\t')
+                                  .replace('\\134', '\\'))
+                if path != point and not path.startswith(point.rstrip('/') + '/'):
+                    continue
+                if best_point is None or len(point) > len(best_point):
+                    best_point, best_type = point, right.split()[0]
+    except OSError:
+        return None, ''
+    return best_point, best_type
+
+
+def volatile_identity(fstype):
+    """该文件系统的设备号/inode 号是否"每次挂载都变"——FUSE 都是。"""
+    return fstype.startswith('fuse')
+
+
 def confined(root, relative):
     if not isinstance(relative, str) or relative.startswith('/') or '\\' in relative:
         raise Error('目录路径无效')
@@ -353,9 +385,24 @@ class Engine:
 
     def check_directory(self):
         folder = confined(self.root, self.config['relative'])
-        stat = folder.stat()
-        if str(folder) != self.config['download'] or (stat.st_dev, stat.st_ino) != (self.config['device'], self.config['inode']):
+        try:
+            stat = folder.stat()
+        except OSError as exc:
+            raise Error('下载目录不可用（%s），拒绝启动；请先检查存储挂载' % exc.strerror) from exc
+        if str(folder) != self.config['download']:
             raise Error('下载目录身份已变化，拒绝启动；请先检查存储挂载')
+        if (stat.st_dev, stat.st_ino) == (self.config['device'], self.config['inode']):
+            return
+        # FUSE（厂商存储池 /nas/pool0 是 fuse.cfs）每次挂载都会换匿名设备号、重新合成
+        # inode 号，dev/ino 对不上是正常的；只要目录确实落在某个挂载点下面（没挂盘会
+        # 落到 /nas 的空目录上）就算通过，并把新值记下来。
+        point, fstype = covering_mount(str(folder))
+        if not point or not volatile_identity(fstype):
+            raise Error('下载目录身份已变化，拒绝启动；请先检查存储挂载')
+        self.config['device'], self.config['inode'] = stat.st_dev, stat.st_ino
+        atomic_json(self.cfgfile, self.config)
+        print('qbittorrent: 下载目录所在的 %s（%s）每次挂载都会换设备号/inode 号，已更新记录'
+              % (fstype, point), flush=True)
 
     def load_forward(self):
         """读回上次的映射结果（新进程也要知道该删哪条映射）。"""

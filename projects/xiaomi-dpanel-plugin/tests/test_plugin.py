@@ -85,6 +85,30 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(api.call_args.args[1], '/containers/' + NAME + '/stop?t=20')
         self.assertFalse(json.loads(self.engine.cfgfile.read_text())['enabled'])
 
+    def test_fuse_mount_identity_is_refreshed_not_rejected(self):
+        """厂商存储池是 FUSE：每次挂载都会换设备号/inode 号，不该据此拒绝启动。"""
+        folder = self.root / 'MiShare'
+        s = folder.stat()
+        self.engine.config = {'relative': 'MiShare', 'config_relative': 'MiShare',
+                              'config': str(folder),
+                              'config_device': s.st_dev + 7, 'config_inode': s.st_ino + 7}
+        with patch('engine.covering_mount', return_value=('/nas/pool0', 'fuse.cfs')), \
+                patch('engine.atomic_json') as saved:
+            self.engine.check_directory()
+        self.assertEqual(self.engine.config['config_device'], s.st_dev)
+        self.assertEqual(self.engine.config['config_inode'], s.st_ino)
+        self.assertTrue(saved.called)                 # 新值要写回配置
+        # 普通盘（设备号稳定）仍然按老规矩拒绝
+        self.engine.config['config_device'] = s.st_dev + 7
+        with patch('engine.covering_mount', return_value=('/', 'ext4')), \
+                patch('engine.atomic_json'), self.assertRaises(Error):
+            self.engine.check_directory()
+        # 目录不在任何挂载点下（没挂盘）也要拒绝
+        self.engine.config['config_device'] = s.st_dev + 7
+        with patch('engine.covering_mount', return_value=(None, '')), \
+                patch('engine.atomic_json'), self.assertRaises(Error):
+            self.engine.check_directory()
+
 
 class HTTPTests(unittest.TestCase):
     def setUp(self):
@@ -158,7 +182,8 @@ class UiTests(unittest.TestCase):
     def test_ui_uses_relative_api(self):
         script = (self.web / 'app.js').read_text(encoding='utf-8')
         self.assertNotIn("'/api", script)
-        self.assertIn("fetch('api' + path", script)
+        # 走 assetUrl()：Windows 客户端的 /D:/plugin/... 前缀下直接 fetch('api/...') 会 400
+        self.assertIn("fetch(assetUrl('api' + path", script)
 
     def test_html_has_icon_and_setup_fields(self):
         html = (self.web / 'index.html').read_text(encoding='utf-8')
