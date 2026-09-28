@@ -318,6 +318,11 @@ resync_plugin_service() {
 restart_docker_safely() {
     # $1 = 原因（写进日志）
     date +%s > "$DOCKER_REPAIR_MARK" 2>/dev/null
+    # 重启前一定 daemon-reload：systemd 是在 /etc overlay 挂载之前读的单元目录，开机时
+    # 它并不知道 /etc/systemd/system/docker.service.d/override.conf（fd 上限）存在；
+    # 少了这一步，这一轮重启拿到的还是旧上限，下一轮才发现没修好、又重启一次
+    # （2026-09-28 实测：14:42:08 那次重启后仍是 1024，14:43:19 才修成 524288）。
+    systemctl daemon-reload 2>/dev/null
     running="$(docker_api /containers/json | python3 -c '
 import json, sys
 try:
