@@ -1,11 +1,11 @@
 {
   "schemaVersion": 2,
   "name": "小米智能存储应用商店",
-  "generatedAt": 1790577189,
+  "generatedAt": 1790587644,
   "repository": "fw867/xiaomi-nas-plugin-market",
   "branch": "main",
   "store": {
-    "version": "0.2.23",
+    "version": "0.2.26",
     "releasesUrl": "https://github.com/fw867/xiaomi-nas-plugin-market/releases",
     "latestReleaseApi": "https://api.github.com/repos/fw867/xiaomi-nas-plugin-market/releases/latest"
   },
@@ -107,12 +107,12 @@
     {
       "id": "sshcontrol",
       "name": "SSH 开关",
-      "version": "0.1.5",
+      "version": "0.1.6",
       "summary": "启停 SSH 远程登录，并设置开机自动保持运行",
       "description": "在客户端内启停 SSH，支持开机自启。用于绕过 boot_check.sh 每次开机强制关闭 SSH 的行为。",
-      "bundle": "apps/sshcontrol-0.1.5.zip",
-      "sha256": "7bf8a44f704b7a921f62c680cef6621cbe0933fda2af842da1d3d2c92b9f5bf7",
-      "size": 24506,
+      "bundle": "apps/sshcontrol-0.1.6.zip",
+      "sha256": "00da0424a90c8d1ce25a729db08d540b650d37cdc5414c86c015e31144ba9d0a",
+      "size": 30552,
       "icon": "apps/icons/sshcontrol.png",
       "channel": "stable",
       "tags": [
