@@ -20,8 +20,10 @@ from engine import (
     Engine, Error, IMAGE, NAME, LABEL, PORT, BT_PORT, VERSION, IMAGE_VERSION,
     LEGACY_SETTINGS_FOLDER, confined, container_config, installed_version,
     settings_document, settings_path, WEBUI_SUBDIR, webui_password, webui_username,
-    FORWARD_RETRY_SECONDS, MEMORY_LIMIT, CPU_LIMIT, WEBUI_HOME, SCHEDULE_SECONDS,
+    FORWARD_RETRY_SECONDS, MEMORY_LIMIT, CPU_LIMIT, WEBUI_HOME,
+    SCHEDULE_VALUES, next_hour_epoch,
 )
+import datetime  # noqa: E402 定时按钟点算，测试里要构造具体时刻
 import engine  # noqa: E402  （按模块打桩，例如 engine.PROC_NET）
 import upnp  # noqa: E402
 from server import Server
@@ -602,12 +604,28 @@ class HTTPTests(unittest.TestCase):
         self.assertEqual(code, 200)
         self.assertIn('schedule', json.loads(body))
 
+    def test_all_start_stop_hit_transmission_without_ids(self):
+        """控制台的「全部开始 / 全部暂停」：不带 ids 就是全部任务。"""
+        self.engine.config = {'owner': 'tok', 'config': '/tmp/config', 'username': 'admin'}
+        with patch('server.Handler.rpc_creds', return_value=('admin', 'Secret123!')), \
+                patch('server.tr_call') as call:
+            code, _ = self.request('POST', '/api/all-start', {}, self.auth())
+            self.assertEqual(code, 200)
+            self.assertEqual(call.call_args.args[:3], ('torrent-start', 'admin', 'Secret123!'))
+            self.assertEqual(len(call.call_args.args), 3)          # 没有 ids
+            code, _ = self.request('POST', '/api/all-stop', {}, self.auth())
+            self.assertEqual(code, 200)
+            self.assertEqual(call.call_args.args[:3], ('torrent-stop', 'admin', 'Secret123!'))
+
+    def test_all_start_needs_csrf(self):
+        self.assertEqual(self.request('POST', '/api/all-start', {}, {'X-TR-Session': self.token})[0], 403)
+
     def test_schedule_endpoint_round_trip(self):
         self.engine.config = {'owner': 'tok', 'config': '/tmp/config'}
-        code, body = self.request('POST', '/api/schedule', {'kind': 'start', 'value': '24h'}, self.auth())
+        code, body = self.request('POST', '/api/schedule', {'kind': 'start', 'value': '3'}, self.auth())
         self.assertEqual(code, 200)
         data = json.loads(body)
-        self.assertEqual(data['schedule']['start']['value'], '24h')
+        self.assertEqual(data['schedule']['start']['value'], '3')
         self.assertGreater(data['schedule']['start']['next'], 0)
         # 关掉再确认回到 off
         code, body = self.request('POST', '/api/schedule', {'kind': 'start', 'value': 'off'}, self.auth())
@@ -616,12 +634,14 @@ class HTTPTests(unittest.TestCase):
 
     def test_schedule_endpoint_rejects_bad_value(self):
         self.engine.config = {'owner': 'tok', 'config': '/tmp/config'}
-        code, _ = self.request('POST', '/api/schedule', {'kind': 'start', 'value': '1h'}, self.auth())
-        self.assertEqual(code, 400)
+        for value in ('24h', '24', 'x'):
+            with self.subTest(value=value):
+                code, _ = self.request('POST', '/api/schedule', {'kind': 'start', 'value': value}, self.auth())
+                self.assertEqual(code, 400)
 
     def test_schedule_endpoint_needs_csrf(self):
         self.assertEqual(
-            self.request('POST', '/api/schedule', {'kind': 'start', 'value': '24h'},
+            self.request('POST', '/api/schedule', {'kind': 'start', 'value': '3'},
                          {'X-TR-Session': self.token})[0], 403)
 
     def test_status_carries_the_glance_stats(self):
@@ -1112,7 +1132,7 @@ class ResourceLimitTests(unittest.TestCase):
 
 
 class ScheduleTests(unittest.TestCase):
-    """定时开启/关闭全部任务：off 或 24h，自开启那刻起算。"""
+    """定时开启/关闭全部任务：off 或 '0'..'23'（钟点），每天到点执行一次。"""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -1122,25 +1142,51 @@ class ScheduleTests(unittest.TestCase):
         self.engine = Engine(Path(self.tmp.name) / 'data', self.root)
         self.engine.config = {'owner': 'tok', 'username': 'admin'}
 
+    @staticmethod
+    def _moment():
+        """测试用的固定时刻（用真实日期：Windows 上 1970 年前后 timestamp() 会报错）。"""
+        return int(datetime.datetime(2026, 9, 28, 10, 30).timestamp())
+
+    def test_options_are_off_plus_24_hours(self):
+        self.assertEqual(len(SCHEDULE_VALUES), 25)
+        self.assertEqual(SCHEDULE_VALUES[0], 'off')
+        self.assertEqual(SCHEDULE_VALUES[1], '0')
+        self.assertEqual(SCHEDULE_VALUES[-1], '23')
+
+    def test_next_hour_is_today_or_tomorrow(self):
+        moment = int(datetime.datetime(2026, 9, 28, 10, 30).timestamp())
+        self.assertEqual(next_hour_epoch('23', moment),
+                         int(datetime.datetime(2026, 9, 28, 23, 0).timestamp()))
+        self.assertEqual(next_hour_epoch('3', moment),
+                         int(datetime.datetime(2026, 9, 29, 3, 0).timestamp()))
+        # 正好到点算明天，避免同一分钟内重复触发
+        exact = int(datetime.datetime(2026, 9, 28, 3, 0).timestamp())
+        self.assertEqual(next_hour_epoch('3', exact),
+                         int(datetime.datetime(2026, 9, 29, 3, 0).timestamp()))
+
     def test_snapshot_defaults_to_off(self):
         self.assertEqual(self.engine.schedule_snapshot(),
                          {'start': {'value': 'off', 'next': 0}, 'stop': {'value': 'off', 'next': 0}})
 
-    def test_enabling_sets_next_from_now(self):
-        with patch('engine.time.time', return_value=1000), patch('engine.atomic_json'):
-            snapshot = self.engine.set_schedule('start', '24h')
-        self.assertEqual(snapshot['start'], {'value': '24h', 'next': 1000 + SCHEDULE_SECONDS['24h']})
-        self.assertEqual(snapshot['stop'], {'value': 'off', 'next': 0})
-        self.assertEqual(self.engine.schedule_snapshot()['start']['value'], '24h')
+    def test_enabling_sets_next_clock_time(self):
+        moment = int(datetime.datetime(2026, 9, 28, 10, 30).timestamp())
+        with patch('engine.time.time', return_value=moment), patch('engine.atomic_json'):
+            snapshot = self.engine.set_schedule('start', '23')
+            later = self.engine.set_schedule('stop', '3')
+        self.assertEqual(snapshot['start']['value'], '23')
+        self.assertEqual(snapshot['start']['next'], next_hour_epoch('23', moment))
+        self.assertEqual(later['stop']['next'], next_hour_epoch('3', moment))
+        self.assertEqual(self.engine.schedule_snapshot()['start']['value'], '23')
 
     def test_disabling_clears_next(self):
-        with patch('engine.time.time', return_value=1000), patch('engine.atomic_json'):
-            self.engine.set_schedule('stop', '24h')
+        with patch('engine.atomic_json'):
+            self.engine.set_schedule('stop', '3')
             snapshot = self.engine.set_schedule('stop', 'off')
         self.assertEqual(snapshot['stop'], {'value': 'off', 'next': 0})
 
     def test_rejects_bad_input(self):
-        for kind, value in (('start', '1h'), ('start', ''), ('both', '24h'), ('', 'off')):
+        for kind, value in (('start', '24h'), ('start', ''), ('start', '24'),
+                            ('start', 'x'), ('both', '3'), ('', 'off')):
             with self.subTest(kind=kind, value=value), \
                     patch('engine.atomic_json'), self.assertRaises(Error):
                 self.engine.set_schedule(kind, value)
@@ -1148,53 +1194,68 @@ class ScheduleTests(unittest.TestCase):
     def test_requires_config(self):
         self.engine.config = None
         with self.assertRaises(Error):
-            self.engine.set_schedule('start', '24h')
+            self.engine.set_schedule('start', '3')
 
     def test_runs_due_action_without_ids(self):
-        self.engine.config['schedule'] = {'start': {'value': '24h', 'next': 1000}}
+        moment = self._moment()
+        self.engine.config['schedule'] = {'start': {'value': '3', 'next': moment - 60}}
         with patch.object(self.engine, 'saved_password', return_value='Secret123!'), \
                 patch('engine.tr_call') as call, patch('engine.atomic_json'):
-            done = self.engine.run_schedule_due(now=1000)
+            done = self.engine.run_schedule_due(now=moment)
         self.assertEqual(done, ['start'])
         self.assertEqual(call.call_args.args[:3], ('torrent-start', 'admin', 'Secret123!'))
         self.assertEqual(len(call.call_args.args), 3)          # 不带 ids = 全部任务
-        self.assertEqual(self.engine.config['schedule']['start']['next'], 1000 + SCHEDULE_SECONDS['24h'])
+        self.assertEqual(self.engine.config['schedule']['start']['next'],
+                         next_hour_epoch('3', moment))
 
     def test_does_nothing_before_due(self):
-        self.engine.config['schedule'] = {'stop': {'value': '24h', 'next': 5000}}
+        moment = self._moment()
+        due = next_hour_epoch('3', moment)
+        self.engine.config['schedule'] = {'stop': {'value': '3', 'next': due}}
         with patch('engine.tr_call') as call, patch('engine.atomic_json'):
-            self.assertEqual(self.engine.run_schedule_due(now=4999), [])
+            self.assertEqual(self.engine.run_schedule_due(now=due - 1), [])
         self.assertEqual(call.call_count, 0)
 
     def test_off_never_runs(self):
         self.engine.config['schedule'] = {'start': {'value': 'off', 'next': 0}}
         with patch('engine.tr_call') as call, patch('engine.atomic_json'):
-            self.assertEqual(self.engine.run_schedule_due(now=10 ** 9), [])
+            self.assertEqual(self.engine.run_schedule_due(now=self._moment()), [])
         self.assertEqual(call.call_count, 0)
 
+    def test_legacy_interval_value_is_ignored(self):
+        """"24h" 是上一版的写法，留在配置里也不该乱执行。"""
+        self.engine.config['schedule'] = {'start': {'value': '24h', 'next': 1}}
+        with patch('engine.tr_call') as call, patch('engine.atomic_json'):
+            self.assertEqual(self.engine.run_schedule_due(now=self._moment()), [])
+        self.assertEqual(call.call_count, 0)
+        self.assertEqual(self.engine.schedule_snapshot()['start']['value'], 'off')
+
     def test_failure_still_reschedules(self):
-        """服务没在跑时 RPC 会失败：只记录，并把下一次挪后一个间隔，别每分钟重试。"""
-        self.engine.config['schedule'] = {'stop': {'value': '24h', 'next': 1000}}
+        """服务没在跑时 RPC 会失败：只记录，并把下一次挪到明天同一钟点，别每分钟重试。"""
+        moment = self._moment()
+        self.engine.config['schedule'] = {'stop': {'value': '3', 'next': moment - 60}}
         with patch.object(self.engine, 'saved_password', return_value='Secret123!'), \
                 patch('engine.tr_call', side_effect=Error('RPC 失败')), patch('engine.atomic_json'):
-            done = self.engine.run_schedule_due(now=1000)
+            done = self.engine.run_schedule_due(now=moment)
         self.assertEqual(done, [])
-        self.assertEqual(self.engine.config['schedule']['stop']['next'], 1000 + SCHEDULE_SECONDS['24h'])
+        self.assertEqual(self.engine.config['schedule']['stop']['next'],
+                         next_hour_epoch('3', moment))
 
     def test_missing_credentials_skips(self):
-        self.engine.config['schedule'] = {'start': {'value': '24h', 'next': 1000}}
+        moment = self._moment()
+        self.engine.config['schedule'] = {'start': {'value': '3', 'next': moment - 60}}
         with patch.object(self.engine, 'saved_password', return_value=''), patch('engine.tr_call') as call, \
                 patch('engine.atomic_json'):
-            self.assertEqual(self.engine.run_schedule_due(now=1000), [])
+            self.assertEqual(self.engine.run_schedule_due(now=moment), [])
         self.assertEqual(call.call_count, 0)
 
     def test_snapshot_carries_schedule(self):
         self.engine.config['config'] = '/tmp/config'
-        self.engine.config['schedule'] = {'start': {'value': '24h', 'next': 42}}
+        self.engine.config['schedule'] = {'start': {'value': '3', 'next': 42}}
         stopped = {'Config': {'Labels': {LABEL: 'tok'}}, 'State': {'Running': False}}
         with patch.object(self.engine, 'owned', return_value=stopped):
             data = self.engine.snapshot()
-        self.assertEqual(data['schedule']['start'], {'value': '24h', 'next': 42})
+        self.assertEqual(data['schedule']['start'], {'value': '3', 'next': 42})
 
 
 class ScheduleKeeperTests(unittest.TestCase):
@@ -1781,43 +1842,86 @@ class UiTests(unittest.TestCase):
         for name in ('portDot', 'testPort', 'forwardDot', 'forwardPort'):
             with self.subTest(name=name):
                 self.assertIn('id="%s"' % name, row)
+        # 映射端口排在测试端口前面
+        self.assertLess(row.index('id="forwardPort"'), row.index('id="testPort"'))
         for name in ('app.js', 'app.bundle.js'):
             with self.subTest(name=name):
                 script = (self.web / name).read_text(encoding='utf-8')
                 self.assertIn('function setDot(', script)
                 self.assertIn("state = 'bad'", script)
                 self.assertIn('toast(portText(state))', script)
+                # 端口测试是后台跑的，必须等 testedAt 变了再报结果
+                self.assertIn('attempt < 20', script)
+                self.assertIn('测试超时', script)
+
+    def test_open_console_sits_next_to_port_buttons(self):
+        """「打开控制台」移到测试端口后面；「复制」和地址栏同一行。"""
+        html = (self.web / 'index.html').read_text(encoding='utf-8')
+        row = html.split('class="check-row"', 1)[1].split('</div>', 1)[0]
+        self.assertIn('id="openConsole"', row)
+        self.assertLess(row.index('id="testPort"'), row.index('id="openConsole"'))
+        # 配色沿用蓝色，且和两个状态按钮同高、靠右对齐
+        self.assertIn('id="openConsole" type="button" class="btn primary"', row)
+        address = html.split('class="address-row"', 1)[1].split('</div>', 1)[0]
+        self.assertIn('id="copyAddress"', address)
+        self.assertNotIn('openConsole', address)
+        css = (self.web / 'styles.css').read_text(encoding='utf-8')
+        # 手机上不再把地址挤成独占一行
+        self.assertNotIn('.address-row code { flex: 1 1 100%; }', css)
+        self.assertIn('.check-row .btn { min-height: 40px;', css)
+        self.assertIn('.check-row > .btn { margin-left: auto; }', css)
+        for name in ('app.js', 'app.bundle.js'):
+            with self.subTest(name=name):
+                script = (self.web / name).read_text(encoding='utf-8')
+                self.assertIn("consoleEntry.disabled = !live", script)
+
+    def test_console_has_start_all_and_pause_all(self):
+        html = (self.web / 'index.html').read_text(encoding='utf-8')
+        head = html.split('class="console-head"', 1)[1].split('</div>', 1)[0]
+        for name in ('backToStatus', 'startAll', 'pauseAll'):
+            with self.subTest(name=name):
+                self.assertIn('id="%s"' % name, head)
+        self.assertIn('全部开始', html)
+        self.assertIn('全部暂停', html)
+        for name in ('app.js', 'app.bundle.js'):
+            with self.subTest(name=name):
+                script = (self.web / name).read_text(encoding='utf-8')
+                self.assertIn("api('all-start'", script)
+                self.assertIn("api('all-stop'", script)
 
     def test_page_has_schedule_controls(self):
         """第二个卡片底部原来的「WebUI 9091 · BT 51413」换成两个定时选择框。"""
         html = (self.web / 'index.html').read_text(encoding='utf-8')
         self.assertNotIn('peerPortHint', html)
+        self.assertNotIn('24h', html)                     # 旧的"24 小时"选项不该还在
         for name in ('scheduleStart', 'scheduleStop'):
             with self.subTest(name=name):
                 self.assertIn('id="%s"' % name, html)
-        block = html.split('id="scheduleStart"', 1)[1].split('</select>', 1)[0]
-        self.assertIn('value="off"', block)
-        self.assertIn('value="24h"', block)
         self.assertIn('定时开启全部任务', html)
         self.assertIn('定时关闭全部任务', html)
         for name in ('app.js', 'app.bundle.js'):
             with self.subTest(name=name):
                 script = (self.web / name).read_text(encoding='utf-8')
                 self.assertIn('function renderSchedule(current)', script)
+                self.assertIn('function fillScheduleOptions(select)', script)
+                self.assertIn('hour < 24', script)        # 0 点…23 点共 24 项 + 关闭
+                self.assertIn("off.textContent = '关闭'", script)
                 self.assertIn("saveSchedule('start'", script)
                 self.assertIn("saveSchedule('stop'", script)
 
     def test_page_shows_glance_stats(self):
         html = (self.web / 'index.html').read_text(encoding='utf-8')
-        for name in ('statusStats', 'statsDown', 'statsUp', 'statsSeeding',
-                     'statsDownloading', 'statsSessionDown', 'statsSessionUp'):
+        for name in ('statusStats', 'statsDown', 'statsUp', 'statsSeeding', 'statsDownloading'):
             with self.subTest(name=name):
                 self.assertIn('id="%s"' % name, html)
+        # 「本次运行」已按需求去掉
+        self.assertNotIn('statsSessionDown', html)
+        self.assertNotIn('本次运行', html)
         for name in ('app.js', 'app.bundle.js'):
             with self.subTest(name=name):
                 script = (self.web / name).read_text(encoding='utf-8')
                 self.assertIn('function renderStats(current)', script)
-                self.assertIn("$('#statusStats')", script)
+                self.assertNotIn('statsSessionDown', script)
 
     def test_html_references_existing_files(self):
         html = (self.web / 'index.html').read_text(encoding='utf-8')
@@ -1837,17 +1941,21 @@ class UiTests(unittest.TestCase):
         self.assertIn("api('torrents')", script)
 
     def test_narrow_screen_keeps_status_buttons_compact(self):
-        """窄屏下状态卡的两个按钮不能被拉满整行，否则会变成一条很长的按钮。"""
+        """窄屏下状态卡/地址行的按钮不能被拉满整行，否则会变成一条很长的按钮。"""
         css = (self.web / 'styles.css').read_text(encoding='utf-8')
         marker = '@media (max-width: 430px)'
         start = css.find(marker)
         self.assertGreaterEqual(start, 0)
-        narrow = css[start:start + 400]
+        narrow = css[start:start + 500]
         self.assertNotIn('width: 100%', narrow)
         self.assertIn('.status-actions', narrow)
         self.assertIn('.status-port', narrow)
+        # 地址和「复制」保持一行：地址可伸缩但不再独占整行
         self.assertIn('.address-row code', narrow)
-        self.assertIn('flex: 1 1 100%', narrow)
+        self.assertIn('flex: 1 1 auto', narrow)
+        self.assertNotIn('flex: 1 1 100%', narrow)
+        # 三个按钮（映射/测试/控制台）在窄屏下也压在一行
+        self.assertIn('.check-row', narrow)
 
     def test_ui_shows_effective_settings_path(self):
         """daemon 真正读取的 settings.json 要显示在底部「说明与限制」里，不占服务卡片。"""

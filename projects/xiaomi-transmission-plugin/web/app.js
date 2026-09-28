@@ -106,6 +106,9 @@
     $('#serviceActions').hidden = !current.configured;
     const live = current.configured && current.running;
     $('#access').hidden = !live;
+    // 「打开控制台」现在和端口按钮同排（那张卡片常显），服务没跑时要禁掉
+    const consoleEntry = $('#openConsole');
+    if (consoleEntry) consoleEntry.disabled = !live;
     $('#address').textContent = current.address || '（请从设备所有者的小米客户端打开插件以获取地址）';
     $('#toggleService').disabled = current.busy;
     $('#toggleService').textContent = current.running ? '停止服务' : '启动服务';
@@ -137,8 +140,6 @@
     $('#statsUp').textContent = bytes(t.upspeed) + '/s';
     $('#statsSeeding').textContent = t.seeding;
     $('#statsDownloading').textContent = t.downloading;
-    $('#statsSessionDown').textContent = bytes(t.downloaded);
-    $('#statsSessionUp').textContent = bytes(t.uploaded);
   }
   // 状态用圆点表示（绿=正常，红=异常，灰=未知/未测），完整说明放在 title 里
   function setDot(selector, state, title) {
@@ -194,7 +195,7 @@
     const value = port.peerPort || 51413;
     if (port.testedAt && port.open) return `BT 端口 ${value} 公网可达`;
     if (port.testedAt) return `BT 端口 ${value} 仅局域网可达 · 需在路由器转发 TCP+UDP`;
-    return `BT 端口 ${value} 状态未测试`;
+    return `BT 端口 ${value} 测试超时，请稍后再试`;
   }
   function stamp(epoch) {
     const d = new Date(Number(epoch) * 1000);
@@ -207,7 +208,9 @@
     for (const [kind, selector] of targets) {
       const select = $(selector);
       if (!select) continue;
-      const value = ((schedule[kind] || {}).value === '24h') ? '24h' : 'off';
+      fillScheduleOptions(select);
+      const entry = schedule[kind] || {};
+      const value = optionValue(entry.value);
       if (select.value !== value) select.value = value;
     }
     const hint = $('#scheduleHint');
@@ -215,10 +218,30 @@
     const parts = [];
     for (const [kind, , label] of targets) {
       const entry = schedule[kind] || {};
-      if (entry.value !== 'off' && entry.next) parts.push(`${label} ${stamp(entry.next)}`);
+      if (optionValue(entry.value) !== 'off' && entry.next) parts.push(`${label} ${stamp(entry.next)}`);
     }
     hint.hidden = !parts.length;
     hint.textContent = parts.length ? `下次：${parts.join(' · ')}` : '';
+  }
+  // 选项 = 关闭 + 0 点…23 点（共 25 个），按钟点每天执行一次
+  function optionValue(value) {
+    const text = String(value ?? '');
+    if (text === 'off') return 'off';
+    return /^([0-9]|1[0-9]|2[0-3])$/.test(text) ? text : 'off';
+  }
+  function fillScheduleOptions(select) {
+    if (select.dataset.filled) return;
+    const off = document.createElement('option');
+    off.value = 'off';
+    off.textContent = '关闭';
+    select.append(off);
+    for (let hour = 0; hour < 24; hour += 1) {
+      const option = document.createElement('option');
+      option.value = String(hour);
+      option.textContent = `${hour} 点`;
+      select.append(option);
+    }
+    select.dataset.filled = '1';
   }
   function renderPortPublish(current) {
     // Docker 会说端口都发布了，但 docker-proxy 掉线后宿主上其实没人监听
@@ -346,8 +369,15 @@
     }
   });
   $('#testPort').onclick = () => busy($('#testPort'), async () => {
+    const before = Number(((state || {}).port || {}).testedAt || 0);
     await api('service/port-test', {});
-    await refresh();
+    // 端口测试在插件后台线程里跑，接口只回 202：轮询到 testedAt 变了再报结果，
+    // 否则刷新的还是上一次的状态，弹窗就会说"未测试"。
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      await refresh();
+      if (Number(((state || {}).port || {}).testedAt || 0) > before) break;
+    }
     toast(portText(state));
   });
   $('#forwardPort').onclick = () => busy($('#forwardPort'), async () => {
@@ -360,7 +390,10 @@
   function saveSchedule(kind, value, select) {
     select.disabled = true;
     api('schedule', { kind, value })
-      .then(() => { toast(value === 'off' ? '已关闭该定时' : '已设为每 24 小时执行一次'); return refresh(); })
+      .then(() => {
+        toast(value === 'off' ? '已关闭该定时' : `已设为每天 ${value} 点执行`);
+        return refresh();
+      })
       .catch(async (e) => { toast(e.message); await refresh(); })
       .finally(() => { select.disabled = false; });
   }
@@ -396,6 +429,19 @@
   if (openBtn) openBtn.onclick = () => { showConsole(true); busy(openBtn, refresh); };
   const backBtn = $('#backToStatus');
   if (backBtn) backBtn.onclick = () => showConsole(false);
+  // 控制台里的「全部开始 / 全部暂停」：不带 ids 就是全部任务
+  const startAllBtn = $('#startAll');
+  if (startAllBtn) startAllBtn.onclick = () => busy(startAllBtn, async () => {
+    await api('all-start', {});
+    await refresh();
+    toast('已开始全部任务');
+  });
+  const pauseAllBtn = $('#pauseAll');
+  if (pauseAllBtn) pauseAllBtn.onclick = () => busy(pauseAllBtn, async () => {
+    await api('all-stop', {});
+    await refresh();
+    toast('已暂停全部任务');
+  });
   const searchInput = $('#search');
   if (searchInput) searchInput.oninput = renderTasks;
   const filterEl = $('#filter');

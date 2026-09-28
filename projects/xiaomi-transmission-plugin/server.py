@@ -352,6 +352,10 @@ class Handler(BaseHTTPRequestHandler):
             tr_call('torrent-start', username, password, {'ids': [int(data.get('id'))]})
         elif action == 'stop':
             tr_call('torrent-stop', username, password, {'ids': [int(data.get('id'))]})
+        elif action == 'all-start':
+            tr_call('torrent-start', username, password)          # 不带 ids = 全部任务
+        elif action == 'all-stop':
+            tr_call('torrent-stop', username, password)
         elif action == 'remove':
             tr_call('torrent-remove', username, password,
                     {'ids': [int(data.get('id'))], 'delete-local-data': False})
@@ -502,7 +506,7 @@ class Handler(BaseHTTPRequestHandler):
             if action.startswith('service/'):
                 self.server.engine.launch(action.split('/')[1], data)
                 return self.send(202, {'ok': True})
-            if action in ('start', 'stop', 'remove', 'add'):
+            if action in ('start', 'stop', 'remove', 'add', 'all-start', 'all-stop'):
                 self.tr_action(action, data)
                 return self.send(200, {'ok': True})
             if action == 'forward':

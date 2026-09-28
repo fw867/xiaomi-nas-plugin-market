@@ -104,6 +104,8 @@ code {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  /* 最后一行是端口按钮，底部不要再多留一圈空白 */
+  padding-bottom: 12px;
 }
 
 .status-main {
@@ -126,7 +128,9 @@ code {
 .status-stats .stat { display: inline-flex; align-items: baseline; gap: 5px; }
 .status-stats .stat em { font-style: normal; }
 .status-stats .stat b { color: var(--ink); font-size: 14px; font-weight: 650; }
-.status-stats .stat.wide { flex: 1 1 100%; }
+
+/* 控制台头部的「全部开始 / 全部暂停」 */
+.console-actions { display: flex; align-items: center; gap: 8px; }
 
 .status-port {
   display: flex;
@@ -138,19 +142,34 @@ code {
   padding-top: 12px;
 }
 
-/* 测试端口 / 映射端口：状态用圆点表示，两个按钮挤在一行 */
+/* 测试端口 / 映射端口：状态用圆点表示，两个按钮并排、彼此留开距离 */
 .check-row {
   display: flex;
   align-items: center;
-  gap: 16px;
+  justify-content: flex-start;
+  gap: 30px;
   flex-wrap: wrap;
   border-top: 1px solid var(--line);
-  padding-top: 12px;
+  margin-top: -4px;
+  padding-top: 8px;
 }
-.check { display: inline-flex; align-items: center; gap: 8px; }
-.check .status-dot { width: 11px; height: 11px; }
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+/* 圆点要和按钮文字垂直居中：去掉外圈光晕，避免看起来偏上/偏下 */
+.check .status-dot {
+  align-self: center;
+  width: 10px;
+  height: 10px;
+  box-shadow: none;
+}
+/* 行内三个按钮统一高度；「打开控制台」靠右并和前面拉开距离 */
+.check-row .btn { min-height: 40px; padding: 0 14px; }
+.check-row > .btn { margin-left: auto; }
 
-/* 定时开启/关闭全部任务 */
+/* 定时开启/关闭全部任务：一行一个（标签在左、选择框贴右），不许把选择框挤出屏幕 */
 .schedule {
   border-top: 1px solid var(--line);
   margin-top: 12px;
@@ -162,13 +181,21 @@ code {
 .schedule-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
+  flex-wrap: nowrap;
   font-size: 13px;
+}
+.schedule-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 .schedule-row select {
   flex: 0 0 auto;
-  min-width: 92px;
+  margin-left: auto;
+  max-width: 46%;
   padding: 6px 8px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -336,9 +363,17 @@ button:focus-visible { outline: 2px solid rgba(24, 120, 187, .45); outline-offse
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
-.address-row code { flex: 1; min-width: 0; padding: 10px 12px; font-size: 13.5px; }
+.address-row code {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  padding: 10px 12px;
+  font-size: 13.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 footer { padding: 22px 0 4px; color: #97a1b0; font-size: 12px; text-align: center; }
 
@@ -464,6 +499,7 @@ dialog::backdrop { background: rgba(29, 41, 61, .45); }
 /* 按钮一律保持自身宽度：容器换行时不能让按钮被拉成整行宽 */
 .status-actions .btn,
 .status-port .btn,
+.check-row .btn,
 .address-row .btn {
   width: auto;
   flex: 0 0 auto;
@@ -475,12 +511,12 @@ dialog::backdrop { background: rgba(29, 41, 61, .45); }
   .status-actions { margin-left: auto; }
   .status-port { justify-content: flex-start; }
   .status-port .btn { margin-left: auto; }
-  /* 地址先独占一行，两个按钮留在下一行，避免地址被挤成一两个字宽 */
-  .address-row code { flex: 1 1 100%; }
-  /* 手机上也要把「测试端口 / 映射端口」压在一行里：缩小间距和按钮内边距 */
-  .check-row { gap: 10px; }
+  /* 地址和「复制」保持一行（地址过长就省略号） */
+  .address-row code { flex: 1 1 auto; }
+  /* 手机上把「映射端口 / 测试端口 / 打开控制台」压在一行里：缩小间距和按钮内边距 */
+  .check-row { gap: 12px; }
   .check { gap: 6px; }
-  .check .btn { padding-left: 10px; padding-right: 10px; }
+  .check-row .btn { padding-left: 9px; padding-right: 9px; font-size: 13px; }
 }
 
 /* ---------- 原生控制台（参照 qB） ---------- */
@@ -489,6 +525,7 @@ dialog::backdrop { background: rgba(29, 41, 61, .45); }
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+  flex-wrap: wrap;
   margin: 2px 0 10px;
 }
 .stats {

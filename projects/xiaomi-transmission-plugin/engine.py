@@ -1,6 +1,8 @@
 """Bounded Transmission container lifecycle (Docker Engine API)."""
 from __future__ import annotations
 
+import base64
+import datetime
 import http.client
 import io
 import json
@@ -34,11 +36,20 @@ PROC_NET = Path(os.environ.get('PROC_NET', '/proc/net'))
 PUBLISHED_PORTS = (('tcp', PORT), ('tcp', BT_PORT), ('udp', BT_PORT))
 # 路由器映射失败后隔多久再试（路由器重启、UPnP 刚打开这类情况能自愈）
 FORWARD_RETRY_SECONDS = 1800
-# 定时「开启/关闭全部任务」的可选间隔：off=不做，24h=每 24 小时一次（自开启那刻起算）。
-# 两个定时器各自独立计时——想让它们错开，先后开启即可。
-SCHEDULE_VALUES = ('off', '24h')
-SCHEDULE_SECONDS = {'24h': 24 * 3600}
+# 定时「开启/关闭全部任务」：off=不做，'0'..'23'=每天到那个钟点执行一次（共 25 个选项）。
+# 两个定时器各自独立，想错开就选不同钟点（例如 3 点开、23 点关）。
+SCHEDULE_HOURS = tuple(str(hour) for hour in range(24))
+SCHEDULE_VALUES = ('off',) + SCHEDULE_HOURS
 SCHEDULE_KINDS = (('start', 'torrent-start'), ('stop', 'torrent-stop'))
+
+
+def next_hour_epoch(hour, now=None):
+    """下一个 HH:00 的时间戳：今天还没到就是今天，已经过了（或正好到点）就是明天。"""
+    moment = datetime.datetime.fromtimestamp(now if now is not None else time.time())
+    target = moment.replace(hour=int(hour), minute=0, second=0, microsecond=0)
+    if target <= moment:
+        target += datetime.timedelta(days=1)
+    return int(target.timestamp())
 # 容器资源上限。内存原来是 512 MiB，实测做种多的时候 transmission-daemon 的 RSS
 # 会涨到 440 MiB 以上，撞上限就被内核 OOM 杀掉、由 s6 反复拉起（dmesg 里 5 分钟内
 # 9 次 "Memory cgroup out of memory: Killed process ... (transmission-da)"），
@@ -882,20 +893,20 @@ class Engine:
         return out
 
     def set_schedule(self, kind, value):
-        """设置定时开启/关闭全部任务；value 只接受 off / 24h。
+        """设置定时开启/关闭全部任务；value 只接受 off 或 '0'..'23'（钟点）。
 
-        开启时从**这一刻**开始计时（下一次执行 = 现在 + 间隔），不立即执行——
-        「定时」就该等到时间点，想马上生效就手动点控制台里的启动。
+        下一次执行时间按**钟点**算：今天该点还没到就是今天，已经过了就是明天。
+        设置本身不会立刻执行——想马上生效就进控制台手动开始。
         """
         if not self.config:
             raise Error('请先初始化')
         if kind not in [name for name, _ in SCHEDULE_KINDS]:
             raise Error('未知的定时类型')
         if value not in SCHEDULE_VALUES:
-            raise Error('不支持的间隔')
+            raise Error('不支持的定时钟点')
         entry = self.config.setdefault('schedule', {}).setdefault(kind, {})
         entry['value'] = value
-        entry['next'] = int(time.time()) + SCHEDULE_SECONDS[value] if value != 'off' else 0
+        entry['next'] = next_hour_epoch(value) if value != 'off' else 0
         atomic_json(self.cfgfile, self.config)
         return self.schedule_snapshot()
 
@@ -915,9 +926,9 @@ class Engine:
             entry = state.get(kind) or {}
             value = entry.get('value')
             due = int(entry.get('next') or 0)
-            if value not in SCHEDULE_SECONDS or not due or moment < due:
+            if value not in SCHEDULE_HOURS or not due or moment < due:
                 continue
-            entry['next'] = moment + SCHEDULE_SECONDS[value]
+            entry['next'] = next_hour_epoch(value, moment)
             if not username or not password:
                 print('transmission: 定时%s全部任务跳过（缺少 WebUI 账号）' % ('开启' if kind == 'start' else '关闭'), flush=True)
                 continue

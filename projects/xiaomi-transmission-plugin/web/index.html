@@ -40,19 +40,18 @@
                     <span class="stat"><em>上传</em><b id="statsUp">—</b></span>
                     <span class="stat"><em>做种</em><b id="statsSeeding">—</b></span>
                     <span class="stat"><em>下载中</em><b id="statsDownloading">—</b></span>
-                    <span class="stat wide"><em>本次运行</em>↓<b id="statsSessionDown">—</b> ↑<b id="statsSessionUp">—</b></span>
                 </div>
                 <div class="check-row">
-                    <span class="check">
-                        <span class="status-dot" id="portDot" role="img" aria-label="BT 端口状态"></span>
-                        <button id="testPort" type="button" class="btn">测试端口</button>
-                    </span>
                     <span class="check">
                         <span class="status-dot" id="forwardDot" role="img" aria-label="路由器端口映射状态"></span>
                         <button id="forwardPort" type="button" class="btn">映射端口</button>
                     </span>
-                </div>
-                <p class="port-warning" id="portPublish" hidden></p>
+                    <span class="check">
+                        <span class="status-dot" id="portDot" role="img" aria-label="BT 端口状态"></span>
+                        <button id="testPort" type="button" class="btn">测试端口</button>
+                    </span>
+                    <button id="openConsole" type="button" class="btn primary">打开控制台</button>
+                </div>                <p class="port-warning" id="portPublish" hidden></p>
             </section>
 
             <section id="setup" class="card" hidden>
@@ -108,18 +107,12 @@
                 </div>
                 <div class="schedule">
                     <div class="schedule-row">
-                        <span>定时开启全部任务</span>
-                        <select id="scheduleStart" aria-label="定时开启全部任务">
-                            <option value="off">关闭</option>
-                            <option value="24h">24 小时</option>
-                        </select>
+                        <span class="schedule-label">定时开启全部任务</span>
+                        <select id="scheduleStart" aria-label="定时开启全部任务"></select>
                     </div>
                     <div class="schedule-row">
-                        <span>定时关闭全部任务</span>
-                        <select id="scheduleStop" aria-label="定时关闭全部任务">
-                            <option value="off">关闭</option>
-                            <option value="24h">24 小时</option>
-                        </select>
+                        <span class="schedule-label">定时关闭全部任务</span>
+                        <select id="scheduleStop" aria-label="定时关闭全部任务"></select>
                     </div>
                     <small class="muted" id="scheduleHint" hidden></small>
                 </div>
@@ -130,7 +123,6 @@
                 <div class="address-row">
                     <code id="address">—</code>
                     <button id="copyAddress" type="button" class="btn small">复制</button>
-                    <button id="openConsole" type="button" class="btn small primary">打开控制台</button>
                 </div>
             </section>
 
@@ -160,6 +152,10 @@
         <main id="consoleView" hidden>
             <div class="console-head">
                 <button id="backToStatus" type="button" class="btn small">← 返回</button>
+                <div class="console-actions">
+                    <button id="startAll" type="button" class="btn small">全部开始</button>
+                    <button id="pauseAll" type="button" class="btn small">全部暂停</button>
+                </div>
                 <span class="muted" id="count"></span>
             </div>
             <div id="consoleBody">
