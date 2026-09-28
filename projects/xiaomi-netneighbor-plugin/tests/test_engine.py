@@ -1119,11 +1119,12 @@ class AddShareTests(EngineHarness):
         result = self.engine.add_share('fw867', self.sandbox.virtual(second))
         self.assertEqual(result['shareName'], 'fw867_nb_2')
 
-    def test_add_share_rejects_a_directory_listed_without_a_share_section(self):
-        """`sambauser` 的 `list dirs` 里那类「有目录、没有共享段」的路径也会被当成已共享。
+    def test_add_share_allows_a_directory_listed_without_a_share_section(self):
+        """`list dirs` 里有目录、但没有共享段时，插件应该能把它共享出去。
 
-        真机语义（accounts() 把它标成 missing）下这些目录其实还没共享出去，
-        但 add_share 的重复检查只比 path，不看 missing，所以插件这里会先挡住。
+        真机语义：`sambauser` 的 `list dirs` 存的是**目录路径**，`sambashare` 才是共享。
+        两者不同步时（例如共享段被删掉、只剩 dirs），`accounts()` 会把它标成 `missing`
+        ——重复检查必须跳过这些条目，否则用户再也无法通过插件共享这个目录。
         """
         self.build()
         self.manager()
@@ -1132,10 +1133,14 @@ class AddShareTests(EngineHarness):
         listed = next(share for share in self.engine.accounts()[0]['shares']
                       if share['missing'])
         self.assertEqual(listed['path'], '/home/u3943892/pool0/data/下载')
-        with self.assertRaises(Error) as caught:
-            self.engine.add_share('fw867', self.sandbox.virtual(target))
-        self.assertIn('已经是账号', str(caught.exception))
-        self.assertIsNone(self.runner.argv_for('add_dir'))
+
+        result = self.engine.add_share('fw867', self.sandbox.virtual(target))
+
+        self.assertEqual(result['shareName'], 'fw867_nb_1')
+        self.assertEqual(result['path'], '/home/u3943892/pool0/data/下载')
+        argv = self.runner.argv_for('add_dir')
+        self.assertIsNotNone(argv)
+        self.assertEqual(argv[3], 'fw867_nb_1')
 
     def test_add_share_reports_smb_mgr_failure_with_output(self):
         self.build(runner=FakeRunner(answers={'add_dir': (1, '', 'share exists\n')}))

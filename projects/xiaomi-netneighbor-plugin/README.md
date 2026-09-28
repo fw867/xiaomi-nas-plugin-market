@@ -169,5 +169,17 @@ python3 -m unittest discover -s tests -v
 
 - 只管理**插件自建**的共享；app 里那个 `<账号>_<id>` 仍由官方界面管。
 - 插件新增的目录不会出现在共享 app 的界面上（它只认自己写的那一条），但 SMB 里正常可用。
+- **`list dirs` 与共享段不同步**：`sambauser` 的 `list dirs` 存的是目录路径，
+  `sambashare` 才是共享段。若某目录只在 `list dirs` 里（例如共享段被删掉），页面会把它
+  显示成「未共享」，此时可以用插件重新共享它；反过来，插件不会去动 `list dirs`，
+  所以官方界面上看不到插件新增的目录。
+- **符号链接只挡得住 `/nas` 下的**：`validate_share_path` 会把符号链接解析后的真实路径
+  也拿去比白名单，但 `SYMLINK_ROOT` 是 `/home`，而白名单主力也是 `/home/<uXXXX>/pool0/data`
+  ——`/home` 下的软链怎么解析都落在 `/home/` 开头，等于不设防。这是「插件只服务设备所有者
+  自己的账号」这一前提下的取舍。
+- `..` 的显式检查在 `posixpath.normpath` **之后**，绝对路径里的 `..` 会被先折叠，
+  真正兜住越界的是白名单那一关（把 `/nas/pool0/../etc` 折叠成 `/nas/etc` 再比）。
+- 允许根目录的推导（`derive_allowed_roots`）用 `Path(root)` 拼路径，只在 Linux 上正确
+  ——插件本来就只跑在 NAS 上；单测里把两个「按平台拼路径」的小工具打桩成 POSIX 形态。
 - 同一台 NAS 上同时装 dpanel 与 disksleep 会因为端口都写 18160 而冲突（与本插件无关，
   本插件用 18190）。

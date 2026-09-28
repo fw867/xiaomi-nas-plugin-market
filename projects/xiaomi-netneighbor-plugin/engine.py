@@ -1024,6 +1024,12 @@ class Engine:
             if item['account'] != account:
                 continue
             for share in item['shares']:
+                if share.get('missing'):
+                    # `list dirs` 里有这个目录、但没有对应的共享段：它其实**还没**
+                    # 共享出去（accounts() 如实标成 missing）。跳过它，否则用户永远
+                    # 没法通过插件把这个目录共享出来（真机语义：`list dirs` 存的是
+                    # 目录路径，`sambashare` 才是共享）。
+                    continue
                 if share['path'].rstrip('/') and share['path'].rstrip('/') == directory:
                     raise Error('这个目录已经是账号 %s 的共享：%s' % (account, share['name']))
         if share_name in self.taken_share_names():
