@@ -8,8 +8,11 @@ import json
 import os
 import sqlite3
 import tempfile
+import threading
 import time
 import unittest
+import urllib.request
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
@@ -414,6 +417,28 @@ class VersionTests(unittest.TestCase):
         with patch.object(engine, '__file__',
                           '/data/plugin/disk-sleep/releases/0.1.2-1790354112-1647038/engine.py'):
             self.assertEqual(engine.installed_version(), '0.1.2')
+
+    def test_healthz_reports_installed_version(self):
+        """/healthz 必须跟着包版本走，而不是写死的 engine.VERSION。
+
+        真机踩过：装的是 0.1.9，`/healthz` 却回 0.1.0（用了 VERSION 常量）。
+        这里把 installed_version 打桩成 9.9.9，起真实 HTTP 服务去问。
+        """
+        import server
+        httpd = ThreadingHTTPServer(('127.0.0.1', 0), server.Handler)
+        httpd.RequestHandlerClass.log_message = lambda *args, **kwargs: None
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with patch.object(engine, 'installed_version', return_value='9.9.9'):
+                url = 'http://127.0.0.1:%d/healthz' % httpd.server_address[1]
+                with urllib.request.urlopen(url, timeout=5) as response:
+                    payload = json.loads(response.read().decode('utf-8'))
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
+        self.assertEqual(payload, {'ok': True, 'version': '9.9.9'})
 
 
 if __name__ == '__main__':

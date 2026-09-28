@@ -54,7 +54,10 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path, query = parsed.path, urllib.parse.parse_qs(parsed.query)
         if path == '/healthz':
-            self.json_out(HTTPStatus.OK, {'ok': True, 'version': engine.VERSION})
+            # 跟包版本走（release 目录名里带着版本），不要写死 engine.VERSION：
+            # 实测 0.1.9 装上去之后 healthz 还报 0.1.0，排查/商店自检会被误导。
+            self.json_out(HTTPStatus.OK,
+                          {'ok': True, 'version': engine.installed_version()})
             return
         if path == '/api/status':
             try:
