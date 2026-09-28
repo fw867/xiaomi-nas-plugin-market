@@ -149,7 +149,10 @@ class AuthTests(ServerHarness):
 
     def test_writes_require_csrf(self):
         for route, payload in (('/api/share/add', {'account': 'fw867', 'path': '/tmp'}),
+                               ('/api/share/add', {'account': 'fw867', 'paths': ['/tmp']}),
                                ('/api/share/delete', {'shareName': 'fw867_nb_1'}),
+                               ('/api/discovery', {'enabled': False}),
+                               ('/api/hostname', {'hostname': 'MyNAS'}),
                                ('/api/detect/restart', {})):
             with self.subTest(route=route):
                 status, data = self.json_request('POST', route, payload,
@@ -303,6 +306,193 @@ class ShareApiTests(ServerHarness):
         self.assertTrue(first.stopped)
         self.assertEqual(self.engine.responder.hellos, [2])
         self.assertTrue(data['status']['discovery']['running'])
+
+
+class DiscoveryApiTests(ServerHarness):
+    """`POST /api/discovery`：开关的鉴权、CSRF、幂等关闭。"""
+
+    def test_requires_a_session_and_csrf(self):
+        for route, payload in (('/api/discovery', {'enabled': False}),
+                               ('/api/hostname', {'hostname': 'MyNAS'})):
+            with self.subTest(route=route):
+                status, data = self.json_request(
+                    'POST', route, payload,
+                    {'X-NN-Session': self.token, 'Content-Type': 'application/json'})
+                self.assertEqual(status, 403)                   # 缺 CSRF
+                self.assertFalse(data['ok'])
+                status, data = self.json_request(
+                    'POST', route, payload,
+                    {'X-CSRF-Token': self.csrf, 'Content-Type': 'application/json'})
+                self.assertEqual(status, 401)                   # 缺会话
+                self.assertFalse(data['ok'])
+
+    def test_status_exposes_settings(self):
+        status, data = self.json_request('GET', '/api/status', headers=self.auth())
+        self.assertEqual(status, 200)
+        self.assertEqual(data['settings'],
+                         {'discoveryEnabled': True, 'hostname': 'SmartStorage'})
+        self.assertTrue(data['discovery']['enabled'])
+
+    def test_disabling_returns_the_new_status(self):
+        self.engine.start()
+        self.assertTrue(self.engine.discovery['dropin'])
+        status, data = self.json_request('POST', '/api/discovery', {'enabled': False},
+                                         self.auth(write=True))
+        self.assertEqual(status, 200)
+        self.assertTrue(data['ok'])
+        self.assertFalse(data['status']['settings']['discoveryEnabled'])
+        self.assertFalse(data['status']['discovery']['running'])
+        self.assertFalse(data['status']['discovery']['wsddDropin'])
+        self.assertFalse(self.sandbox.dropin.exists())
+        self.assertIsNone(self.engine.responder)
+        # 页面刷新后读到的仍然是「关闭」
+        status, again = self.json_request('GET', '/api/status', headers=self.auth())
+        self.assertFalse(again['settings']['discoveryEnabled'])
+
+    def test_disabling_twice_is_not_an_error(self):
+        for _ in range(2):
+            status, data = self.json_request('POST', '/api/discovery', {'enabled': False},
+                                             self.auth(write=True))
+            self.assertEqual(status, 200)
+            self.assertTrue(data['ok'])
+        self.assertIn(['/bin/systemctl', 'start', 'wsdd'], self.runner.calls)
+        self.assertFalse(self.sandbox.dropin.exists())
+
+    def test_enabling_takes_over(self):
+        self.engine.set_discovery_enabled(False)
+        status, data = self.json_request('POST', '/api/discovery', {'enabled': True},
+                                         self.auth(write=True))
+        self.assertEqual(status, 200)
+        self.assertTrue(data['status']['settings']['discoveryEnabled'])
+        self.assertTrue(data['status']['discovery']['running'])
+        self.assertTrue(self.sandbox.dropin.exists())
+
+
+class HostnameApiTests(ServerHarness):
+    """`POST /api/hostname`：校验 → 落盘 → 重建回应器 + 重发 Hello。"""
+
+    def test_saves_name_and_announces(self):
+        self.engine.start()
+        first = self.engine.responder
+        status, data = self.json_request('POST', '/api/hostname', {'hostname': 'XiaoMiNAS'},
+                                         self.auth(write=True))
+        self.assertEqual(status, 200)
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['status']['settings']['hostname'], 'XiaoMiNAS')
+        self.assertEqual(data['status']['discovery']['hostname'], 'XiaoMiNAS')
+        self.assertTrue(first.stopped)
+        self.assertEqual(self.engine.responder.hostname, 'XiaoMiNAS')
+        self.assertEqual(self.engine.responder.hellos, [2])
+        saved = json.loads((self.sandbox.data / 'settings.json').read_text(encoding='utf-8'))
+        self.assertEqual(saved['hostname'], 'XiaoMiNAS')
+
+    def test_invalid_names_are_rejected_in_chinese(self):
+        self.engine.start()
+        responder = self.engine.responder
+        for bad, needle in [('', '请填写主机名'), ('a' * 16, '最长 15 个字符'),
+                            ('-bad', '字母或数字开头'), ('bad name', '只能包含')]:
+            with self.subTest(bad=bad):
+                status, data = self.json_request('POST', '/api/hostname', {'hostname': bad},
+                                                 self.auth(write=True))
+                self.assertEqual(status, 400)
+                self.assertFalse(data['ok'])
+                self.assertIn(needle, data['error'])
+        self.assertIs(self.engine.responder, responder)          # 没有重建回应器
+
+
+class DirsApiTests(ServerHarness):
+    """`GET /api/dirs`：弹窗里的目录列表。"""
+
+    def test_requires_a_session(self):
+        status, _data = self.json_request('GET', '/api/dirs?account=fw867')
+        self.assertEqual(status, 401)
+
+    def test_lists_directories_with_shared_flags(self):
+        shared_dir = self.target_dir('我的照片')
+        free_dir = self.target_dir('下载')
+        self.sandbox.root.joinpath('home', 'u3943892', 'pool0', 'data', '笔记.txt').write_text(
+            'x', encoding='utf-8')
+        status, data = self.json_request('GET', '/api/dirs?account=fw867', headers=self.auth())
+        self.assertEqual(status, 200)
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['account'], 'fw867')
+        self.assertEqual(data['root'], '/home/u3943892/pool0/data')
+        paths = [item['path'] for item in data['dirs']]
+        self.assertEqual(sorted(paths), sorted([shared_dir, free_dir]))
+        by_path = {item['path']: item for item in data['dirs']}
+        self.assertTrue(by_path[shared_dir]['shared'])
+        self.assertEqual(by_path[shared_dir]['shareName'], 'u3943892_nb_1')
+        self.assertEqual(by_path[shared_dir]['display'], '照片-3943892')
+        self.assertFalse(by_path[free_dir]['shared'])
+        self.assertEqual(by_path[free_dir]['shareName'], '')
+
+    def test_unknown_account_and_missing_query(self):
+        status, data = self.json_request('GET', '/api/dirs?account=nobody', headers=self.auth())
+        self.assertEqual(status, 400)
+        self.assertIn('没有这个账号', data['error'])
+        status, data = self.json_request('GET', '/api/dirs', headers=self.auth())
+        self.assertEqual(status, 400)
+        self.assertIn('请选择账号', data['error'])
+
+
+class ShareApiBatchTests(ServerHarness):
+    """`POST /api/share/add` 的多选分支：一次提交多个目录。"""
+
+    def test_multiple_paths_add_in_one_batch(self):
+        first = self.target_dir('照片')
+        second = self.target_dir('视频')
+        status, data = self.json_request(
+            'POST', '/api/share/add', {'account': 'fw867', 'paths': [first, second]},
+            self.auth(write=True))
+        self.assertEqual(status, 200)
+        self.assertTrue(data['ok'])
+        result = data['result']
+        self.assertEqual([item['shareName'] for item in result['added']],
+                         ['fw867_nb_1', 'fw867_nb_2'])
+        self.assertTrue(all(item['verified'] for item in result['added']))
+        self.assertEqual(result['errors'], [])
+        self.assertEqual(self.runner.count('add_dir'), 2)
+        self.assertEqual(self.runner.count('init_config'), 1)
+        self.assertEqual(
+            self.runner.calls.count(['/bin/systemctl', 'reload', 'smb', 'nmb']), 1)
+        names = [item['name'] for item in data['status']['accounts'][0]['shares']]
+        self.assertIn('fw867_nb_1', names)
+        self.assertIn('fw867_nb_2', names)
+
+    def test_already_shared_path_is_skipped_not_an_error(self):
+        target = self.target_dir('照片')
+        first = self.json_request(
+            'POST', '/api/share/add', {'account': 'fw867', 'paths': [target]},
+            self.auth(write=True))
+        self.assertEqual(first[0], 200)
+        status, data = self.json_request(
+            'POST', '/api/share/add', {'account': 'fw867', 'paths': [target]},
+            self.auth(write=True))
+        self.assertEqual(status, 200)
+        self.assertEqual(data['result']['added'], [])
+        self.assertEqual(len(data['result']['skipped']), 1)
+        self.assertIn('已经是账号 fw867 的共享', data['result']['skipped'][0]['error'])
+
+    def test_one_bad_path_does_not_block_the_others(self):
+        first = self.target_dir('照片')
+        status, data = self.json_request(
+            'POST', '/api/share/add',
+            {'account': 'fw867', 'paths': [first, '/etc']}, self.auth(write=True))
+        self.assertEqual(status, 200)
+        self.assertEqual([item['shareName'] for item in data['result']['added']],
+                         ['fw867_nb_1'])
+        self.assertEqual(data['result']['errors'][0]['path'], '/etc')
+        self.assertIn('不在允许的根目录内', data['result']['errors'][0]['error'])
+
+    def test_multiple_paths_need_csrf(self):
+        first = self.target_dir('照片')
+        second = self.target_dir('视频')
+        status, data = self.json_request(
+            'POST', '/api/share/add', {'account': 'fw867', 'paths': [first, second]},
+            {'X-NN-Session': self.token, 'Content-Type': 'application/json'})
+        self.assertEqual(status, 403)
+        self.assertFalse(data['ok'])
+        self.assertIsNone(self.runner.argv_for('add_dir'))
 
 
 class RestoreCliTests(unittest.TestCase):

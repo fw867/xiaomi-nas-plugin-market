@@ -113,24 +113,51 @@ $ net view \\192.168.1.8          # 同一账号下出现两个共享
 
 插件服务监听 `127.0.0.1:18190`，页面经 nginx 走 `/plugin/<用户>/netneighbor/`。
 
+页面只有三块：**网络发现开关 + 主机名**、**共享目录列表**、**添加共享弹窗**。
+
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/healthz` | `{"ok": true, "version": "0.1.0"}` |
-| GET | `/api/status` | 发现服务状态、主机名/工作组、XAddrs、账号与共享列表、日志尾巴 |
+| GET | `/api/status` | 设置（开关/主机名）、发现服务状态、账号与共享列表；工作组、XAddrs、官方 wsdd 状态、最近取元数据时间仍在返回里（便于排查），页面不显示 |
 | GET | `/api/log` | 最近日志 |
-| POST | `/api/share/add` | 给账号加一个共享目录 |
-| POST | `/api/share/delete` | 删除插件自建的共享 |
-| POST | `/api/detect/restart` | 重启回应器并重发 Hello（Windows 里“丢了”时点这个） |
+| GET | `/api/dirs?account=fw867` | 账号数据根目录下的子目录（`shared` 标记已共享的），弹窗用 |
+| POST | `/api/discovery` | `{"enabled": true\|false}`：开 = 接管官方 wsdd + 起回应器；关 = 发 Bye + 还原官方 wsdd（幂等） |
+| POST | `/api/hostname` | `{"hostname": "..."}`：校验 → 落盘 → 重建回应器并重发 Hello |
+| POST | `/api/share/add` | `{"account","path","sharePoint"}`（单个，兼容旧版）或 `{"account","paths":[...]}`（多选；所有 `add_dir` 之后只跑一次 `init_config` + reload） |
+| POST | `/api/share/delete` | 删除插件自建的共享（`{"shareName": "<账号>_nb_<序号>"}`） |
+| POST | `/api/detect/restart` | 重启回应器并重发 Hello（排查用，页面上没有按钮） |
 
 写操作需要会话令牌 + `X-CSRF-Token`（与仓库其它插件一致）。页面由**插件服务**发出
 （nginx 里是 `proxy_pass`，不是静态 `alias`）：`index.html` 里的 `__SESSION_TOKEN__` /
-`__CSRF_TOKEN__` 占位符只有服务端会替换，改成 alias 会让页面拿到空令牌、所有接口 401。
+`__CSRF_TOKEN__` / `__PLUGIN_VERSION__` 占位符只有服务端会替换，改成 alias 会让页面拿到
+空令牌、所有接口 401。
+
+前端不写自动化测试，但 `web/app.js` 里引用的每个 id 都要在 `web/index.html` 里存在，
+用脚本核对：
+
+```bash
+python3 scripts/check_web_ids.py
+```
+
+### 主机名：改的是 Windows「网络」里显示的名字
+
+页面上的主机名保存后写进 `<DATA_DIR>/settings.json`（`settings['hostname']`），
+优先级是 `settings['hostname']` > `/etc/config/samba` 的 `option name` > `SmartStorage`。
+**这里改的只是 WSD 宣告的名字**（Windows 资源管理器「网络」里显示的那一个），
+SMB 服务名仍然由官方共享 app 的配置决定，改这里不会动 `smb.conf` 里的 `netbios name`。
+
+校验：长度 1–15，`[A-Za-z0-9][A-Za-z0-9._-]*`（NetBIOS 友好；对外宣告时按
+`wsd.py` 现有实现大写化）；非法输入返回 400 + 中文原因。
+
+「网络发现」开关的状态同样落盘在 `settings.json`：关闭后服务重启**不会**自动接管，
+直到用户在页面上重新打开。
 
 ## 五、安装后的行为
 
 - 服务：`xiaomi-netneighbor.service`（`/data/plugin/netneighbor/current/server.py`），
-  数据目录 `/data/plugin/netneighbor/data`；
-- 启动时接管官方发现服务（见第二节），停用/卸载时还原；
+  数据目录 `/data/plugin/netneighbor/data`（设置落盘在 `data/settings.json`）；
+- 「网络发现」开关默认打开（保持升级前的行为），关掉后停用/重启都不会再接管；
+  停用/卸载时一定还原官方 wsdd；
 - 需要 root：要执行 `systemctl`、写 UCI、调用 `smb_mgr.sh`。单元里用
   `ProtectSystem=full` + `ReadWritePaths=/etc/config /etc/systemd/system /data/plugin/netneighbor`
   把可写范围收到最小。
@@ -169,6 +196,10 @@ python3 -m unittest discover -s tests -v
 
 - 只管理**插件自建**的共享；app 里那个 `<账号>_<id>` 仍由官方界面管。
 - 插件新增的目录不会出现在共享 app 的界面上（它只认自己写的那一条），但 SMB 里正常可用。
+- **刚新增的共享在 Windows 里可能要等一下才能打开**：`smb.conf` 是即时生效的
+  （`testparm` 立刻能看到那一段），但 SMB 客户端会缓存共享列表与已建立的会话，刚点完
+  「确定」就双击新共享可能报「找不到网络路径 / 无法访问」；重开一次资源管理器窗口、
+  或断开重连（`net use \\<NAS-IP> /delete`）之后就正常了。2026-09-28 用户实测确认过这个现象。
 - **`list dirs` 与共享段不同步**：`sambauser` 的 `list dirs` 存的是目录路径，
   `sambashare` 才是共享段。若某目录只在 `list dirs` 里（例如共享段被删掉），页面会把它
   显示成「未共享」，此时可以用插件重新共享它；反过来，插件不会去动 `list dirs`，

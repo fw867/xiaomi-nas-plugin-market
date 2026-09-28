@@ -4,13 +4,17 @@
 这个模块只做三件事，全部与系统交互的地方都留了注入点（`runner`、`samba_mgr`、
 `systemctl`、`responder_factory`），所以单元测试可以在完全不碰系统的情况下跑：
 
-1. **发现服务**：启动时 `systemctl stop wsdd` + `killall wsdd` 兜底，再用 systemd
-   drop-in（`/etc/systemd/system/wsdd.service.d/netneighbor.conf`）把官方单元变成
+1. **发现服务（可选开关）**：页面上的「网络发现」开关打开时，启动时
+   `systemctl stop wsdd` + `killall wsdd` 兜底，再用 systemd drop-in
+   （`/etc/systemd/system/wsdd.service.d/netneighbor.conf`）把官方单元变成
    **空操作**，然后在**本进程内**用 `wsd.WsdResponder` 起一个自己的回应器
    （官方 wsdd 缺 `wsd:AppSequence`、又不响应 WS-Transfer `Get`，见 wsd.py 的说明）；
-   停止/卸载时发 Bye、删掉 drop-in、`daemon-reload` 并把官方服务起回来。
+   关闭时（或停止/卸载）发 Bye、删掉 drop-in、`daemon-reload` 并把官方服务起回来。
+   开关状态落盘在 `<DATA_DIR>/settings.json`，服务重启后按落盘状态生效。
 2. **账号 → 共享目录**：解析 `/etc/config/sambauser`、`/etc/config/sambashare` 与
    `/etc/samba/users.map`，列出每个账号当前有哪些共享；新增/删除走 `smb_mgr.sh`。
+   批量新增（`add_shares`）在**所有** `add_dir` 之后只跑一次 `init_config` + reload，
+   再逐个核对（`share_in_config`）。
 3. **命名空间**：插件自己建的共享叫 `<账号>_nb_<序号>`，永远不和 App 生成的
    `<账号>_<id>`（以及 `public`）撞名；删除时也只允许删自己这一族。
 
@@ -58,7 +62,7 @@ PLUGIN_KEY = 'netneighbor'
 APP_ROOT = Path(os.environ.get('APP_ROOT', '/etc'))
 VAR_ETC = Path(os.environ.get('VAR_ETC', '/var/etc'))
 DATA_DIR = Path(os.environ.get('DATA_DIR', '/data/plugin/netneighbor'))
-STATE_FILE = DATA_DIR / 'state.json'
+STATE_FILE = DATA_DIR / 'settings.json'
 WEB_DIR = Path(os.environ.get('WEB_DIR', str(Path(__file__).resolve().parent / 'web')))
 
 SAMBASHARE_CONFIG = APP_ROOT / 'config' / 'sambashare'
@@ -121,6 +125,8 @@ SHARE_PREFIX = '_nb_'
 SHARE_NAME_PATTERN = re.compile(r'^[^\s/\\\[\]:*?"<>|\x00-\x1f\x7f]{1,64}$')
 ACCOUNT_PATTERN = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.\-]{0,31}$')
 NAS_USER_PATTERN = re.compile(r'^u[0-9]{3,}$')
+# 主机名（Windows「网络」里显示的那一个）：NetBIOS 友好，1-15 位，首字符必须是字母或数字
+HOSTNAME_PATTERN = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,14}$')
 
 # 这些是 App / 系统在用的共享，插件一律不许删
 PROTECTED_SHARES = frozenset({'public', 'homes', 'printers', 'print$'})
@@ -216,22 +222,53 @@ def write_json(path: Path, value) -> None:
     atomic_write(path, json.dumps(value, ensure_ascii=False, sort_keys=True) + '\n')
 
 
-def load_settings() -> dict:
-    """插件自己的设置（元数据端口与 Hello 周期），坏文件不该拖垮启动。"""
-    saved = read_json(STATE_FILE, {})
-    settings = {'metadataPort': METADATA_PORT, 'helloInterval': HELLO_INTERVAL}
+def normalize_discovery_enabled(value, default: bool = True) -> bool:
+    """落盘的开关值解析：只有明确的假值才算「关闭」，坏值回退到默认。"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in ('1', 'true', 'yes', 'on'):
+            return True
+        if text in ('0', 'false', 'no', 'off', ''):
+            return False
+    return bool(default)
+
+
+def load_settings(path=None) -> dict:
+    """插件自己的设置（元数据端口、Hello 周期、发现开关、主机名）。
+
+    坏文件不该拖垮启动：每项都独立校验，读不懂的就回退到默认值。
+    `path` 默认是模块级的 `STATE_FILE`；Engine 会传自己 `data_dir` 下的那份，
+    这样单元测试的沙箱与真机数据目录不会互相影响。
+    """
+    saved = read_json(Path(path) if path else STATE_FILE, {})
+    settings = {
+        'metadataPort': METADATA_PORT,
+        'helloInterval': HELLO_INTERVAL,
+        'discoveryEnabled': True,       # 默认接管（升级前的行为），关闭后重启也不会自动接管
+        'hostname': '',
+    }
     if isinstance(saved, dict):
         for key in ('metadataPort', 'helloInterval'):
             value = saved.get(key)
             if isinstance(value, int) or (isinstance(value, str) and value.isdigit()):
                 settings[key] = int(value)
+        if 'discoveryEnabled' in saved:
+            settings['discoveryEnabled'] = normalize_discovery_enabled(
+                saved.get('discoveryEnabled'))
+        name = saved.get('hostname')
+        if isinstance(name, str) and hostname_valid(name):
+            settings['hostname'] = name.strip()
     settings['metadataPort'] = max(1, min(65535, int(settings['metadataPort'])))
     settings['helloInterval'] = max(0, int(settings['helloInterval']))
     return settings
 
 
-def save_settings(settings: dict) -> None:
-    write_json(STATE_FILE, settings)
+def save_settings(settings: dict, path=None) -> None:
+    write_json(Path(path) if path else STATE_FILE, settings)
 
 
 # ---------------------------------------------------------------------------
@@ -428,6 +465,37 @@ def config_option(path: Path, section_type: str, option: str, default: str = '')
     return default
 
 
+def hostname_valid(name) -> bool:
+    """主机名（WSD 宣告名）是否合法：1-15 位、NetBIOS 友好。
+
+    每条都不满足就返回 False（`hostname_error()` 负责给出中文原因）。
+    """
+    return HOSTNAME_PATTERN.match(str(name or '').strip()) is not None
+
+
+def hostname_error(name) -> str:
+    """非法主机名的中文原因；空串表示合法。"""
+    text = str(name or '').strip()
+    if not text:
+        return '请填写主机名'
+    if len(text) > 15:
+        return '主机名最长 15 个字符（当前 %d 个）：Windows 用的是 NetBIOS 名字' % len(text)
+    if not re.match(r'^[A-Za-z0-9]', text):
+        return '主机名要以字母或数字开头'
+    if not HOSTNAME_PATTERN.match(text):
+        return '主机名只能包含字母、数字、点、下划线与短横线'
+    return ''
+
+
+def validate_hostname(name) -> str:
+    """校验并返回主机名；非法时抛中文 Error。"""
+    text = str(name or '').strip()
+    message = hostname_error(text)
+    if message:
+        raise Error(message)
+    return text
+
+
 def lan_xaddrs(address: str, port: int) -> list:
     """XAddrs 就是 Windows 来取设备描述的地址。"""
     if not address:
@@ -450,6 +518,16 @@ def path_isdir(path) -> bool:
 
 def path_realpath(path) -> str:
     return os.path.realpath(path)
+
+
+def path_listdir(path) -> list:
+    """列目录做成可注入的钩子：测试要在沙箱里造目录树，不能真去读 /home。"""
+    return os.listdir(path)
+
+
+def path_islink(path) -> bool:
+    """是不是符号链接（列目录时要把软链跳过）。"""
+    return os.path.islink(path)
 
 
 def normalize_roots(roots) -> list:
@@ -664,7 +742,8 @@ class Engine:
     def __init__(self, data_dir=None, runner=None, responder_factory=None,
                  samba_mgr=None, systemctl=None, start_responder=True, on_log=None):
         self.data_dir = Path(data_dir) if data_dir else DATA_DIR
-        self.state_file = self.data_dir / 'state.json'
+        # 落盘设置（开关 + 主机名 + 端口/Hello 周期）；模块级同名常量是默认位置
+        self.state_file = self.data_dir / 'settings.json'
         self.identity_file = self.data_dir / 'wsd.json'
         self.samba_mgr = samba_mgr or SMB_MGR
         self.systemctl = systemctl or SYSTEMCTL
@@ -677,16 +756,27 @@ class Engine:
         self.discovery: dict = {
             'running': False, 'startedAt': 0, 'msg': '', 'managed': False,
             'dropin': False, 'metadataPosts': 0, 'lastMetadataAt': 0, 'port': 0,
+            'enabled': True,
         }
+        self.settings = load_settings(self.state_file)
+        self.explicit_hostname = str(self.settings.get('hostname') or '').strip()
         self.hostname, self.workgroup = samba_identity()
+        self.hostname = self._resolve_hostname()
+        self.discovery['enabled'] = bool(self.settings.get('discoveryEnabled', True))
         self.account_cache: tuple = (0.0, None)
         self.share_cache: tuple = (0.0, None)
         self.root_cache: tuple = (0.0, None)
-        self.settings = load_settings()
         self.on_log = on_log or (lambda message: None)
         self.responder = None
         if start_responder:
             self.start()
+
+    # ---- 身份（主机名 / 工作组）------------------------------------------
+    def _resolve_hostname(self) -> str:
+        """主机名优先级：settings['hostname'] > `/etc/config/samba` 的 `option name` > 默认值。"""
+        if self.explicit_hostname:
+            return self.explicit_hostname
+        return samba_config_value('name', DEFAULT_HOSTNAME)
 
     # ---- 日志 -----------------------------------------------------------
     def log(self, message: str) -> None:
@@ -1006,57 +1096,292 @@ class Engine:
         }
 
     # ---- 共享目录：新增 -------------------------------------------------
+    def _taken_for(self, account: str, extra=None) -> list:
+        """已占用的共享名：账号自己的全部共享段 + 全局段 id（防止跨账号撞名）。"""
+        names = {str(item['name']) for item in self.shares(force=True) if item.get('name')}
+        names.update(str(item) for item in self.taken_share_names())
+        names.update(str(item) for item in (extra or ()))
+        return sorted(names)
+
+    def account_dir_entries(self, account) -> list:
+        """账号当前的共享目录条目（`accounts()` 里归到它名下的那些）。"""
+        return list(self.account_entry(account).get('shares') or [])
+
     def add_share(self, account, path, share_point='', force_user='', user_list='') -> dict:
-        """给某个账号再加一个目录：校验 → `add_dir` → init_config + reload → 核对。"""
+        """给某个账号再加**一个**目录：校验 → `add_dir` → init_config + reload → 核对。
+
+        单个目录时行为与旧版完全一致（校验失败或 `add_dir` 失败都抛中文 Error，
+        HTTP 层回 400），结果里除了新的 `added/skipped/errors` 之外，仍带
+        `shareName/sharePoint/verified/inConfig/smbActive/reloadReturncode` 这些老字段。
+        """
+        result = self.add_shares(
+            account, [path], share_point=share_point, force_user=force_user,
+            user_list=user_list, mode='single')
+        if result['added']:
+            item = result['added'][0]
+            if not item.get('verified'):
+                # `smb_mgr.sh` 成功但配置里没有这个共享：要报错而不是假装成功
+                raise Error('共享 %s 没有出现在 /var/etc/smb.conf 里，操作未生效\n%s'
+                            % (item['shareName'], item.get('output', '')))
+            return {**item, 'added': result['added'], 'skipped': result['skipped'],
+                    'errors': list(item.get('errors') or []) + list(result['errors'])}
+        if result['errors']:
+            raise Error(result['errors'][0].get('error') or '添加共享目录失败')
+        skipped = result['skipped'][0] if result['skipped'] else {}
+        raise Error(skipped.get('error') or '没有可添加的目录')
+
+    def add_shares(self, account, paths, share_point='', force_user='', user_list='',
+                   mode='batch') -> dict:
+        """给某个账号一次加多个目录。
+
+        多目录时：先全部 `add_dir`（单个失败如实记下来、继续处理其余），随后
+        **只跑一次** `init_config` + `systemctl reload smb nmb`，再逐个核对。
+        `mode='single'` 时第一个目录的解析失败/已共享会抛 Error（保持旧接口行为）。
+        """
         account = str(account or '').strip()
         if not account:
             raise Error('请选择要添加目录的账号')
         entry = self.account_entry(account)
-        share_name = plugin_share_name(account, self.taken_share_names())
         # user_list 用账号名（smb_mgr.sh 自己加 samba 前缀）；默认就是这个账号
         users = validate_user_list(user_list, default=account)
         # force_user 默认取 sambauser 里的 NAS 用户号（uXXXX）
         force = validate_force_user(force_user or entry.get('user', ''))
-        directory = validate_share_path(path, self.allowed_roots())
+        roots = self.allowed_roots()
+        raw = paths if isinstance(paths, (list, tuple)) else ([] if paths in (None, '') else [paths])
+        values = [str(item).strip() for item in raw if str(item or '').strip()]
+        single = mode == 'single'
+        if not values:
+            if single:
+                # 保持旧接口的报错措辞（页面提示里带「路径」两个字）
+                raise Error('请填写要共享的目录路径')
+            raise Error('请选择要共享的目录')
+
+        # 账号当前已共享的路径（`missing` 的不算：`list dirs` 里有目录但没有共享段时，
+        # 那个目录其实**还没**共享出去，插件应该能把它共享出来）
+        existing: dict = {}
+        for share in self.account_dir_entries(account):
+            if share.get('missing'):
+                continue
+            path = str(share.get('path', '')).rstrip('/')
+            if path:
+                existing.setdefault(path, share)
+
+        wanted: list = []
+        seen: set = set()
+        for index, value in enumerate(values):
+            try:
+                directory = validate_share_path(value, roots)
+            except Error as error:
+                if single and index == 0:
+                    raise
+                wanted.append({'path': value, 'error': str(error)})
+                continue
+            if directory in seen:
+                wanted.append({'path': directory, 'error': '同一个目录在一次提交里出现了两次'})
+                continue
+            if directory in existing:
+                share = existing[directory]
+                wanted.append({'path': directory,
+                               'error': '这个目录已经是账号 %s 的共享：%s'
+                                        % (account, share.get('name', '')),
+                               'shareName': share.get('name', ''),
+                               'display': share.get('display', ''),
+                               'shared': True})
+                continue
+            seen.add(directory)
+            wanted.append({'path': directory})
+
+        resolved: list = []
+        problems: list = []
+        for item in wanted:
+            if item.get('error'):
+                problems.append(item)
+                continue
+            try:
+                resolved.append(self._prepare_share(
+                    account, item['path'], share_point, resolved))
+            except Error as error:
+                problems.append({'path': item['path'], 'error': str(error)})
+        if single and not resolved and problems:
+            first = problems[0]
+            raise Error(first.get('error') or '添加共享目录失败')
+        result = self._run_add_batch(account, resolved, users, force, skipped=problems)
+        if single and not result['added']:            # `add_dir` 失败：旧接口用 400 报错
+            first = result['errors'][0] if result['errors'] else {}
+            raise Error(first.get('error') or '添加共享目录失败')
+        return result
+
+    def _prepare_share(self, account: str, directory: str, share_point, resolved) -> dict:
+        """分配共享名与显示名（显示名没给就用目录名，与旧行为一致）。"""
+        taken = self._taken_for(account, [item['shareName'] for item in resolved])
+        share_name = plugin_share_name(account, taken)
+        if share_name in taken:
+            raise Error('共享名 %s 已被占用（本不该发生，请刷新后重试）' % share_name)
         point = validate_share_name(share_point) if str(share_point or '').strip() else \
             (posixpath.basename(directory.rstrip('/')) or share_name)
-        for item in self.accounts(force=True):
-            if item['account'] != account:
-                continue
-            for share in item['shares']:
-                if share.get('missing'):
-                    # `list dirs` 里有这个目录、但没有对应的共享段：它其实**还没**
-                    # 共享出去（accounts() 如实标成 missing）。跳过它，否则用户永远
-                    # 没法通过插件把这个目录共享出来（真机语义：`list dirs` 存的是
-                    # 目录路径，`sambashare` 才是共享）。
-                    continue
-                if share['path'].rstrip('/') and share['path'].rstrip('/') == directory:
-                    raise Error('这个目录已经是账号 %s 的共享：%s' % (account, share['name']))
-        if share_name in self.taken_share_names():
-            raise Error('共享名 %s 已被占用（本不该发生，请刷新后重试）' % share_name)
+        return {'path': directory, 'shareName': share_name, 'sharePoint': point}
 
-        command = add_dir_command(share_name, directory, users, point, force,
-                                  self.samba_mgr_path())
-        result = self.smb(command, '添加共享目录')
-        self.log('新增共享 %s → %s（账号 %s，force_user %s）'
-                 % (share_name, directory, users, force or '—'))
-        applied = self.apply_samba(share_name, expect_present=True)
+    def _run_add_batch(self, account: str, resolved: list, users: str, force: str,
+                       skipped=None) -> dict:
+        """`add_dir` × N → 一次 init_config + reload → 逐个核对。
+
+        一个都没得加（全部已共享/校验失败）时不再跑收尾命令：没有改动就不该 reload。
+        """
         self.account_cache = (0.0, None)
         self.share_cache = (0.0, None)
+        added: list = []
+        errors: list = [dict(item) for item in (skipped or [])]
+        if not resolved:
+            return {'added': added, 'skipped': [dict(item) for item in (skipped or [])],
+                    'errors': errors, 'account': account, 'apply': None}
+        for item in resolved:
+            directory, share_name = item['path'], item['shareName']
+            point = item['sharePoint']
+            command = add_dir_command(share_name, directory, users, point, force,
+                                      self.samba_mgr_path())
+            try:
+                result = self.smb(command, '添加共享目录')
+            except Error as error:
+                # 任一目录失败要如实报出来，并继续处理其余目录
+                errors.append({'path': directory, 'shareName': share_name,
+                               'error': str(error)})
+                continue
+            self.log('新增共享 %s → %s（账号 %s，force_user %s）'
+                     % (share_name, directory, users, force or '—'))
+            added.append({
+                'shareName': share_name,
+                'sharePoint': point,
+                'account': account,
+                'path': directory,
+                'users': users.split(),
+                'forceUser': force,
+                'stdout': result.stdout,
+                'stderr': result.stderr,
+                'command': describe(command, result),
+            })
+        applied = self.apply_samba_batch([item['shareName'] for item in added])
+        for item in added:
+            state = applied['shares'].get(item['shareName'], {'present': False})
+            item_errors = list(applied['errors'])
+            if not state.get('present'):
+                item_errors.append('共享 %s 没有出现在 /var/etc/smb.conf 里，操作未生效\n%s'
+                                   % (item['shareName'], applied['output']))
+                errors.append({'path': item['path'], 'shareName': item['shareName'],
+                               'error': item_errors[-1]})
+            item.update({
+                'reloaded': applied['reloadReturncode'] == 0 or bool(state.get('present')),
+                'verified': bool(state.get('present')),
+                'inConfig': bool(state.get('present')),
+                'smbActive': applied['smbActive'],
+                'initReturncode': applied['initReturncode'],
+                'reloadReturncode': applied['reloadReturncode'],
+                'errors': item_errors,
+                'output': item['command'] + '\n' + applied['output'],
+            })
+        return {'added': added, 'skipped': [dict(item) for item in (skipped or [])],
+                'errors': errors, 'account': account, 'apply': applied}
+
+    def apply_samba_batch(self, share_names) -> dict:
+        """`init_config` + `systemctl reload smb nmb` **一次**，然后核对每个共享。
+
+        与 `apply_samba` 的区别只有一个：批量增删时只跑一次收尾命令。
+        `verified` 的判定沿用 `apply_samba`：配置里有段、或者服务确实是 active。
+        """
+        names = [str(item) for item in (share_names or []) if str(item or '').strip()]
+        commands = []
+        errors = []
+        result = self.exec(init_config_command(self.samba_mgr_path()), timeout=60)
+        commands.append(describe(init_config_command(self.samba_mgr_path()), result))
+        if not result.ok:
+            errors.append(translate_failure(
+                '%s %s' % (result.stdout, result.stderr), '生成 smb.conf'))
+        reload_result = self.exec(self.reload_command(), timeout=30)
+        commands.append(describe(self.reload_command(), reload_result))
+        if not reload_result.ok:
+            errors.append('重新加载 Samba 服务返回非 0（exit %d）' % reload_result.returncode)
+        present = {name: self.share_in_config(name) for name in names}
+        # 与 `apply_samba` 一致：只有配置里真的缺段时才去问服务状态
+        active = self.smb_service_active() if not all(present.values()) else False
         return {
-            'shareName': share_name,
-            'sharePoint': point,
-            'account': account,
-            'path': directory,
-            'users': users.split(),
-            'forceUser': force,
-            'reloaded': applied['reloadReturncode'] == 0 or applied['verified'],
+            'shares': {name: {'present': bool(present[name]),
+                              'verified': bool(present[name]) or active}
+                       for name in names},
+            'inConfig': all(present.values()) if names else True,
+            'smbActive': active,
+            'initReturncode': result.returncode,
+            'reloadReturncode': reload_result.returncode,
+            'errors': errors,
             'stdout': result.stdout,
             'stderr': result.stderr,
-            'output': describe(command, result) + '\n' + applied['output'],
-            **{key: applied[key] for key in
-               ('verified', 'inConfig', 'smbActive', 'reloadReturncode', 'errors')},
+            'output': '\n'.join(commands),
         }
+
+    # ---- 账号数据目录与目录浏览 -----------------------------------------
+    def account_data_root(self, account: str) -> str:
+        """账号的数据根目录：`<账号>` → `sambauser` 的 `option user` → `/home/<uXXXX>/pool0/data`。
+
+        拿不到 NAS 用户号时，退回允许根目录里第一条 `/home/...` 形态的。
+        """
+        account = str(account or '').strip()
+        if not account:
+            raise Error('请选择账号')
+        entry = self.account_entry(account)
+        user_id = str(entry.get('user', '') or '').strip()
+        if user_id:
+            # 真机布局就是 `/home/<NAS用户>/pool0/data`；这里直接按 POSIX 拼字符串
+            # （不要用 `Path`，它在 Windows 上会拼出反斜杠，白名单比对会失效）
+            canonical = '/home/%s/pool0/data' % user_id
+            for candidate in (canonical, data_root_for(Path('/'), user_id)):
+                if candidate and path_isdir(candidate):
+                    return posixpath.normpath(candidate)
+            return posixpath.normpath(canonical)
+        for root in self.allowed_roots():
+            if root.startswith('/home/') and '*' not in root:
+                return root
+        return ''
+
+    def browse_account_dirs(self, account: str) -> dict:
+        """账号数据根目录下的**子目录**列表（只列目录，跳过隐藏目录与符号链接）。"""
+        account = str(account or '').strip()
+        root = self.account_data_root(account)
+        if not root:
+            raise Error('没有找到账号 %s 的数据目录（/etc/config/sambauser 里没有可用的用户号）'
+                        % account)
+        if not path_exists(root):
+            raise Error('数据目录不存在：%s' % root)
+        if not path_isdir(root):
+            raise Error('数据目录不是一个目录：%s' % root)
+        entries = []
+        for name in sorted(path_listdir(root), key=lambda item: str(item)):
+            text = str(name)
+            if not text or text.startswith('.'):
+                continue
+            path = posixpath.join(root, text)
+            if path_islink(path):
+                continue                        # 符号链接一律不列（可能是越界的软链）
+            if not path_isdir(path):
+                continue
+            entries.append((text, path))
+        known: dict = {}
+        for share in self.account_dir_entries(account):
+            if share.get('missing'):
+                # `list dirs` 里有目录但没有共享段：它其实**还没**共享出去，
+                # 弹窗里要能勾选（否则用户永远没法把这个目录共享出来）。
+                continue
+            path = str(share.get('path', '')).rstrip('/')
+            if path:
+                known.setdefault(path, share)
+        dirs = []
+        for name, path in entries:
+            share = known.get(path.rstrip('/'))
+            dirs.append({
+                'name': name,
+                'path': path,
+                'shared': share is not None,
+                'shareName': (share or {}).get('name', ''),
+                'display': (share or {}).get('display', ''),
+            })
+        return {'ok': True, 'account': account, 'root': root, 'dirs': dirs}
 
     # ---- 共享目录：删除 -------------------------------------------------
     def delete_share(self, share_name) -> dict:
@@ -1289,40 +1614,64 @@ class Engine:
         self.log('wsd: ' + text)
 
     def start(self) -> None:
-        """启动发现服务：先接管官方 wsdd，再起本进程内的回应器。
+        """按落盘的开关启动发现服务。
+
+        - 开关打开（默认）：先接管官方 wsdd，再起本进程内的回应器；
+        - 开关关闭：只把官方 wsdd 放回去（幂等），不起回应器，
+          `discovery['running']` 保持 False。
+        """
+        with self.lock:
+            self.hostname, self.workgroup = samba_identity()
+            self.hostname = self._resolve_hostname()
+            self.responder = None
+            enabled = bool(self.settings.get('discoveryEnabled', True))
+            self.discovery['enabled'] = enabled
+            if not enabled:
+                self.wsdd_restore()
+                self.discovery['running'] = False
+                self.discovery['enabled'] = False
+                self.discovery['msg'] = '网络发现已关闭（官方 wsdd 已还原，插件未接管）'
+                self.log(self.discovery['msg'])
+                return
+            self.wsdd_takeover()
+            self._start_responder_locked()
+
+    def _start_responder_locked(self) -> bool:
+        """起回应器并把状态写进 `self.discovery`；返回是否成功。
 
         回应器启动要重试几次：真机上「停官方 wsdd」与「自己绑 3702」之间存在竞态
         （官方进程可能还在退出中），一次失败就永久放弃会让页面一直显示「未运行」。
         """
-        with self.lock:
-            self.hostname, self.workgroup = samba_identity()
-            self.responder = None
-            self.wsdd_takeover()
-            last_error = None
-            for attempt in range(1, max(1, RESPONDER_START_RETRIES) + 1):
-                responder = self.new_responder()
+        last_error = None
+        for attempt in range(1, max(1, RESPONDER_START_RETRIES) + 1):
+            responder = self.new_responder()
+            try:
+                responder.start()
+            except Exception as error:                          # noqa: BLE001 端口被占也不能拖垮插件页
+                last_error = error
                 try:
-                    responder.start()
-                except Exception as error:                      # noqa: BLE001 端口被占也不能拖垮插件页
-                    last_error = error
-                    if attempt < max(1, RESPONDER_START_RETRIES):
-                        self.log('WSD 回应器第 %d 次启动失败：%s，%.1f 秒后重试'
-                                 % (attempt, error, RESPONDER_START_GAP))
-                        time.sleep(max(0.0, RESPONDER_START_GAP))
-                        continue
-                    break
-                self.responder = responder
-                self.discovery['running'] = True
-                self.discovery['startedAt'] = int(time.time())
-                self.discovery['port'] = int(self.settings['metadataPort'])
-                self.discovery['msg'] = '发现服务已启动'
-                self.log('WSD 回应器已启动：%s / %s（%s）'
-                         % (self.hostname, self.workgroup, self.xaddrs_text()))
-                return
-            self.discovery['running'] = False
-            self.discovery['msg'] = 'WSD 回应器启动失败：%s' % last_error
-            self.responder = None
-            self.log(self.discovery['msg'])
+                    responder.stop()                            # 失败实例自己收拾（见 wsd.py）
+                except Exception:                               # noqa: BLE001
+                    pass
+                if attempt < max(1, RESPONDER_START_RETRIES):
+                    self.log('WSD 回应器第 %d 次启动失败：%s，%.1f 秒后重试'
+                             % (attempt, error, RESPONDER_START_GAP))
+                    time.sleep(max(0.0, RESPONDER_START_GAP))
+                    continue
+                break
+            self.responder = responder
+            self.discovery['running'] = True
+            self.discovery['startedAt'] = int(time.time())
+            self.discovery['port'] = int(self.settings['metadataPort'])
+            self.discovery['msg'] = '发现服务运行中'
+            self.log('WSD 回应器已启动：%s / %s（%s）'
+                     % (self.hostname, self.workgroup, self.xaddrs_text()))
+            return True
+        self.discovery['running'] = False
+        self.discovery['msg'] = 'WSD 回应器启动失败：%s' % last_error
+        self.responder = None
+        self.log(self.discovery['msg'])
+        return False
 
     def xaddrs_text(self) -> str:
         try:
@@ -1346,6 +1695,7 @@ class Engine:
         with self.lock:
             self.stop_responder()
             self.hostname, self.workgroup = samba_identity()
+            self.hostname = self._resolve_hostname()
             responder = self.new_responder()
             try:
                 responder.start()
@@ -1364,12 +1714,75 @@ class Engine:
             self.log('已重新宣告（Hello x%d）' % max(1, times))
         return self.snapshot()
 
+    # ---- 开关与主机名（页面上的两个写操作）------------------------------
+    def set_discovery_enabled(self, enabled) -> dict:
+        """打开 = 接管官方 wsdd + 起回应器；关闭 = 发 Bye + 把官方 wsdd 原样还原。
+
+        状态落盘到 `settings.json`，所以服务重启后按这里的结果生效。
+        """
+        target = normalize_discovery_enabled(enabled, bool(self.settings.get('discoveryEnabled')))
+        with self.lock:
+            self.settings['discoveryEnabled'] = bool(target)
+            save_settings(self.settings, self.state_file)
+            self.discovery['enabled'] = bool(target)
+            if target:
+                self.hostname, self.workgroup = samba_identity()
+                self.hostname = self._resolve_hostname()
+                self.wsdd_takeover()
+                self._start_responder_locked()
+                self.log('网络发现已打开：已接管官方 wsdd 并启动回应器')
+            else:
+                # 幂等：发 Bye → 删 drop-in → daemon-reload → start wsdd。
+                # 官方 wsdd 本来就在跑、drop-in 不存在时也要成功返回。
+                self.wsdd_restore()
+                self.discovery['running'] = False
+                self.discovery['enabled'] = False
+                self.discovery['managed'] = False
+                self.discovery['msg'] = '网络发现已关闭（官方 wsdd 已还原，插件未接管）'
+                self.log(self.discovery['msg'])
+        return self.snapshot()
+
+    def set_hostname(self, name) -> dict:
+        """改 WSD 宣告的主机名：校验 → 落盘 → 重建回应器并重发 Hello。"""
+        value = validate_hostname(name)
+        with self.lock:
+            self.settings['hostname'] = value
+            save_settings(self.settings, self.state_file)
+            self.explicit_hostname = value
+            previous = self.hostname
+            self.hostname, self.workgroup = samba_identity()
+            self.hostname = self._resolve_hostname()
+        if not bool(self.settings.get('discoveryEnabled', True)):
+            # 关闭状态下不起回应器：名字已经落盘，下次打开时生效
+            self.log('主机名已保存为 %s（网络发现已关闭，下次打开时生效）' % value)
+            return self.snapshot()
+        with self.lock:
+            self.stop_responder()                               # 先发 Bye，Windows 里的旧名字消失
+            if not self._start_responder_locked():
+                raise Error('主机名已保存为 %s，但回应器重建失败：%s'
+                            % (value, self.discovery['msg']))
+            responder = self.responder
+            try:
+                responder.announce_hello(times=2)               # 用新名字立刻重新宣告
+            except Exception as error:                          # noqa: BLE001
+                self.log('重新宣告失败（主机名已生效）：%s' % error)
+            self.discovery['msg'] = '已切换到主机名 %s' % value
+            self.log('主机名 %s → %s（已重建回应器并重发 Hello）' % (previous or '—', value))
+        return self.snapshot()
+
     def shutdown(self) -> None:
         """服务停止：先发 Bye，再把官方 wsdd 放回去。"""
         self.stop_responder()
         self.wsdd_restore()
 
     # ---- 状态快照 -------------------------------------------------------
+    def settings_snapshot(self) -> dict:
+        """页面要用的落盘设置：开关与主机名。"""
+        return {
+            'discoveryEnabled': bool(self.settings.get('discoveryEnabled', True)),
+            'hostname': self.hostname,
+        }
+
     def status(self) -> dict:
         responder = self.responder
         xaddrs = []
@@ -1386,11 +1799,15 @@ class Engine:
                 xaddrs = []
         if not xaddrs and address:
             xaddrs = lan_xaddrs(address, metadata_port)
+        enabled = bool(self.settings.get('discoveryEnabled', True))
+        running = bool(self.discovery['running'])
         discovery = {
-            'running': bool(self.discovery['running']),
+            'running': running,
+            'enabled': enabled,
             'startedAt': int(self.discovery['startedAt']),
             'message': self.discovery['msg'] or (
-                '发现服务运行中' if self.discovery['running'] else '发现服务未运行'),
+                '发现服务运行中' if running else (
+                    '网络发现已关闭' if not enabled else '发现服务未运行')),
             'hostname': self.hostname,
             'workgroup': self.workgroup,
             'xaddrs': xaddrs,
@@ -1408,6 +1825,9 @@ class Engine:
         return {
             'ok': True,
             'version': installed_version(),
+            # 页面只读 settings（开关 + 主机名）；discovery 里的工作组/地址/官方 wsdd 状态
+            # 等字段仍然返回，方便真机排查，只是页面不再显示。
+            'settings': self.settings_snapshot(),
             'discovery': discovery,
             'accounts': self.accounts(),
             'allowedRoots': self.allowed_roots(),

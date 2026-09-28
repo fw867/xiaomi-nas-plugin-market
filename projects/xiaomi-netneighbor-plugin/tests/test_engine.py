@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import posixpath
 import tempfile
@@ -216,6 +217,8 @@ class Sandbox:
             patch.object(engine, 'path_exists', self.path_exists),
             patch.object(engine, 'path_isdir', self.path_isdir),
             patch.object(engine, 'path_realpath', self.path_realpath),
+            patch.object(engine, 'path_listdir', self.path_listdir),
+            patch.object(engine, 'path_islink', self.path_islink),
             patch.object(engine, 'SAMBASHARE_CONFIG', self.root / 'etc' / 'config' / 'sambashare'),
             patch.object(engine, 'SAMBAUSER_CONFIG', self.root / 'etc' / 'config' / 'sambauser'),
             patch.object(engine, 'SAMBA_CONFIG', self.root / 'etc' / 'config' / 'samba'),
@@ -292,6 +295,23 @@ class Sandbox:
     def path_realpath(self, path) -> str:
         # 先让操作系统解析（真实目录是沙箱里的那个），再映射回受管 POSIX 路径
         return self.virtual(os.path.realpath(str(self.real(path))))
+
+    def path_listdir(self, path) -> list:
+        """列目录：只读沙箱里的真实目录，绝不碰宿主机的 /home。"""
+        return os.listdir(str(self.real(path)))
+
+    def path_islink(self, path) -> bool:
+        return os.path.islink(str(self.real(path)))
+
+    def symlink(self, target, link) -> bool:
+        """在沙箱里造符号链接；平台不支持时返回 False（调用方据此 skip）。"""
+        link_path = self.real(link)
+        link_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.symlink(str(self.real(target)), str(link_path))
+        except (OSError, NotImplementedError, AttributeError):
+            return False
+        return True
 
     # ---- 沙箱内的文件读写 -------------------------------------------------
     @property
@@ -409,6 +429,18 @@ class EngineHarness(unittest.TestCase):
         target = self.root / 'home' / 'u3943892' / 'pool0' / 'data'
         target.mkdir(parents=True, exist_ok=True)
         return target
+
+    def data_child(self, name):
+        """在数据根目录下建目录（返回受管 POSIX 路径）。"""
+        target = self.data_dir() / name
+        target.mkdir(parents=True, exist_ok=True)
+        return self.sandbox.virtual(target)
+
+    def data_file(self, name, text='x'):
+        """在数据根目录下建文件（返回受管 POSIX 路径）。"""
+        target = self.data_dir() / name
+        target.write_text(text, encoding='utf-8')
+        return self.sandbox.virtual(target)
 
     def drop_list_dirs(self):
         """去掉 sambauser 里的 `list dirs`。
@@ -1419,6 +1451,468 @@ class WsdResponderStartFailureTests(unittest.TestCase):
         self.assertTrue(servers[0].shutdown_called)
         self.assertTrue(servers[0].server_close_called)
         self.assertTrue(udp.closed)
+
+
+class SambaIdentityAndHostnameTests(unittest.TestCase):
+    """主机名校验与生效优先级（纯函数，不需要沙箱）。"""
+
+    def test_accepts_netbios_friendly_names(self):
+        for good in ['NAS', 'SmartStorage', 'my-nas', 'nas_1.example', 'a' * 15, 'fw867']:
+            with self.subTest(good=good):
+                self.assertTrue(engine.hostname_valid(good))
+                self.assertEqual(engine.validate_hostname(good), good)
+                self.assertEqual(engine.hostname_error(good), '')
+
+    def test_rejects_bad_names_with_chinese_reasons(self):
+        cases = {
+            '': '请填写主机名',
+            '   ': '请填写主机名',
+            'a' * 16: '最长 15 个字符',
+            '-nas': '字母或数字开头',
+            '.nas': '字母或数字开头',
+            'nas 01': '只能包含',
+            'nas/01': '只能包含',
+            '存储': '字母或数字开头',
+        }
+        for bad, needle in cases.items():
+            with self.subTest(bad=bad):
+                self.assertFalse(engine.hostname_valid(bad))
+                self.assertIn(needle, engine.hostname_error(bad))
+                with self.assertRaises(Error) as caught:
+                    engine.validate_hostname(bad)
+                self.assertIn(needle, str(caught.exception))
+
+    def test_hostname_precedence_settings_then_samba_then_default(self):
+        """优先 settings['hostname'] > /etc/config/samba 的 option name > SmartStorage。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox = Sandbox(tmp)
+            self.addCleanup(sandbox.close)
+            samba = sandbox.root / 'etc' / 'config' / 'samba'
+            engine_obj = sandbox.engine
+            # 1) 没有落盘设置：用 /etc/config/samba 里的名字
+            self.assertEqual(engine_obj._resolve_hostname(), 'SmartStorage')
+            samba.write_text("config samba 'global'\n\toption name 'MyNAS'\n", encoding='utf-8')
+            self.assertEqual(engine_obj._resolve_hostname(), 'MyNAS')
+            # 2) 落盘设置优先
+            engine_obj.explicit_hostname = 'Custom1'
+            self.assertEqual(engine_obj._resolve_hostname(), 'Custom1')
+            # 3) 落盘设置被清掉后回到 Samba 的名字
+            engine_obj.explicit_hostname = ''
+            self.assertEqual(engine_obj._resolve_hostname(), 'MyNAS')
+
+
+class DiscoveryToggleTests(EngineHarness):
+    """「网络发现」开关：落盘、重启后生效、关闭幂等。"""
+
+    def test_settings_default_to_enabled(self):
+        self.build()
+        data = self.engine.status()
+        self.assertEqual(data['settings'], {'discoveryEnabled': True, 'hostname': 'SmartStorage'})
+        self.assertTrue(data['discovery']['enabled'])
+        self.assertTrue(self.engine.discovery['enabled'])
+
+    def test_disabled_is_persisted_and_does_not_take_over_on_restart(self):
+        self.build()
+        self.manager()
+        self.engine.start()
+        self.assertTrue(self.engine.discovery['dropin'])
+        self.assertTrue(self.engine.discovery['running'])
+
+        snapshot = self.engine.set_discovery_enabled(False)
+        self.assertFalse(snapshot['settings']['discoveryEnabled'])
+        self.assertFalse(snapshot['discovery']['running'])
+        self.assertFalse(snapshot['discovery']['managed'])
+        self.assertFalse(snapshot['discovery']['wsddDropin'])
+        self.assertFalse(self.sandbox.dropin.exists())          # drop-in 被删掉
+        self.assertIsNone(self.engine.responder)
+
+        # 落盘：settings.json 里 discoveryEnabled = false
+        saved = json.loads((self.sandbox.data / 'settings.json').read_text(encoding='utf-8'))
+        self.assertIs(saved['discoveryEnabled'], False)
+        self.assertTrue(saved['hostname'] == '')
+
+        # 重启（新 Engine 走同一个 DATA_DIR / 同一个 runner）：关闭状态不自动接管
+        self.runner.calls.clear()
+        restarted = Engine(data_dir=self.sandbox.data, runner=(lambda: self.runner),
+                           responder_factory=FakeResponder, samba_mgr=self.sandbox.smb_mgr,
+                           systemctl='/bin/systemctl', start_responder=False)
+        restarted.start()
+        self.assertFalse(restarted.discovery['running'])
+        self.assertFalse(restarted.discovery['enabled'])
+        self.assertFalse(restarted.discovery['managed'])
+        self.assertIsNone(restarted.responder)
+        self.assertFalse(self.sandbox.dropin.exists())
+        self.assertFalse(any('mask' in call for call in self.runner.calls))
+        self.assertFalse(any('stop' in call for call in self.runner.calls))
+
+    def test_disabled_is_idempotent_even_when_nothing_was_managed(self):
+        """关闭时：官方 wsdd 本来就在跑、drop-in 不存在，也要成功返回。"""
+        self.build()
+        self.manager()
+        self.engine.set_discovery_enabled(False)                # 从没接管过就关闭
+        self.engine.set_discovery_enabled(False)                # 再来一次
+        starts = [call for call in self.runner.calls
+                  if call[:3] == ['/bin/systemctl', 'start', 'wsdd']]
+        self.assertEqual(len(starts), 2)                        # 每次都是幂等的 start
+        self.assertFalse(self.sandbox.dropin.exists())
+        self.assertFalse(self.engine.discovery['running'])
+        self.assertIn('没有需要清理的 drop-in',
+                      '\n'.join(self.engine.recent_log(50)))
+
+    def test_disabled_restores_official_wsdd(self):
+        self.build()
+        self.manager()
+        self.engine.start()
+        self.runner.calls.clear()
+        self.engine.set_discovery_enabled(False)
+        self.assertIn(['/bin/systemctl', 'daemon-reload'], self.runner.calls)
+        self.assertIn(['/bin/systemctl', 'start', 'wsdd'], self.runner.calls)
+
+    def test_disabled_responder_is_not_started_and_wsdd_is_restored(self):
+        self.build(runner=FakeRunner(answers={
+            '/bin/systemctl stop wsdd': (0, '', ''), 'killall': (0, '', '')}))
+        self.engine.set_discovery_enabled(True)
+        self.assertTrue(self.engine.discovery['running'])
+        self.runner.calls.clear()
+        snapshot = self.engine.set_discovery_enabled('off')      # 字符串也要认
+        self.assertFalse(snapshot['discovery']['running'])
+        self.assertEqual(FakeResponder.instances[-1].stopped, True)
+        self.assertEqual(self.engine.responder, None)
+        self.assertIn(['/bin/systemctl', 'start', 'wsdd'], self.runner.calls)
+
+    def test_reenabling_takes_over_again(self):
+        self.build()
+        self.manager()
+        self.engine.set_discovery_enabled(False)
+        self.engine.set_discovery_enabled(True)
+        self.assertTrue(self.engine.discovery['enabled'])
+        self.assertTrue(self.engine.discovery['running'])
+        self.assertTrue(self.engine.discovery['dropin'])
+        self.assertTrue(self.sandbox.dropin.exists())
+        self.assertTrue(self.engine.responder.started)
+
+
+class SetHostnameTests(EngineHarness):
+    """主机名保存：校验 → 落盘 → 重建回应器 + 重发 Hello。"""
+
+    def test_saves_name_and_rebuilds_responder_with_hello(self):
+        self.build()
+        self.manager()
+        self.engine.start()
+        first = self.engine.responder
+        self.assertEqual(first.hostname, 'SmartStorage')
+
+        snapshot = self.engine.set_hostname('XiaoMiNAS')
+
+        self.assertTrue(first.stopped)                          # 旧的先发 Bye
+        rebuilt = self.engine.responder
+        self.assertIsNot(rebuilt, first)
+        self.assertEqual(rebuilt.hostname, 'XiaoMiNAS')         # 新名字立刻生效
+        self.assertEqual(rebuilt.hellos, [2])                   # 重发 Hello
+        self.assertEqual(snapshot['settings']['hostname'], 'XiaoMiNAS')
+        self.assertEqual(snapshot['discovery']['hostname'], 'XiaoMiNAS')
+        self.assertTrue(snapshot['discovery']['running'])
+        saved = json.loads((self.sandbox.data / 'settings.json').read_text(encoding='utf-8'))
+        self.assertEqual(saved['hostname'], 'XiaoMiNAS')
+        self.assertEqual(self.engine.new_responder().hostname, 'XiaoMiNAS')
+
+    def test_priority_beats_samba_name_after_save(self):
+        self.build()
+        self.manager()
+        self.engine.start()
+        self.assertEqual(self.engine.hostname, 'SmartStorage')
+        self.engine.set_hostname('Custom01')
+        self.assertEqual(self.engine.hostname, 'Custom01')
+        # 即使 /etc/config/samba 里的名字变了，落盘的设置仍然优先
+        (self.sandbox.root / 'etc' / 'config' / 'samba').write_text(
+            "config samba 'global'\n\toption name 'MyNAS'\n", encoding='utf-8')
+        self.assertEqual(self.engine._resolve_hostname(), 'Custom01')
+
+    def test_invalid_name_is_rejected_and_nothing_changes(self):
+        self.build()
+        self.manager()
+        self.engine.start()
+        responder = self.engine.responder
+        for bad in ['', 'a' * 16, '-bad', 'bad name', '存储']:
+            with self.subTest(bad=bad), self.assertRaises(Error):
+                self.engine.set_hostname(bad)
+        self.assertIs(self.engine.responder, responder)         # 没有重建
+        self.assertFalse(responder.stopped)
+        self.assertEqual(self.engine.hostname, 'SmartStorage')
+        self.assertFalse((self.sandbox.data / 'settings.json').exists())
+
+    def test_saved_while_discovery_is_off_starts_no_responder(self):
+        self.build()
+        self.manager()
+        self.engine.set_discovery_enabled(False)
+        snapshot = self.engine.set_hostname('OffMode01')
+        self.assertIsNone(self.engine.responder)                # 关闭状态下不起回应器
+        self.assertFalse(snapshot['discovery']['running'])
+        self.assertEqual(snapshot['settings']['hostname'], 'OffMode01')
+        # 重新打开后用的是落盘的新名字
+        self.engine.set_discovery_enabled(True)
+        self.assertEqual(self.engine.hostname, 'OffMode01')
+        self.assertEqual(self.engine.responder.hostname, 'OffMode01')
+
+
+class AccountDataRootTests(EngineHarness):
+    """数据根目录的推导：账号 → sambauser 的 option user → /home/<uXXXX>/pool0/data。"""
+
+    def test_root_from_sambauser_user(self):
+        self.build()
+        self.data_dir()
+        self.assertEqual(self.engine.account_data_root('fw867'), NAS_DATA_ROOT)
+        self.assertEqual(self.engine.account_data_root('admin'),
+                         '/home/u1000001/pool0/data')
+
+    def test_unknown_account_and_empty_account(self):
+        self.build()
+        with self.assertRaises(Error) as caught:
+            self.engine.account_data_root('nobody')
+        self.assertIn('没有这个账号', str(caught.exception))
+        with self.assertRaises(Error) as caught:
+            self.engine.account_data_root('')
+        self.assertIn('请选择账号', str(caught.exception))
+
+    def test_falls_back_to_first_home_root_without_nas_user(self):
+        self.build()
+        self.sandbox.samba_user.write_text(
+            "config sambauser 'x_1'\n\toption name 'fw867'\n", encoding='utf-8')
+        self.assertEqual(self.engine.account_data_root('fw867'), NAS_DATA_ROOT)
+
+    def test_browse_reports_missing_root(self):
+        self.build()
+        self.data_dir().rmdir()
+        with self.assertRaises(Error) as caught:
+            self.engine.browse_account_dirs('fw867')
+        self.assertIn('数据目录不存在', str(caught.exception))
+
+
+class BrowseAccountDirsTests(EngineHarness):
+    """弹窗里的目录列表：只列目录、跳过隐藏目录与符号链接、标注已共享。"""
+
+    def test_lists_only_subdirectories_with_shared_flags(self):
+        self.build()
+        self.data_dir()
+        photos = self.data_child('照片')
+        videos = self.data_child('视频')
+        # 默认配置里 `我的照片` 已经由 App 的共享段覆盖（段 id u3943892_nb_1）
+        shared_dir = self.data_child('我的照片')
+        self.data_file('readme.txt')                        # 文件不列
+        self.data_child('.hidden')                          # 隐藏目录不列
+
+        data = self.engine.browse_account_dirs('fw867')
+
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['account'], 'fw867')
+        self.assertEqual(data['root'], NAS_DATA_ROOT)
+        names = [item['name'] for item in data['dirs']]
+        self.assertEqual(names, sorted(['照片', '视频', '我的照片']))
+        self.assertNotIn('readme.txt', names)
+        self.assertNotIn('.hidden', names)
+        by_path = {item['path']: item for item in data['dirs']}
+        self.assertTrue(by_path[shared_dir]['shared'])
+        self.assertEqual(by_path[shared_dir]['shareName'], 'u3943892_nb_1')
+        self.assertEqual(by_path[shared_dir]['display'], '照片-3943892')
+        self.assertFalse(by_path[photos]['shared'])
+        self.assertEqual(by_path[photos]['shareName'], '')
+        self.assertFalse(by_path[videos]['shared'])
+
+    def test_directory_shared_by_the_plugin_is_marked(self):
+        self.build()
+        self.manager()
+        self.drop_list_dirs()
+        target = self.data_child('下载')
+        self.engine.add_share('fw867', target)
+        data = self.engine.browse_account_dirs('fw867')
+        item = next(entry for entry in data['dirs'] if entry['path'] == target)
+        self.assertTrue(item['shared'])
+        self.assertEqual(item['shareName'], 'fw867_nb_1')
+        self.assertEqual(item['display'], '下载')
+
+    def test_directory_listed_without_a_share_section_is_not_shared(self):
+        """`list dirs` 里有目录但没有共享段：它不是共享，仍要能勾选。"""
+        self.build()
+        self.manager()
+        self.data_child('下载')
+
+        listed = next(share for share in self.engine.accounts()[0]['shares']
+                      if share['path'] == NAS_DATA_ROOT + '/下载')
+        self.assertTrue(listed['missing'])          # 引擎如实标成「配置里有目录、没有共享段」
+        self.assertEqual(listed['name'], '')
+
+        data = self.engine.browse_account_dirs('fw867')
+        item = next(entry for entry in data['dirs'] if entry['name'] == '下载')
+        self.assertFalse(item['shared'])
+        self.assertEqual(item['shareName'], '')
+        self.assertEqual(item['display'], '')
+
+    def test_symlinked_directory_is_skipped(self):
+        self.build()
+        self.data_dir()
+        self.data_child('真实目录')
+        made = self.sandbox.symlink(self.data_child('真实目录'),
+                                    NAS_DATA_ROOT + '/软链接')
+        if not made:
+            self.skipTest('当前平台不支持创建符号链接')
+        names = [item['name'] for item in self.engine.browse_account_dirs('fw867')['dirs']]
+        self.assertIn('真实目录', names)
+        self.assertNotIn('软链接', names)
+
+    def test_dirs_are_sorted_by_name(self):
+        self.build()
+        self.data_dir()
+        for name in ('b', 'a', 'c'):
+            self.data_child(name)
+        # 排序按名字（与列表接口一致）；中文与 ASCII 混排也必须是稳定顺序
+        names = [item['name'] for item in self.engine.browse_account_dirs('fw867')['dirs']]
+        self.assertEqual(names, sorted(names))
+
+
+class AddSharesBatchTests(EngineHarness):
+    """多目录一次提交：只跑一次 init_config + reload，失败的如实报出来。"""
+
+    def prepare(self, *names):
+        self.build()
+        self.manager()
+        self.drop_list_dirs()
+        return [self.data_child(name) for name in names]
+
+    def test_multiple_directories_reload_only_once(self):
+        first, second = self.prepare('照片', '视频')
+        result = self.engine.add_shares('fw867', [first, second])
+
+        self.assertEqual([item['shareName'] for item in result['added']],
+                         ['fw867_nb_1', 'fw867_nb_2'])
+        self.assertEqual([item['path'] for item in result['added']], [first, second])
+        self.assertEqual([item['sharePoint'] for item in result['added']], ['照片', '视频'])
+        self.assertTrue(all(item['verified'] for item in result['added']))
+        self.assertEqual(result['errors'], [])
+        self.assertEqual(self.runner.count('add_dir'), 2)
+        self.assertEqual(self.runner.count('init_config'), 1)
+        self.assertEqual(
+            self.runner.calls.count(['/bin/systemctl', 'reload', 'smb', 'nmb']), 1)
+        # 段 id 与显示名都写进配置了
+        text = self.sandbox.sambashare.read_text(encoding='utf-8')
+        for needle in ("config sambashare 'fw867_nb_1'", "option name '照片'",
+                       "config sambashare 'fw867_nb_2'", "option name '视频'"):
+            self.assertIn(needle, text)
+
+    def test_skips_already_shared_directory(self):
+        first, second = self.prepare('照片', '视频')
+        self.engine.add_shares('fw867', [first])
+        self.runner.calls.clear()
+
+        result = self.engine.add_shares('fw867', [first, second])
+
+        self.assertEqual([item['path'] for item in result['added']], [second])
+        self.assertEqual(result['added'][0]['shareName'], 'fw867_nb_2')
+        self.assertEqual(len(result['skipped']), 1)
+        skipped = result['skipped'][0]
+        self.assertEqual(skipped['path'], first)
+        self.assertIn('已经是账号 fw867 的共享', skipped['error'])
+        self.assertEqual(skipped['shareName'], 'fw867_nb_1')
+        self.assertEqual(self.runner.count('add_dir'), 1)
+
+    def test_skips_duplicate_paths_in_one_request(self):
+        first, second = self.prepare('照片', '视频')
+        result = self.engine.add_shares('fw867', [first, first, second])
+        self.assertEqual([item['path'] for item in result['added']], [first, second])
+        self.assertEqual(len(result['skipped']), 1)
+        self.assertIn('两次', result['skipped'][0]['error'])
+
+    def test_one_failure_does_not_stop_the_others(self):
+        first, second, third = self.prepare('照片', '视频', '音乐')
+        handler = self.runner.handler
+
+        def flaky(runner, key, timeout):
+            if 'add_dir' in key and '视频' in ' '.join(key):
+                return Result(1, '', 'share exists\n')
+            return handler(runner, key, timeout)
+
+        self.runner.handler = flaky
+        result = self.engine.add_shares('fw867', [first, second, third])
+
+        self.assertEqual([item['path'] for item in result['added']], [first, third])
+        self.assertEqual([item['shareName'] for item in result['added']],
+                         ['fw867_nb_1', 'fw867_nb_3'])       # 序号连续，失败的跳过
+        self.assertEqual(len(result['errors']), 1)
+        self.assertEqual(result['errors'][0]['path'], second)
+        self.assertIn('共享名已存在', result['errors'][0]['error'])
+        self.assertEqual(self.runner.count('add_dir'), 3)   # 失败的也调用过，其余没有被中断
+        self.assertEqual(self.runner.count('init_config'), 1)
+
+    def test_reports_verification_failure_per_directory(self):
+        """只让第一个目录真的进 smb.conf：第二个要被如实报出来，而不是整体成功。"""
+        first, second = self.prepare('照片', '视频')
+        original = self.runner.handler
+
+        def handler(runner, key, timeout):
+            if 'init_config' in key:
+                # 跳过成功管理器的「按 sambashare 重新生成」：只留下第一个共享的段
+                self.sandbox.smb_conf.write_text(
+                    '[global]\n%s\n' % ''.join('[%s]\n' % name for name in ('照片',)),
+                    encoding='utf-8')
+                return Result(0, 'ok\n', '')
+            return original(runner, key, timeout)
+
+        self.runner.handler = handler
+        result = self.engine.add_shares('fw867', [first, second])
+
+        self.assertEqual([item['shareName'] for item in result['added']],
+                         ['fw867_nb_1', 'fw867_nb_2'])
+        self.assertEqual([item['verified'] for item in result['added']], [True, False])
+        self.assertEqual(len(result['errors']), 1)
+        self.assertEqual(result['errors'][0]['shareName'], 'fw867_nb_2')
+        self.assertEqual(result['errors'][0]['path'], second)
+        self.assertIn('没有出现在 /var/etc/smb.conf', result['errors'][0]['error'])
+        self.assertEqual(self.runner.count('init_config'), 1)
+
+    def test_empty_paths_are_reported_not_crashed(self):
+        self.build()
+        self.manager()
+        with self.assertRaises(Error) as caught:
+            self.engine.add_shares('fw867', [])
+        self.assertIn('请选择要共享的目录', str(caught.exception))
+        with self.assertRaises(Error) as caught:
+            self.engine.add_shares('fw867', ['', '   '])
+        self.assertIn('请选择要共享的目录', str(caught.exception))
+        # 空列表 + add_dir 都没得跑：不产生任何命令调用
+        self.assertIsNone(self.runner.argv_for('add_dir'))
+        self.assertIsNone(self.runner.argv_for('init_config'))
+
+    def test_unknown_account_is_rejected(self):
+        self.build()
+        self.manager()
+        with self.assertRaises(Error) as caught:
+            self.engine.add_shares('nobody', [NAS_DATA_ROOT])
+        self.assertIn('没有这个账号', str(caught.exception))
+
+    def test_single_path_keeps_the_old_behaviour(self):
+        """单目录时沿用 add_share：非法路径 / 已共享 / add_dir 失败都要抛 Error。"""
+        first = self.prepare('照片')[0]
+        self.engine.add_share('fw867', first)
+        with self.assertRaises(Error) as caught:
+            self.engine.add_share('fw867', first)
+        self.assertIn('已经是账号', str(caught.exception))
+        with self.assertRaises(Error) as caught:
+            self.engine.add_share('fw867', '/etc')
+        self.assertIn('不在允许的根目录内', str(caught.exception))
+        with self.assertRaises(Error) as caught:
+            self.engine.add_share('fw867', '')
+        self.assertIn('路径', str(caught.exception))
+        with self.assertRaises(Error) as caught:
+            self.engine.add_shares('fw867', [first], mode='single')
+        self.assertIn('已经是账号', str(caught.exception))
+
+    def test_single_path_result_keeps_legacy_fields(self):
+        first = self.prepare('照片')[0]
+        result = self.engine.add_share('fw867', first, share_point='照片-3943892')
+        for key in ('shareName', 'sharePoint', 'verified', 'inConfig', 'smbActive',
+                    'reloadReturncode', 'users', 'forceUser', 'added', 'skipped', 'errors'):
+            self.assertIn(key, result)
+        self.assertEqual(result['sharePoint'], '照片-3943892')
+        self.assertEqual(len(result['added']), 1)
 
 
 if __name__ == '__main__':

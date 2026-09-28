@@ -27,7 +27,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import engine
 from engine import Engine, Error
@@ -208,12 +208,18 @@ class Handler(BaseHTTPRequestHandler):
         self.send_payload(200, candidate.read_bytes(), mime)
 
     def api_get(self, path: str) -> None:
+        route = urlsplit(self.path)
         try:
             if path == '/api/status':
                 self.json_out(200, self.server.engine.snapshot())
                 return
             if path == '/api/log':
                 self.json_out(200, {'ok': True, 'lines': self.server.engine.recent_log(80)})
+                return
+            if path == '/api/dirs':
+                # 弹窗里选目录用：账号数据根目录下的子目录（含是否已共享）
+                account = (parse_qs(route.query).get('account') or [''])[0]
+                self.json_out(200, self.server.engine.browse_account_dirs(account))
                 return
         except Error as error:
             return self.fail(400, str(error))
@@ -243,17 +249,35 @@ class Handler(BaseHTTPRequestHandler):
             return self.fail(409, '上一个操作还在进行，请稍候')
         try:
             if path == '/api/share/add':
-                result = self.server.engine.add_share(
-                    body.get('account', ''), body.get('path', ''),
-                    share_point=body.get('sharePoint', ''),
-                    force_user=body.get('forceUser', ''),
-                    user_list=body.get('users', ''))
+                # 兼容旧的单个 `{"account","path","sharePoint"}`，以及新的
+                # `{"account","paths":[...]}`（弹窗里一次勾多个目录）
+                paths = body.get('paths')
+                if isinstance(paths, (list, tuple)):
+                    result = self.server.engine.add_shares(
+                        body.get('account', ''), list(paths),
+                        share_point=body.get('sharePoint', ''),
+                        force_user=body.get('forceUser', ''),
+                        user_list=body.get('users', ''))
+                else:
+                    result = self.server.engine.add_share(
+                        body.get('account', ''), body.get('path', ''),
+                        share_point=body.get('sharePoint', ''),
+                        force_user=body.get('forceUser', ''),
+                        user_list=body.get('users', ''))
                 self.json_out(200, {'ok': True, 'result': result,
                                     'status': self.server.engine.snapshot()})
             elif path == '/api/share/delete':
                 result = self.server.engine.delete_share(body.get('shareName', ''))
                 self.json_out(200, {'ok': True, 'result': result,
                                     'status': self.server.engine.snapshot()})
+            elif path == '/api/discovery':
+                # 页面上的「网络发现」开关：开 = 接管 + 起回应器，关 = 还原官方 wsdd
+                snapshot = self.server.engine.set_discovery_enabled(body.get('enabled'))
+                self.json_out(200, {'ok': True, 'status': snapshot})
+            elif path == '/api/hostname':
+                # 改 Windows「网络」里显示的名字：落盘 + 重建回应器 + 重发 Hello
+                snapshot = self.server.engine.set_hostname(body.get('hostname', ''))
+                self.json_out(200, {'ok': True, 'status': snapshot})
             elif path == '/api/detect/restart':
                 # 重新宣告：重建回应器 + 重发 Hello，同步做完再回（几百毫秒量级）
                 snapshot = self.server.engine.restart_responder(times=2)

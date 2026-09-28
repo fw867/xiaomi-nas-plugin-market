@@ -87,78 +87,53 @@ function element(tag, className, text) {
   return node;
 }
 
-function formatTime(seconds) {
-  if (!seconds) return '—';
-  const date = new Date(seconds * 1000);
-  const pad = (value) => String(value).padStart(2, '0');
-  return `${date.getMonth() + 1}/${date.getDate()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
-function formatSince(seconds) {
-  if (!seconds) return '还没有 Windows 来取过';
-  const date = new Date(seconds * 1000);
-  const now = new Date();
-  const pad = (value) => String(value).padStart(2, '0');
-  const clock = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
-  const sameDay = date.getFullYear() === now.getFullYear()
-    && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
-  return sameDay ? `今天 ${clock}` : `${date.getMonth() + 1}/${date.getDate()} ${clock}`;
-}
-
-async function copyText(text, okMessage) {
-  try {
-    await navigator.clipboard.writeText(text);
-    toast(okMessage);
-  } catch {
-    toast('当前客户端不支持剪贴板，请长按选择复制');
-  }
+// 每 15 秒会重新渲染一次：正在编辑的输入框不能被后台刷新覆盖
+function setValue(id, value) {
+  const node = $(id);
+  if (!node || document.activeElement === node) return;
+  node.value = value === undefined || value === null ? '' : String(value);
 }
 
 // ---------------------------------------------------------------------------
 // 渲染
 // ---------------------------------------------------------------------------
 
-function renderDiscovery(discovery, version) {
+function renderDiscovery(data) {
+  const settings = data.settings || {};
+  const discovery = data.discovery || {};
+  const enabled = settings.discoveryEnabled !== undefined
+    ? Boolean(settings.discoveryEnabled) : Boolean(discovery.enabled);
   const running = Boolean(discovery.running);
-  $('statusDot').className = `status-dot ${running ? 'on' : 'off'}`;
-  $('serviceState').textContent = running ? '发现服务运行中' : '发现服务未运行';
-  const bits = [discovery.message || ''];
-  if (discovery.helloInterval) bits.push(`Hello 每 ${Math.round(discovery.helloInterval / 60)} 分钟一次`);
-  if (discovery.metadataPosts) bits.push(`已响应 ${discovery.metadataPosts} 次元数据请求`);
-  $('serviceInfo').textContent = bits.filter(Boolean).join(' · ');
 
-  $('hostname').textContent = discovery.hostname || '—';
-  $('workgroup').textContent = discovery.workgroup || '—';
-  $('xaddrs').textContent = (discovery.xaddrs && discovery.xaddrs.length)
-    ? discovery.xaddrs.join('  ') : '—';
-  if (discovery.wsddDropin) {
-    $('wsddState').textContent = '已接管（官方 wsdd 已 stop，并用 systemd drop-in 置为空操作）';
-  } else if (discovery.managed) {
-    $('wsddState').textContent = '已尝试接管（drop-in 未确认写入，最近日志里有原因）';
+  $('statusDot').className = `status-dot ${running ? 'on' : 'off'}`;
+  if (!enabled) {
+    $('serviceState').textContent = '已关闭';
+  } else if (running) {
+    $('serviceState').textContent = '发现服务运行中';
   } else {
-    $('wsddState').textContent = '未接管（官方 wsdd 自由运行）';
+    $('serviceState').textContent = discovery.message || '发现服务未运行';
   }
-  $('lastMetadata').textContent = formatSince(discovery.lastMetadataAt);
-  $('version').textContent = version || '—';
+
+  const toggle = $('discoverySwitch');
+  toggle.checked = enabled;
+  setValue('hostnameInput', settings.hostname || discovery.hostname || '');
 }
 
-function shareRow(account, share) {
+function shareRow(share) {
+  // 每行：目录名（+ Windows 里显示的共享名），行尾一个 X 删除按钮。
+  // 只有插件自建（deletable）的行才有 X；官方 App 建的那条不显示。
   const row = element('div', 'share-row');
-  const head = element('div', 'share-head');
-  head.append(element('span', 'share-name', share.name));
-  if (share.custom) head.append(element('span', 'chip', '插件添加'));
-  else head.append(element('span', 'chip system', '系统/App'));
-  if (share.missing) head.append(element('span', 'chip warn', '配置不完整'));
-  row.append(head);
-  row.append(element('div', 'share-path', share.path || '（配置里没有路径）'));
-  const metaBits = [];
-  if (share.users && share.users.length) metaBits.push(`可访问：${share.users.join('、')}`);
-  if (share.forceUser) metaBits.push(`force_user：${share.forceUser}`);
-  if (share.status && share.status !== '1') metaBits.push(`status：${share.status}`);
-  row.append(element('div', 'share-meta', metaBits.join(' · ') || '—'));
+  const info = element('div', 'share-info');
+  info.append(element('div', 'share-name', share.display || share.name || '（未命名）'));
+  if (share.display && share.name && share.display !== share.name) {
+    info.append(element('div', 'share-sub', `共享名 ${share.name}`));
+  }
+  row.append(info);
   if (share.deletable) {
-    const remove = element('button', 'btn danger small', '删除');
+    const remove = element('button', 'share-remove', '\u00d7');
     remove.type = 'button';
+    remove.title = `删除共享 ${share.display || share.name}`;
+    remove.setAttribute('aria-label', `删除共享 ${share.display || share.name}`);
     remove.addEventListener('click', () => deleteShare(share));
     row.append(remove);
   }
@@ -167,49 +142,28 @@ function shareRow(account, share) {
 
 function renderAccounts(accounts) {
   const box = $('accounts');
+  const line = $('accountLine');
   if (!accounts || !accounts.length) {
-    box.replaceChildren(element('p', 'muted', '没有读到任何 Samba 账号（/etc/config/sambauser）'));
+    line.textContent = '';
+    box.replaceChildren(element('p', 'muted', '没有读到任何 Samba 账号'));
     return;
   }
-  box.replaceChildren(...accounts.map((account) => {
-    const card = element('article', 'account');
-    const head = element('div', 'account-head');
-    head.append(element('strong', 'account-name', account.account));
-    head.append(element('span', 'chip', account.sambaUser || '—'));
-    if (account.customCount) {
-      head.append(element('span', 'chip', `插件添加 ${account.customCount} 个`));
-    }
-    card.append(head);
-    if (!account.shares.length) {
-      card.append(element('p', 'muted', '这个账号还没有共享目录'));
-      return card;
-    }
-    card.append(...account.shares.map((share) => shareRow(account.account, share)));
-    return card;
-  }));
-}
-
-function renderAccountOptions(accounts) {
-  const select = $('account');
-  const previous = select.value;
-  select.replaceChildren(...accounts.map((account) => {
-    const option = document.createElement('option');
-    option.value = account.account;
-    option.textContent = `${account.account}（${account.sambaUser || '—'}，已有 ${account.shares.length} 个共享）`;
-    return option;
-  }));
-  if (previous && accounts.some((item) => item.account === previous)) select.value = previous;
+  const current = accounts[0];
+  line.textContent = current.sambaUser
+    ? `账号 ${current.account}（SMB 用户 ${current.sambaUser}）` : `账号 ${current.account}`;
+  const shares = current.shares || [];
+  if (!shares.length) {
+    box.replaceChildren(element('p', 'muted', '还没有共享目录'));
+    return;
+  }
+  box.replaceChildren(...shares.map((share) => shareRow(share)));
 }
 
 function render(data) {
   state = data;
-  renderDiscovery(data.discovery || {}, data.version);
+  renderDiscovery(data);
   renderAccounts(data.accounts || []);
-  renderAccountOptions(data.accounts || []);
-  const roots = data.allowedRoots || [];
-  $('rootsHint').textContent = roots.length
-    ? `允许的根目录：${roots.join('、')}`
-    : '没有配置允许的根目录（请检查 ALLOWED_ROOTS）';
+  $('version').textContent = data.version || '—';
   if (data.sambaMgrFound === false) {
     showError(`没有找到 smb_mgr.sh（当前按 ${data.sambaMgr} 查找），无法增删共享`);
   }
@@ -220,69 +174,70 @@ async function refresh() {
   try {
     render(await call('status'));
     if (state && state.sambaMgrFound !== false) showError('');
-    await loadLog();
   } catch (error) {
     showError(error.message);
   }
 }
 
-async function loadLog() {
-  try {
-    const data = await call('log');
-    const lines = data.lines || [];
-    $('logBox').textContent = lines.length ? lines.join('\n') : '（暂无日志）';
-  } catch (error) {
-    $('logBox').textContent = error.message;
-  }
-}
-
 // ---------------------------------------------------------------------------
-// 操作
+// 网络发现开关
 // ---------------------------------------------------------------------------
 
-async function addShare() {
-  const account = $('account').value;
-  const path = $('path').value.trim();
-  if (!account) { toast('请选择账号'); return; }
-  if (!path) { toast('请填写目录路径'); return; }
-  const body = {
-    account,
-    path,
-    sharePoint: $('sharePoint').value.trim(),
-  };
-  if ($('useForce').checked) body.forceUser = 'auto';
-  const button = $('addShare');
-  button.disabled = true;
-  button.textContent = '正在添加…';
+async function toggleDiscovery(enabled) {
+  const toggle = $('discoverySwitch');
+  toggle.disabled = true;
+  busy = true;
   try {
-    const data = await call('share/add', body);
+    const data = await call('discovery', { enabled });
     render(data.status);
-    const result = data.result || {};
-    $('path').value = '';
-    $('sharePoint').value = '';
-    toast(`已添加共享 ${result.shareName}（${result.sharePoint}）`);
-    if (result.errors && result.errors.length) {
-      showError(`已完成，但收尾有提示：${result.errors.join('；')}`);
-    } else {
-      showError('');
-    }
+    toast(enabled ? '已打开网络发现' : '已关闭网络发现');
+    if (!enabled) showError('');
   } catch (error) {
     showError(error.message);
-    toast('添加失败');
+    toast('设置失败');
+    await refresh();                       // 失败时把开关拨回真实状态
   } finally {
-    button.disabled = false;
-    button.textContent = '添加共享目录';
+    busy = false;
+    toggle.disabled = false;
   }
 }
+
+// ---------------------------------------------------------------------------
+// 主机名
+// ---------------------------------------------------------------------------
+
+async function saveHostname() {
+  const button = $('hostnameSave');
+  const hostname = $('hostnameInput').value.trim();
+  if (!hostname) { toast('请填写主机名'); return; }
+  button.disabled = true;
+  busy = true;
+  try {
+    const data = await call('hostname', { hostname });
+    render(data.status);
+    toast(`主机名已改为 ${hostname}`);
+    showError('');
+  } catch (error) {
+    showError(error.message);
+    toast('保存失败');
+  } finally {
+    busy = false;
+    button.disabled = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 共享目录
+// ---------------------------------------------------------------------------
 
 async function deleteShare(share) {
-  const who = share.users && share.users.length ? `，可访问 ${share.users.join('、')}` : '';
-  if (!window.confirm(`确定删除共享 ${share.name}（${share.path}${who}）？\n`
-    + '只删除共享，不会删除目录里的文件。')) return;
+  const label = share.display || share.name;
+  if (!window.confirm(`确定删除共享「${label}」？\n只删除共享，不会删除目录里的文件。`)) return;
+  busy = true;
   try {
     const data = await call('share/delete', { shareName: share.name });
     render(data.status);
-    toast(`已删除共享 ${share.name}`);
+    toast(`已删除共享「${label}」`);
     if (data.result && data.result.errors && data.result.errors.length) {
       showError(`已完成，但收尾有提示：${data.result.errors.join('；')}`);
     } else {
@@ -291,39 +246,110 @@ async function deleteShare(share) {
   } catch (error) {
     showError(error.message);
     toast('删除失败');
+  } finally {
+    busy = false;
   }
 }
 
-async function announce() {
-  const button = $('announce');
-  button.disabled = true;
-  button.textContent = '正在宣告…';
+function currentAccount() {
+  const accounts = (state && state.accounts) || [];
+  return accounts.length ? accounts[0].account : '';
+}
+
+function dirRow(item) {
+  const row = element('label', 'dir-item');
+  const box = document.createElement('input');
+  box.type = 'checkbox';
+  box.value = item.path;
+  box.className = 'dir-box';
+  if (item.shared) {
+    // 已经共享的目录：默认选中且禁用（删除走列表行尾的 X）
+    box.checked = true;
+    box.disabled = true;
+    row.classList.add('shared');
+  }
+  row.append(box);
+  row.append(element('span', 'dir-name', item.name));
+  if (item.shared) row.append(element('span', 'chip', '已共享'));
+  return row;
+}
+
+async function openDirDialog() {
+  const account = currentAccount();
+  if (!account) { toast('没有读到账号'); return; }
+  const dialog = $('dirDialog');
+  $('dirRoot').textContent = '';
+  $('dirError').textContent = '';
+  $('dirList').replaceChildren(element('p', 'muted', '读取中…'));
+  dialog.showModal();
   try {
-    const data = await call('detect/restart', {});
-    render(data.status);
-    toast('已重新宣告，等 Windows 刷新「网络」');
-    showError('');
+    const data = await call(`dirs?account=${encodeURIComponent(account)}`);
+    const dirs = data.dirs || [];
+    $('dirRoot').textContent = `数据目录：${data.root || '—'}`;
+    if (!dirs.length) {
+      $('dirList').replaceChildren(element('p', 'muted', '这个目录下没有子目录'));
+      return;
+    }
+    $('dirList').replaceChildren(...dirs.map((item) => dirRow(item)));
   } catch (error) {
-    showError(error.message);
-    toast('重新宣告失败');
-  } finally {
-    button.disabled = false;
-    button.textContent = '重新宣告';
+    $('dirList').replaceChildren();
+    $('dirError').textContent = error.message;
   }
 }
+
+async function confirmAddShares() {
+  const account = currentAccount();
+  const boxes = [...document.querySelectorAll('#dirList .dir-box')]
+    .filter((box) => box.checked && !box.disabled);
+  if (!boxes.length) { toast('请勾选要共享的目录'); return; }
+  const button = $('dirConfirm');
+  button.disabled = true;
+  busy = true;
+  try {
+    const data = await call('share/add', {
+      account,
+      paths: boxes.map((box) => box.value),
+    });
+    render(data.status);
+    $('dirDialog').close();
+    const result = data.result || {};
+    const added = (result.added || []).length;
+    const errors = (result.errors || []).map((item) => item.error || String(item));
+    if (added) toast(`已添加 ${added} 个共享`);
+    showError(errors.length ? `已完成，但有提示：${errors.join('；')}` : '');
+  } catch (error) {
+    $('dirError').textContent = error.message;
+    showError(error.message);
+  } finally {
+    busy = false;
+    button.disabled = false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 事件绑定
+// ---------------------------------------------------------------------------
 
 $('back').onclick = leavePlugin;
 $('refresh').onclick = () => { refresh(); };
-$('announce').onclick = announce;
-$('addShare').onclick = addShare;
-$('copyLog').onclick = async () => {
-  const text = $('logBox').textContent;
-  if (!text || text === '读取中…') { toast('暂无可复制的日志'); return; }
-  await copyText(text, '日志已复制');
-};
+$('discoverySwitch').addEventListener('change', (event) => {
+  toggleDiscovery(event.target.checked);
+});
+$('hostnameSave').onclick = saveHostname;
+$('hostnameInput').addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') { event.preventDefault(); saveHostname(); }
+});
+$('addShare').onclick = openDirDialog;
+$('dirCancel').onclick = () => { $('dirDialog').close(); };
+$('dirConfirm').onclick = confirmAddShares;
+// 点遮罩关闭（点 dialog 自身而不是内容区）
+$('dirDialog').addEventListener('click', (event) => {
+  if (event.target === $('dirDialog')) $('dirDialog').close();
+});
 
 refresh();
 setInterval(() => {
   if (document.hidden) return;
+  if ($('dirDialog').open) return;          // 弹窗开着时不要重排列表
   refresh();
 }, 15000);
