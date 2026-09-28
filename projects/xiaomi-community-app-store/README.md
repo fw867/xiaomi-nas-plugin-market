@@ -43,6 +43,35 @@ Windows PowerShell 无人值守安装：
 .\install-windows.ps1 -NasIp 192.168.31.100 -NasSshKey C:\path\to\nas-root-key -NasUserId u123456
 ```
 
+## 开机钩子（deploy/community-plugins-boot.sh）
+
+小米 NAS 的根文件系统是只读 erofs、`/etc` 是 overlay，systemd 在 overlay 挂载前就
+读完了单元目录，所以安装时新增到 `/etc/systemd/system/` 的服务开机不会被拉起。
+`deploy/install-boot-hook.sh add` 把 `deploy/community-plugins-boot.sh` 装到
+`/data/plugin/community-plugins-boot.sh`，并在 root crontab 里加一条**每分钟**的任务
+补启动这些服务（目标都在跑时立即退出，几乎无开销；只在开机后
+`BOOT_WINDOW`（默认 600 秒）内动手，不会干扰管理员手动停掉的服务）。
+
+同一支脚本顺带维护两件**全设备共用**的 Docker 修复，都幂等、都排在「拉起插件服务」
+之前，免得和插件的启动流程互相干扰：
+
+1. **iptables NAT 的 MASQUERADE 规则**：开机早期 `iptables-restore` 会用空规则清链，
+   把 Docker 的 MASQUERADE/DOCKER 链一并抹掉，结果所有容器都出不了网；
+2. **dockerd 的 fd 软上限**：systemd 默认软上限只有 1024，而 `iptables:false` 时发布的
+   端口全靠用户态 docker-proxy（一条代理连接占 2 个 fd）——BT 类插件把
+   `peer-limit-global` 开大后代理会撞上 1024，`Accept()` 报 EMFILE，代理进程正常退出、
+   宿主机端口随之消失。脚本发现软上限低于 `DOCKER_FD_MIN`（默认 65536）就写
+   `/etc/systemd/system/docker.service.d/override.conf` 并重启 dockerd；重启前会记下
+   在跑的容器、重启后按原样拉起（插件容器的 `RestartPolicy` 是 `no`，不拉回来会一直停着），
+   有插件服务在启动或容器在重启时则推迟到下一分钟。
+
+市场服务启动时会比对 `/data/plugin/community-plugins-boot.sh` 与发行包里这份副本，
+哈希不一致就重装一次（`server.py` 的 `sync_boot_hook()`）——市场升级只替换发行目录、
+不会动那个副本，所以钩子里新增的修复要靠这一步才能第一时间生效。
+
+手动重装：`sh deploy/install-boot-hook.sh add`；卸载：`sh deploy/install-boot-hook.sh remove`。
+脚本日志在 `/data/plugin/community-plugins-boot.log`。
+
 ## 开发与验证
 
 内置仓库包含设备管家、115 云备份、阿里云盘备份、WebDAV 文件桥和 qB 下载。WebDAV 文件桥自带经过官方 SHA-256 校验的 rclone ARM64 引擎，安装后共享默认关闭，远程连接需由用户填写自己的 WebDAV 账号。它不修改小米原有 5000 端口服务。

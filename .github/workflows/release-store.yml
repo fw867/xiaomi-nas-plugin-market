@@ -35,6 +35,10 @@ jobs:
     steps:
       - name: Decide whether to release
         id: decide
+        env:
+          # 提交信息必须走 env 传进来：多行信息直接插值进 run 脚本会破坏 shell 语法
+          # （正文里有换行、括号、引号时整个步骤直接报错，发布也就永远不触发）。
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "should_release=true" >> "$GITHUB_OUTPUT"
@@ -42,7 +46,7 @@ jobs:
             exit 0
           fi
           # push 触发：检查最近一条提交信息
-          MSG="${{ github.event.head_commit.message }}"
+          MSG="$COMMIT_MSG"
           echo "Commit message: $MSG"
           if echo "$MSG" | grep -qiE '(^|\W)(releases?|\[release\])($|\W)'; then
             echo "should_release=true" >> "$GITHUB_OUTPUT"
