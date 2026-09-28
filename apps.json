@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "name": "小米智能存储应用商店",
-  "generatedAt": 1790573052,
+  "generatedAt": 1790577189,
   "repository": "fw867/xiaomi-nas-plugin-market",
   "branch": "main",
   "store": {
@@ -89,12 +89,12 @@
     {
       "id": "qbittorrent",
       "name": "qB 下载",
-      "version": "0.1.9",
+      "version": "0.1.10",
       "summary": "磁力与种子下载、暂停继续和限速；首次启动需拉取独立 Docker 镜像",
       "description": "磁力/种子下载、进度、暂停继续、限速。需要 Docker。",
-      "bundle": "apps/qbittorrent-0.1.9.zip",
-      "sha256": "771b16653780286ae3235f6e32f7b58feb0258543830fc9eb4fe2095c9a7df88",
-      "size": 351567,
+      "bundle": "apps/qbittorrent-0.1.10.zip",
+      "sha256": "d29d5949d43f4e6c381773a31f29a5075f97fc8f3a739050ee18fa08b239722d",
+      "size": 352391,
       "icon": "apps/icons/qbittorrent.png",
       "channel": "stable",
       "tags": [
@@ -126,12 +126,12 @@
     {
       "id": "transmission",
       "name": "Transmission 下载",
-      "version": "0.1.37",
+      "version": "0.1.38",
       "summary": "Docker 版 BT 下载：可设置下载/配置/监控目录与 WebUI 账号；端口 9091、51413",
       "description": "Docker 容器运行 LinuxServer Transmission；配置页可设置下载目录、配置文件夹目录、监控目录与 WebUI 用户名密码。需要 Docker。",
-      "bundle": "apps/transmission-0.1.37.zip",
-      "sha256": "9035bf1bd4ef248af709a93000dbfabd1ae49e121d3d6f919443317631cef005",
-      "size": 881035,
+      "bundle": "apps/transmission-0.1.38.zip",
+      "sha256": "b5926c5dcd856e45748727522f126d19cba3c3dad6ddd591478916e317bdfe4d",
+      "size": 881905,
       "icon": "apps/icons/transmission.png",
       "channel": "stable",
       "tags": [
@@ -144,12 +144,12 @@
     {
       "id": "emby",
       "name": "Emby",
-      "version": "0.1.14",
+      "version": "0.1.15",
       "summary": "在 NAS 上运行 Emby，向局域网设备串流个人影音",
       "description": "官方 Emby 镜像的受限容器；媒体目录读写挂载以便写回元数据，配置保存在插件私有目录，Emby 默认端口 8096 对局域网开放。",
-      "bundle": "apps/emby-0.1.14.zip",
-      "sha256": "27b593a8904eb62a21359f27ba519786943f13d92bee87e94ab604f716e1b393",
-      "size": 368960,
+      "bundle": "apps/emby-0.1.15.zip",
+      "sha256": "7f9afd15f10ff4d902b056d30f92740aab3da8968076b156ce8f2191a3249420",
+      "size": 369896,
       "icon": "apps/icons/emby.png",
       "channel": "stable",
       "tags": [
@@ -162,12 +162,12 @@
     {
       "id": "dpanel",
       "name": "DPanel 容器管理",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "summary": "轻量 Docker 管理面板；可视化管理容器、镜像与 Compose；需要 Docker",
       "description": "DPanel Lite 镜像的受限容器；挂载 Docker socket 与可选配置目录，面板端口 8807 对局域网开放。",
-      "bundle": "apps/dpanel-0.1.1.zip",
-      "sha256": "a33decbcc085700cbf18b5eb372c507d96e091fdbb10f37432bd5ba0b70b4970",
-      "size": 105632,
+      "bundle": "apps/dpanel-0.1.2.zip",
+      "sha256": "9603fd97c05963678a59a9f0c05597a050d2666cec3eb1b7063098265c8865b0",
+      "size": 106510,
       "icon": "apps/icons/dpanel.png",
       "channel": "stable",
       "tags": [
@@ -181,12 +181,12 @@
     {
       "id": "jellyfin",
       "name": "Jellyfin",
-      "version": "0.1.7",
+      "version": "0.1.8",
       "summary": "开源媒体服务器；配置/缓存/媒体持久化，HTTP 端口 8097 对局域网开放",
       "description": "官方 Jellyfin 镜像的受限容器；媒体目录、配置目录与缓存持久化，端口映射 8097/8920/7359，可与 Emby 同时安装。需要 Docker。",
-      "bundle": "apps/jellyfin-0.1.7.zip",
-      "sha256": "7d1aba625c35bcdd63bb2c5436c60d9b4a5ef8af7fba2d98253515c3d4d0dce5",
-      "size": 136510,
+      "bundle": "apps/jellyfin-0.1.8.zip",
+      "sha256": "1a6c931b911c87735361f7e07db1ff11131655c27d7a811fbfd34d1a359c35e6",
+      "size": 137411,
       "icon": "apps/icons/jellyfin.png",
       "channel": "stable",
       "tags": [
