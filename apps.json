@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "name": "小米智能存储应用商店",
-  "generatedAt": 1790959791,
+  "generatedAt": 1790960183,
   "repository": "fw867/xiaomi-nas-plugin-market",
   "branch": "main",
   "store": {
@@ -256,12 +256,12 @@
     {
       "id": "nasconsole",
       "name": "控制台",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "summary": "桌面式控制台：硬件状态、硬盘与 SMART、文件、容器与服务",
       "description": "电脑浏览器打开就是一张桌面：图标 + 浮动窗口 + 常驻组件栏，看 CPU/内存/温度/网络/磁盘 IO 曲线、硬盘休眠状态与 SMART、md 阵列、Docker 容器、已装插件与厂商定时任务；文件窗口可浏览、预览、下载，也能上传、新建文件夹、重命名、删除（删除进回收站，可恢复）。手机端只有开关、端口与令牌。采集只读 /proc 与 /sys，standby 硬盘不读 SMART，不唤醒硬盘。",
-      "bundle": "apps/nasconsole-0.1.0.zip",
-      "sha256": "53ce9c5177797d9c78491702ac8afbc2388506b1db8f08a30a8e05e1d20a3360",
-      "size": 123683,
+      "bundle": "apps/nasconsole-0.1.1.zip",
+      "sha256": "a08143f46dff5846655daf05b360da407733f6a44ec9e24ae0b3e0ee2a527e14",
+      "size": 124240,
       "icon": "apps/icons/nasconsole.png",
       "channel": "stable",
       "tags": [
