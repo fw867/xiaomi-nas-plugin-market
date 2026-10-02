@@ -632,6 +632,63 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
             "info": {"tags": ["tool", "network"], "publisher": "community", "ext": {"admin": True}},
         },
     },
+    {
+        "id": "nasconsole",
+        "name": "控制台",
+        "version": "0.1.0",
+        "summary": "桌面式控制台：硬件状态、硬盘与 SMART、文件、容器与服务",
+        "description": "电脑浏览器打开就是一张桌面：图标 + 浮动窗口 + 常驻组件栏，看 CPU/内存/温度/网络/"
+                       "磁盘 IO 曲线、硬盘休眠状态与 SMART、md 阵列、Docker 容器、已装插件与厂商定时任务；"
+                       "文件窗口可浏览、预览、下载，也能上传、新建文件夹、重命名、删除（删除进回收站，可恢复）。"
+                       "手机端只有开关、端口与令牌。采集只读 /proc 与 /sys，standby 硬盘不读 SMART，不唤醒硬盘。",
+        "project": "xiaomi-nas-console",
+        "pluginId": 11020,
+        "port": 18100,
+        "releaseRoot": "/data/plugin/xiaomi-nas-console",
+        "uiKey": "nasconsole",
+        "iconSource": "assets/xiaomi-nas-console.png",
+        "iconName": "nas-console.icon",
+        "runtime": {
+            "server.py": "server.py",
+            "engine.py": "engine.py",
+            "VERSION": "VERSION",
+            "web": "web",
+            # 桌面入口的 nginx 模板：装机后放在插件自己的目录里，App 里改端口/开关时用它重新渲染
+            "deploy/xiaomi-nas-console-lan.nginx.conf": "lan/xiaomi-nas-console-lan.conf",
+            "README.md": "README.md",
+        },
+        "ui": "web",
+        "serviceSource": "deploy/xiaomi-nas-console.service",
+        "service": "xiaomi-nas-console.service",
+        "nginxSource": "deploy/xiaomi-nas-console.nginx.conf",
+        "nginx": "xiaomi-nas-console.conf",
+        "healthPath": "/healthz",
+        "tags": ["tool", "monitoring"],
+        "author": "Kingwell Community",
+        "registry": {
+            "icon": "/icon/nas-console.icon?v=1",
+            "frontend": {
+                "title": "控制台",
+                "desc": "硬件状态、文件、容器与服务",
+                "type": "url",
+                "permission": ["admin"],
+                "dev_type": [1, 2, 3, 4],
+                "url": [
+                    {"dev_type": [1], "url": "/index.html#/nasConsole_app"},
+                    {"dev_type": [2, 3, 4], "url": "/index.html#/nasConsole_pc"},
+                ],
+                "sortid": 11020,
+                "widget": [],
+            },
+            "info": {
+                "tags": ["tool", "monitoring"],
+                "desc": "硬件状态、硬盘、容器与服务；可浏览和整理文件（删除进回收站）",
+                "developer": "Kingwell Community",
+                "publisher": "community",
+                "ext": {"admin": True},
+            },
+        },
+    },
 ]
 
 

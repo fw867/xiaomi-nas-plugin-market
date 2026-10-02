@@ -1,5 +1,5 @@
 [Unit]
-Description=Xiaomi NAS Console (read-only dashboard)
+Description=Xiaomi NAS Console
 Documentation=https://github.com/fw867/xiaomi-nas-plugin-market
 After=network.target
 Wants=network.target
@@ -16,18 +16,19 @@ Environment=SAMPLE_INTERVAL=2
 Environment=HISTORY_POINTS=150
 Environment=DRIVE_TTL=300
 Environment=DOCKER_TTL=15
-# 桌面 web 入口（唯一的写操作）：
-#   LAN_TEMPLATE 是安装时留下的一份干净配置，启用时原子写回 LAN_CONF。
+# 桌面 web 入口（App 里可开关、可改端口）：
+#   LAN_TEMPLATE 是 release 目录里自带的一份带占位符的配置，启用/改端口时按当前端口
+#   渲染后原子写回 LAN_CONF；路径走 current 软链，装到哪个 release 都能找到。
 Environment=LAN_PORT=5001
 Environment=LAN_CONF=/etc/nginx/conf.d/xiaomi-nas-console-lan.conf
-Environment=LAN_TEMPLATE=/data/plugin/xiaomi-nas-console/lan/xiaomi-nas-console-lan.conf
+Environment=LAN_TEMPLATE=/data/plugin/xiaomi-nas-console/current/lan/xiaomi-nas-console-lan.conf
 Environment=STATE_FILE=/data/plugin/xiaomi-nas-console/state.json
 ExecStart=/usr/bin/python3 /data/plugin/xiaomi-nas-console/current/server.py
 Restart=on-failure
 RestartSec=3
 
-# 只读服务的最小权限：能读 /proc /sys /dev /nas /home，只允许写自己的目录
-# （/etc/nginx/conf.d 是为了开关桌面入口时原子替换那一个配置文件）
+# 最小权限：能读 /proc /sys /dev /nas /home；只允许写自己的插件目录
+# （/etc/nginx/conf.d 是为了 App 里开关桌面入口 / 改端口时原子替换那一个配置文件）
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full

@@ -126,7 +126,7 @@ REMOTE_UI_ROOT="/home/${NAS_USER_ID}/plugin/nasconsole"
 
 printf '1/8 创建目录 …\n'
 ssh "${SSH_OPTIONS[@]}" "${REMOTE_TARGET}" \
-  "mkdir -p '${REMOTE_RELEASE}/web' '${REMOTE_ROOT}/releases' '${REMOTE_ROOT}/lan' '${REMOTE_UI_ROOT}/src/ui' /data/plugin/www/icon"
+  "mkdir -p '${REMOTE_RELEASE}/web' '${REMOTE_RELEASE}/lan' '${REMOTE_ROOT}/releases' '${REMOTE_UI_ROOT}/src/ui' /data/plugin/www/icon"
 
 printf '2/8 上传程序与前端 …\n'
 scp "${SSH_OPTIONS[@]}" "${PROJECT_DIR}/engine.py" "${PROJECT_DIR}/server.py" "${PROJECT_DIR}/VERSION" \
@@ -158,9 +158,10 @@ printf '{\n  \"lan_port\": ${LAN_PORT}\n}\n' > \"\${state}\"
 printf '5/8 安装 nginx 入口 …\n'
 scp "${SSH_OPTIONS[@]}" "${TEMP_DIR}/nasconsole-client.conf" "${REMOTE_TARGET}:/tmp/nasconsole-client.conf"
 scp "${SSH_OPTIONS[@]}" "${TEMP_DIR}/nasconsole-lan.conf" "${REMOTE_TARGET}:/tmp/nasconsole-lan.conf"
-# 再把桌面入口配置存一份模板到插件目录：App 里的开关/端口设置用它重新渲染
+# 再把带占位符的入口模板放进 release 目录（和商店安装包的 runtime/lan 一致）：
+# App 里的开关/端口设置用它重新渲染
 scp "${SSH_OPTIONS[@]}" "${TEMP_DIR}/nasconsole-lan.template.conf" \
-  "${REMOTE_TARGET}:${REMOTE_ROOT}/lan/xiaomi-nas-console-lan.conf"
+  "${REMOTE_TARGET}:${REMOTE_RELEASE}/lan/xiaomi-nas-console-lan.conf"
 ssh "${SSH_OPTIONS[@]}" "${REMOTE_TARGET}" 'sh -s' <<'REMOTE_NGINX'
 set -eu
 install_conf() {

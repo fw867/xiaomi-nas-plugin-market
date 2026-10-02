@@ -202,6 +202,21 @@ location ^~ /plugin/ {
 
 ## 安装
 
+**方式一：从应用商店装（推荐）**。本插件已在 `scripts/build_apps.py` 的 `PACKAGE_SPECS`
+里登记（id `nasconsole`、插件编号 11020、服务端口 18100），推送到 `main` 后 CI 会打包
+`apps/nasconsole-<版本>.zip` 并更新 `apps.json`，商店里直接安装即可。商店安装包与下面的
+脚本安装**目录结构完全一致**：
+
+```text
+/data/plugin/xiaomi-nas-console/
+  current -> releases/<版本>-<时间>/     程序、web/、lan/ 入口模板、VERSION
+  admin-token                            访问令牌（缺失时服务首次启动自动生成）
+  state.json                             端口等运行状态
+/home/<用户>/plugin/nasconsole/          UI + INFO + scripts/control（plugin.sh verify 用）
+```
+
+**方式二：本机脚本安装**（不经过商店，适合开发调试）：
+
 ```bash
 cd projects/xiaomi-nas-console
 NAS_IP=192.168.1.8 \
@@ -213,11 +228,12 @@ bash deploy/install-on-nas.sh
 
 1. 把程序装到 `/data/plugin/xiaomi-nas-console/releases/<版本-时间>/`，并更新 `current` 软链；
 2. 生成访问令牌 `/data/plugin/xiaomi-nas-console/admin-token`（0600）；
-3. 安装 `xiaomi-nas-console.service`（最小权限）与两个 nginx 入口，
-   并把桌面入口配置存一份到 `/data/plugin/xiaomi-nas-console/lan/`（开关用它来重新启用）；
-4. 注册小米客户端条目，并按 `plugin.sh verify` 的摘要算法补齐
+3. 安装 `xiaomi-nas-console.service`（最小权限）与两个 nginx 入口；
+4. 把带占位符的桌面入口模板放进 release 目录的 `lan/`（单元里的 `LAN_TEMPLATE`
+   指向 `current/lan/…`，所以装到哪个 release 都能找到，商店安装包同理）；
+5. 注册小米客户端条目，并按 `plugin.sh verify` 的摘要算法补齐
    `/home/<用户>/plugin/nasconsole/`（缺这一步插件开机会被强制卸载）；
-5. 启动服务并自检。
+6. 启动服务并自检。
 
 可选环境变量：`NAS_USER_ID`、`PLUGIN_ID`（默认 11020）、`LAN_PORT`
 （不设就沿用这台机器上已安装的端口，首次安装默认 **5001**）。
