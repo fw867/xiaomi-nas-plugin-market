@@ -10,6 +10,8 @@ WorkingDirectory=/data/plugin/xiaomi-nas-console/current
 Environment=PYTHONUNBUFFERED=1
 Environment=HOST=127.0.0.1
 Environment=PORT=18100
+# 插件页显示的版本号会先看安装目录名，再看框架登记的 INFO（在 /home/<用户> 下）
+Environment=NAS_USER_ID=__NAS_USER_ID__
 Environment=STATIC_DIR=/data/plugin/xiaomi-nas-console/current/web
 Environment=ADMIN_TOKEN_FILE=/data/plugin/xiaomi-nas-console/admin-token
 Environment=SAMPLE_INTERVAL=2

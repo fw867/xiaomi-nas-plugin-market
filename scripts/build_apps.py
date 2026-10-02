@@ -635,7 +635,7 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
     {
         "id": "nasconsole",
         "name": "控制台",
-        "version": "0.1.0",
+        "version": "0.1.1",
         "summary": "桌面式控制台：硬件状态、硬盘与 SMART、文件、容器与服务",
         "description": "电脑浏览器打开就是一张桌面：图标 + 浮动窗口 + 常驻组件栏，看 CPU/内存/温度/网络/"
                        "磁盘 IO 曲线、硬盘休眠状态与 SMART、md 阵列、Docker 容器、已装插件与厂商定时任务；"
@@ -733,6 +733,23 @@ def write_deterministic_zip(source: Path, target: Path) -> None:
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = (0o100644 & 0xFFFF) << 16
             archive.writestr(info, path.read_bytes())
+
+
+def sync_project_version(spec: dict[str, Any]) -> None:
+    """把最终版本号写回插件自己的 VERSION 文件（存在才写）。
+
+    插件运行时会读安装版本（商店装到 `releases/<清单版本>-<时间戳>-<pid>/`，
+    脚本安装读 VERSION 文件），如果包里 VERSION 的内容和清单版本不一致，
+    插件页显示的版本就会和商店/注册表对不上——评审时踩过这个坑，所以在这里对齐。
+    """
+    version_file = PROJECTS / spec["project"] / "VERSION"
+    if not version_file.is_file():
+        return
+    current = version_file.read_text(encoding="utf-8").strip()
+    if current == spec["version"]:
+        return
+    version_file.write_text(spec["version"] + "\n", encoding="utf-8", newline="\n")
+    print(f"  同步 {version_file.relative_to(ROOT)}: {current} → {spec['version']}")
 
 
 def build_bundle(spec: dict[str, Any]) -> dict[str, Any]:
@@ -925,6 +942,9 @@ def main() -> int:
     for spec in specs:
         published = existing_versions.get(spec["id"])
         print(f"Building {spec['id']} {spec['version']} ...")
+        # 打包前先让插件自己的 VERSION 文件与清单版本一致，包里的版本号才不会自相矛盾
+        if not args.no_bump:
+            sync_project_version(spec)
         try:
             entry = build_bundle(spec)
         except SystemExit as error:
@@ -943,6 +963,7 @@ def main() -> int:
                 bumped = bump_patch(published)
                 spec["version"] = bumped
                 print(f"  内容有变，版本递增 {published} → {bumped}")
+                sync_project_version(spec)
                 entry = build_bundle(spec)
 
         apps.append(entry)

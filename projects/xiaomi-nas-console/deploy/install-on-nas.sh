@@ -117,10 +117,19 @@ sed -e "s|__NAS_USER_ID__|${NAS_USER_ID}|g" \
 cp "${SCRIPT_DIR}/xiaomi-nas-console-lan.nginx.conf" "${TEMP_DIR}/nasconsole-lan.template.conf"
 sed -e "s|__LAN_PORT__|${LAN_PORT}|g" \
   "${SCRIPT_DIR}/xiaomi-nas-console-lan.nginx.conf" > "${TEMP_DIR}/nasconsole-lan.conf"
-sed -e "s|__LAN_PORT__|${LAN_PORT}|g" \
+sed -e "s|__LAN_PORT__|${LAN_PORT}|g" -e "s|__NAS_USER_ID__|${NAS_USER_ID}|g" \
   "${SCRIPT_DIR}/xiaomi-nas-console.service" > "${TEMP_DIR}/nasconsole.service"
 sed -e "s|__PLUGIN_ID__|${PLUGIN_ID}|g" \
   "${SCRIPT_DIR}/plugin-meta.json" > "${TEMP_DIR}/plugin-meta.json"
+
+# 渲染出来的文件不允许再留占位符（曾经漏替 __NAS_USER_ID__ 装到了实机上）
+for rendered in "${TEMP_DIR}/nasconsole.service" "${TEMP_DIR}/nasconsole-client.conf" "${TEMP_DIR}/nasconsole-lan.conf"; do
+  if grep -qE '__[A-Z_]+__' "${rendered}"; then
+    printf '渲染后的 %s 里还有未替换的占位符：\n' "$(basename "${rendered}")" >&2
+    grep -nE '__[A-Z_]+__' "${rendered}" >&2
+    exit 2
+  fi
+done
 
 REMOTE_UI_ROOT="/home/${NAS_USER_ID}/plugin/nasconsole"
 

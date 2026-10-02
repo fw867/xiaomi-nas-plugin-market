@@ -111,6 +111,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add apps/ apps.json
+          # build_apps.py 会把最终版本号写回插件自己的 VERSION 文件（存在才写），
+          # 一起提交，插件页显示的版本才能和商店/注册表一致
+          git add -A -- ':(glob)projects/*/VERSION'
           if git diff --cached --quiet; then
             echo "No changes to commit"
             exit 0

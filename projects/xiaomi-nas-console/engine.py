@@ -33,12 +33,16 @@ from typing import Any
 PLUGIN_KEY = os.environ.get('PLUGIN_KEY', 'nasconsole')
 RELEASE_DIR = Path(__file__).resolve().parent
 VERSION_FILE = RELEASE_DIR / 'VERSION'
-# 安装目录名：脚本安装是 v0.1.0-20261003004804，商店安装是 0.1.1-1790567139
-RELEASE_DIR_PATTERN = re.compile(r'^v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.\-]+)?)-\d{8,}$')
+# 安装目录名：
+#   商店安装 0.1.1-1790960335-238127（<清单版本>-<时间戳>-<pid>）
+#   脚本安装 v0.1.0-20261003005422（v<版本>-<时间戳）
+#   候选版   0.2.4-rc5-1790567139-4231
+# 预发布后缀只允许点分字母数字（rc5 / beta.1），否则贪婪匹配会把后面的时间戳吃进版本号。
+RELEASE_DIR_PATTERN = re.compile(r'^v?(\d+\.\d+\.\d+(?:-[A-Za-z][0-9A-Za-z.]*)*)(?:-\d+)+$')
 
 
 def version_from_release_dir(path: Path) -> str:
-    """从 `<...>/releases/<版本>-<时间>/` 这样的目录名里取版本号（拿不到就返回空串）。"""
+    """从 `<...>/releases/<版本>-<时间戳>[-<pid>]/` 这样的目录名里取版本号（拿不到返回空串）。"""
     if path.parent.name != 'releases':
         return ''
     match = RELEASE_DIR_PATTERN.match(path.name)
@@ -49,18 +53,18 @@ def load_version() -> str:
     """版本号：真实读取安装版本，不写死。
 
     依次尝试：
-    ① 安装目录名 —— 商店安装是 `releases/<清单版本>-<时间>`，脚本安装是
-       `releases/v<版本>-<时间>`；这是"这一次装的是什么版本"，与注册表里登记的版本
+    ① 安装目录名 —— 商店安装是 `releases/<清单版本>-<时间戳>-<pid>`，脚本安装是
+       `releases/v<版本>-<时间戳>`；这是"这一次装的是什么版本"，与注册表里登记的版本
        必然一致（商店按清单写、脚本按 VERSION 文件写）；
-    ② 同目录的 VERSION 文件（开发目录、以及目录名不合规时）；
-    ③ 框架登记的插件 INFO 里的 version；
+    ② 框架登记的插件 INFO 里的 version（商店/脚本安装都会写，比包里的 VERSION 文件新）；
+    ③ 同目录的 VERSION 文件（开发目录、以及上面两处都拿不到时）；
     ④ 都读不到返回空串——界面显示 `v-`，不编造版本号。
     """
-    # 逐个短路求值：下面几个常量（HOME_ROOT 等）在文件更靠后的位置才定义
-    for candidate in (version_from_release_dir(RELEASE_DIR), _read_version_file()):
+    # 逐个短路求值：INFO 依赖 HOME_ROOT，它在文件更靠后的位置才定义
+    for candidate in (version_from_release_dir(RELEASE_DIR), _read_info_version()):
         if candidate:
             return candidate
-    return _read_info_version()
+    return _read_version_file()
 
 
 def _read_version_file() -> str:

@@ -344,27 +344,54 @@ class RegistryShapeTests(unittest.TestCase):
                 self.assertEqual(engine.load_version(), '')
 
     def test_version_comes_from_release_directory(self) -> None:
-        """商店安装的目录名是 0.1.1-<时间>，脚本安装是 v0.1.0-<时间>：都要能取出版本号。"""
+        """商店安装的目录名是 0.1.1-<时间戳>-<pid>，脚本安装是 v0.1.0-<时间戳>：
+        两种都要能取出版本号（商店装 0.1.1 却显示 0.1.0，就是这里只认了一段数字）。"""
         cases = {
-            '/data/plugin/xiaomi-nas-console/releases/0.1.1-1790567139': '0.1.1',
+            # 商店：<清单版本>-<时间戳>-<pid>
+            '/data/plugin/xiaomi-nas-console/releases/0.1.1-1790960335-238127': '0.1.1',
+            '/data/plugin/xiaomi-nas-console/releases/0.12.34-1790960335-238127': '0.12.34',
+            # 脚本安装：v<版本>-<时间戳>
             '/data/plugin/xiaomi-nas-console/releases/v0.1.0-20261003004804': '0.1.0',
-            '/data/plugin/xiaomi-nas-console/releases/0.2.4-rc5-1790567139': '0.2.4-rc5',
+            # 候选版：预发布后缀不能被时间戳吃掉
+            '/data/plugin/xiaomi-nas-console/releases/0.2.4-rc5-1790567139-4231': '0.2.4-rc5',
+            '/data/plugin/xiaomi-nas-console/releases/v0.2.0-beta.1-20261003004804': '0.2.0-beta.1',
+            # 认不出来的一律返回空串（交给 INFO / VERSION 文件）
             '/data/plugin/xiaomi-nas-console/current': '',
             '/data/plugin/xiaomi-nas-console/releases/latest': '',
             '/data/plugin/xiaomi-nas-console/releases/0.1.1': '',
+            '/data/plugin/xiaomi-nas-console/releases/0.1.1-abc': '',
             '/tmp/project': '',
         }
         for raw, expected in cases.items():
             with self.subTest(path=raw):
                 self.assertEqual(engine.version_from_release_dir(Path(raw)), expected)
 
-    def test_release_dir_wins_over_stale_version_file(self) -> None:
-        """商店会把版本抬到 0.1.1，而包里的 VERSION 文件可能还是 0.1.0：以目录名为准。"""
+    def test_info_version_wins_over_stale_package_file(self) -> None:
+        """商店把版本抬到 0.1.1，包里的 VERSION 文件还是 0.1.0：优先用框架登记的 INFO。"""
+        import json
         import tempfile
         from unittest import mock
 
         with tempfile.TemporaryDirectory() as temp:
-            release = Path(temp) / 'releases' / '0.1.1-1790567139'
+            root = Path(temp)
+            version_file = root / 'VERSION'
+            version_file.write_text('0.1.0\n', encoding='utf-8')
+            info = root / 'home' / 'u1' / 'plugin' / 'nasconsole' / 'INFO'
+            info.parent.mkdir(parents=True)
+            info.write_text(json.dumps({'version': '0.1.1'}), encoding='utf-8')
+            with mock.patch.object(engine, 'VERSION_FILE', version_file), \
+                 mock.patch.object(engine, 'RELEASE_DIR', root), \
+                 mock.patch.object(engine, 'HOME_ROOT', root / 'home'), \
+                 mock.patch.dict(os.environ, {'NAS_USER_ID': 'u1'}):
+                self.assertEqual(engine.load_version(), '0.1.1')
+
+    def test_release_dir_wins_over_stale_version_file(self) -> None:
+        """目录名、INFO、VERSION 文件三者不一致时：目录名最权威。"""
+        import tempfile
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as temp:
+            release = Path(temp) / 'releases' / '0.1.1-1790960335-238127'
             release.mkdir(parents=True)
             (release / 'VERSION').write_text('0.1.0\n', encoding='utf-8')
             with mock.patch.object(engine, 'VERSION_FILE', release / 'VERSION'), \
