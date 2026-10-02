@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="format-detection" content="telephone=no">
+<link rel="icon" href="data:,">
+<title>控制台 · 小米智能存储</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<svg class="svg-defs" aria-hidden="true" focusable="false">
+  <defs>
+    <linearGradient id="g-blue" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7cc0ff"/><stop offset="1" stop-color="#2f6bff"/>
+    </linearGradient>
+    <linearGradient id="g-teal" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#57e3bd"/><stop offset="1" stop-color="#0a9c88"/>
+    </linearGradient>
+    <linearGradient id="g-indigo" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8fa2ff"/><stop offset="1" stop-color="#4553e8"/>
+    </linearGradient>
+    <linearGradient id="g-violet" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#c6a4ff"/><stop offset="1" stop-color="#7b3ff0"/>
+    </linearGradient>
+    <linearGradient id="g-orange" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffcb63"/><stop offset="1" stop-color="#ff6a1a"/>
+    </linearGradient>
+    <linearGradient id="g-slate" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#b3bdcf"/><stop offset="1" stop-color="#5f6a7d"/>
+    </linearGradient>
+    <linearGradient id="g-gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity=".42"/>
+      <stop offset=".55" stop-color="#ffffff" stop-opacity=".06"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+</svg>
+
+<div class="desktop">
+  <div class="wallpaper" aria-hidden="true"></div>
+
+  <header class="menubar">
+    <div class="menubar-left">
+      <span class="mark">控</span>
+      <span class="brand">控制台</span>
+      <span class="host" id="hostName">—</span>
+    </div>
+    <div class="menubar-center" id="windowTabs"></div>
+    <div class="menubar-right">
+      <span class="live" id="liveDot" title="数据刷新中"></span>
+      <span class="clock" id="clock">--:--</span>
+      <button class="ghost" id="refreshBtn" type="button">刷新</button>
+      <button class="ghost hidden" id="logoutBtn" type="button">退出</button>
+    </div>
+  </header>
+
+  <div class="desk-area">
+    <nav class="icons" id="icons">
+      <button class="desk-icon" data-view="overview" type="button">
+        <span class="icon-tile">
+          <svg viewBox="0 0 48 48" aria-hidden="true">
+            <rect x="2" y="2" width="44" height="44" rx="13" fill="url(#g-blue)"/>
+            <rect x="2" y="2" width="44" height="44" rx="13" fill="url(#g-gloss)"/>
+            <rect x="12.5" y="26" width="6" height="10" rx="2.4" fill="#fff" opacity=".92"/>
+            <rect x="21" y="19" width="6" height="17" rx="2.4" fill="#fff"/>
+            <rect x="29.5" y="12.5" width="6" height="23.5" rx="2.4" fill="#fff" opacity=".92"/>
+          </svg>
+          <span class="icon-dot" aria-hidden="true"></span>
+        </span>
+        <span class="desk-label">概览</span>
+      </button>
+
+      <button class="desk-icon" data-view="storage" type="button">
+        <span class="icon-tile">
+          <svg viewBox="0 0 48 48" aria-hidden="true">
+            <rect x="2" y="2" width="44" height="44" rx="13" fill="url(#g-teal)"/>
+            <rect x="2" y="2" width="44" height="44" rx="13" fill="url(#g-gloss)"/>
+            <rect x="10.5" y="13" width="27" height="8.6" rx="3" fill="#fff"/>
+            <rect x="10.5" y="26.4" width="27" height="8.6" rx="3" fill="#fff" opacity=".88"/>
+            <circle cx="32.4" cy="17.3" r="1.7" fill="#0a9c88"/>
+            <circle cx="32.4" cy="30.7" r="1.7" fill="#0a9c88"/>
+          </svg>
+          <span class="icon-dot" aria-hidden="true"></span>
+        </span>
+        <span class="desk-label">磁盘</span>
+      </button>
+
+      <button class="desk-icon" data-view="files" type="button">
+        <span class="icon-tile">
+          <svg viewBox="0 0 48 48" aria-hidden="true">
+            <rect x="2" y="2" width="44" height="44" rx="13" fill="url(#g-orange)"/>
+            <rect x="2" y="2" width="44" height="44" rx="13" fill="url(#g-gloss)"/>
+            <path d="M10.5 15.5a2.5 2.5 0 0 1 2.5-2.5h7.1c.8 0 1.5.4 2 1l1.7 2.4h9.2a2.5 2.5 0 0 1 2.5 2.5v13.6a2.5 2.5 0 0 1-2.5 2.5H13a2.5 2.5 0 0 1-2.5-2.5z" fill="#fff"/>
+            <path d="M10.5 21.5h27v11.5a2.5 2.5 0 0 1-2.5 2.5H13a2.5 2.5 0 0 1-2.5-2.5z" fill="#fff" opacity=".55"/>
+          </svg>
+          <span class="icon-dot" aria-hidden="true"></span>
+        </span>
+        <span class="desk-label">文件</span>
+      </button>
+
+      <button class="desk-icon" data-view="docker" type="button">
+        <span class="icon-tile">
+          <svg viewBox="0 0 48 48" aria-hidden="true">
+            <rect x="2" y="2" width="44" height="44" rx="13" fill="url(#g-indigo)"/>
+            <rect x="2" y="2" width="44" height="44" rx="13" fill="url(#g-gloss)"/>
+            <rect x="11.5" y="18.5" width="6.4" height="6.4" rx="1.8" fill="#fff"/>
+            <rect x="19.6" y="18.5" width="6.4" height="6.4" rx="1.8" fill="#fff" opacity=".92"/>
+            <rect x="27.7" y="18.5" width="6.4" height="6.4" rx="1.8" fill="#fff" opacity=".84"/>
+            <rect x="19.6" y="10.6" width="6.4" height="6.4" rx="1.8" fill="#fff" opacity=".92"/>
+            <path d="M9.5 27.4h29v1.5a6.5 6.5 0 0 1-6.5 6.5H16a6.5 6.5 0 0 1-6.5-6.5z" fill="#fff"/>
+          </svg>
+          <span class="icon-dot" aria-hidden="true"></span>
+        </span>
+        <span class="desk-label">容器</span>
+      </button>
+
+      <button class="desk-icon" data-view="services" type="button">
+        <span class="icon-tile">
+          <svg viewBox="0 0 48 48" aria-hidden="true">
+            <rect x="2" y="2" width="44" height="44" rx="13" fill="url(#g-violet)"/>
+            <rect x="2" y="2" width="44" height="44" rx="13" fill="url(#g-gloss)"/>
+            <rect x="11.5" y="11.5" width="10.6" height="10.6" rx="3.2" fill="#fff"/>
+            <rect x="25.9" y="11.5" width="10.6" height="10.6" rx="3.2" fill="#fff" opacity=".9"/>
+            <rect x="11.5" y="25.9" width="10.6" height="10.6" rx="3.2" fill="#fff" opacity=".9"/>
+            <rect x="25.9" y="25.9" width="10.6" height="10.6" rx="3.2" fill="#fff" opacity=".78"/>
+          </svg>
+          <span class="icon-dot" aria-hidden="true"></span>
+        </span>
+        <span class="desk-label">系统</span>
+      </button>
+    </nav>
+
+    <div class="window-layer" id="windowLayer">
+      <section class="window" id="view-overview" data-view="overview">
+        <header class="window-bar">
+          <span class="win-title">概览</span>
+          <span class="win-sub">只读 · 2 秒采样 · 不唤醒休眠中的硬盘</span>
+          <span class="win-actions">
+            <button class="win-btn" data-act="min" type="button" title="最小化" aria-label="最小化">–</button>
+            <button class="win-btn" data-act="max" type="button" title="最大化" aria-label="最大化">□</button>
+            <button class="win-btn is-close" data-act="close" type="button" title="关闭" aria-label="关闭">×</button>
+          </span>
+        </header>
+        <div class="window-body">
+          <div class="card">
+            <div class="card-head">
+              <h2>最近 5 分钟</h2>
+              <div class="legend" id="chartLegend">
+                <button class="chip is-on" data-series="cpu" type="button">CPU</button>
+                <button class="chip is-on" data-series="mem" type="button">内存</button>
+                <button class="chip" data-series="net" type="button">网络</button>
+                <button class="chip" data-series="disk" type="button">磁盘 I/O</button>
+              </div>
+            </div>
+            <div class="chart-wrap" id="mainChart"></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>硬盘休眠状态</h2><span class="muted">hdparm -C 查询不唤醒硬盘</span></div>
+            <div class="rows" id="diskSleepRows"></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>系统</h2></div>
+            <div class="rows" id="systemRows"></div>
+          </div>
+        </div>
+        <span class="win-resize" data-dir="e"></span>
+        <span class="win-resize" data-dir="s"></span>
+        <span class="win-resize" data-dir="se"></span>
+      </section>
+
+      <section class="window" id="view-storage" data-view="storage">
+        <header class="window-bar">
+          <span class="win-title">磁盘</span>
+          <span class="win-sub">物理盘 SMART、挂载容量与阵列</span>
+          <span class="win-actions">
+            <button class="win-btn" data-act="min" type="button" title="最小化" aria-label="最小化">–</button>
+            <button class="win-btn" data-act="max" type="button" title="最大化" aria-label="最大化">□</button>
+            <button class="win-btn is-close" data-act="close" type="button" title="关闭" aria-label="关闭">×</button>
+          </span>
+        </header>
+        <div class="window-body">
+          <div class="card-grid" id="driveCards"></div>
+          <div class="card">
+            <div class="card-head"><h2>容量与挂载</h2><span class="muted" id="mountNote"></span></div>
+            <div class="rows" id="mountRows"></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>阵列</h2></div>
+            <div class="rows" id="arrayRows"></div>
+          </div>
+        </div>
+        <span class="win-resize" data-dir="e"></span>
+        <span class="win-resize" data-dir="s"></span>
+        <span class="win-resize" data-dir="se"></span>
+      </section>
+
+      <section class="window" id="view-files" data-view="files">
+        <header class="window-bar">
+          <span class="win-title">文件</span>
+          <span class="win-sub">浏览 · 预览 · 上传 · 重命名 · 删除（先进回收站）</span>
+          <span class="win-actions">
+            <button class="win-btn" data-act="min" type="button" title="最小化" aria-label="最小化">–</button>
+            <button class="win-btn" data-act="max" type="button" title="最大化" aria-label="最大化">□</button>
+            <button class="win-btn is-close" data-act="close" type="button" title="关闭" aria-label="关闭">×</button>
+          </span>
+        </header>
+        <div class="window-body is-flat">
+          <div class="filebar">
+            <button class="mini2" id="fileUp" type="button" title="上一级">↑</button>
+            <button class="mini2" id="fileHome" type="button" title="回到根目录列表">根目录</button>
+            <div class="crumbs" id="fileCrumbs"></div>
+            <input class="filter" id="fileFilter" type="search" placeholder="筛选当前目录">
+            <button class="mini2" id="fileRefresh" type="button">刷新</button>
+            <button class="mini2" id="fileUpload" type="button">上传</button>
+            <button class="mini2" id="fileMkdir" type="button">新建文件夹</button>
+            <button class="mini2" id="fileTrash" type="button">回收站</button>
+            <input class="hidden" id="fileInput" type="file" multiple>
+          </div>
+          <div class="filebar is-actions" id="fileActions">
+            <span class="muted" id="fileSelection">未选择任何项目</span>
+            <span class="spacer"></span>
+            <button class="mini2" id="fileRename" type="button" disabled>重命名</button>
+            <button class="mini2 is-danger" id="fileDelete" type="button" disabled>删除</button>
+            <button class="mini2" id="fileClear" type="button" disabled>取消选择</button>
+            <button class="mini2 hidden" id="fileRestore" type="button">恢复</button>
+            <button class="mini2 is-danger hidden" id="filePurge" type="button">彻底删除</button>
+            <button class="mini2 is-danger hidden" id="fileEmptyTrash" type="button">清空回收站</button>
+          </div>
+          <div class="upload-bar hidden" id="uploadBar">
+            <div class="bar"><i id="uploadFill"></i></div>
+            <span class="muted" id="uploadText"></span>
+          </div>
+          <div class="filemain">
+            <div class="filelist" id="fileList"></div>
+            <aside class="fileaside" id="fileAside"></aside>
+          </div>
+          <div class="file-dialog hidden" id="fileDialog">
+            <div class="dialog-card">
+              <h3 id="dialogTitle">标题</h3>
+              <p class="muted" id="dialogText"></p>
+              <input class="dialog-input hidden" id="dialogInput" type="text" autocomplete="off">
+              <label class="dialog-check hidden" id="dialogCheckWrap">
+                <input id="dialogCheck" type="checkbox">
+                <span id="dialogCheckText">我确认</span>
+              </label>
+              <p class="error hidden" id="dialogError"></p>
+              <div class="dialog-actions">
+                <button class="mini2" id="dialogCancel" type="button">取消</button>
+                <button class="mini2 is-danger" id="dialogOk" type="button">确定</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <span class="win-resize" data-dir="e"></span>
+        <span class="win-resize" data-dir="s"></span>
+        <span class="win-resize" data-dir="se"></span>
+      </section>
+
+      <section class="window" id="view-docker" data-view="docker">
+        <header class="window-bar">
+          <span class="win-title">容器</span>
+          <span class="win-sub">Docker Engine 只读视图</span>
+          <span class="win-actions">
+            <button class="win-btn" data-act="min" type="button" title="最小化" aria-label="最小化">–</button>
+            <button class="win-btn" data-act="max" type="button" title="最大化" aria-label="最大化">□</button>
+            <button class="win-btn is-close" data-act="close" type="button" title="关闭" aria-label="关闭">×</button>
+          </span>
+        </header>
+        <div class="window-body">
+          <div class="card-grid" id="dockerCards"></div>
+          <div class="card">
+            <div class="card-head"><h2>容器</h2><span class="muted" id="dockerNote"></span></div>
+            <div class="rows" id="dockerRows"></div>
+          </div>
+        </div>
+        <span class="win-resize" data-dir="e"></span>
+        <span class="win-resize" data-dir="s"></span>
+        <span class="win-resize" data-dir="se"></span>
+      </section>
+
+      <section class="window" id="view-services" data-view="services">
+        <header class="window-bar">
+          <span class="win-title">系统</span>
+          <span class="win-sub">已装插件、关键服务与定时任务</span>
+          <span class="win-actions">
+            <button class="win-btn" data-act="min" type="button" title="最小化" aria-label="最小化">–</button>
+            <button class="win-btn" data-act="max" type="button" title="最大化" aria-label="最大化">□</button>
+            <button class="win-btn is-close" data-act="close" type="button" title="关闭" aria-label="关闭">×</button>
+          </span>
+        </header>
+        <div class="window-body">
+          <div class="card-grid" id="settingCards"></div>
+          <div class="card">
+            <div class="card-head"><h2>已安装应用</h2><span class="muted" id="pluginNote"></span></div>
+            <div class="rows" id="pluginRows"></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>关键服务</h2></div>
+            <div class="chips" id="serviceChips"></div>
+          </div>
+          <div class="card">
+            <div class="card-head"><h2>定时任务</h2><span class="muted">会周期性碰硬盘的厂商任务</span></div>
+            <div class="rows" id="cronRows"></div>
+          </div>
+        </div>
+        <span class="win-resize" data-dir="e"></span>
+        <span class="win-resize" data-dir="s"></span>
+        <span class="win-resize" data-dir="se"></span>
+      </section>
+    </div>
+  </div>
+
+  <aside class="widgets" id="widgets">
+    <section class="widget" id="widgetStatus"></section>
+    <section class="widget" id="widgetNetwork"></section>
+    <section class="widget" id="widgetStorage"></section>
+    <section class="widget" id="widgetSpace"></section>
+  </aside>
+</div>
+
+<div class="narrow-hint">
+  <h2>桌面版请在电脑上打开</h2>
+  <p class="muted">手机端只保留开关、地址与令牌。</p>
+  <code id="narrowUrl">—</code>
+  <p class="muted">用电脑浏览器打开上面的地址即可；令牌在小米客户端的控制台页面里查看。</p>
+</div>
+
+<div class="overlay hidden" id="loginOverlay">
+  <form class="login-card" id="loginForm">
+    <h2>访问令牌</h2>
+    <p class="muted">首次在新浏览器打开需要令牌（也可在手机端控制台页面查看）。</p>
+    <input id="loginToken" type="password" inputmode="text" autocomplete="current-password"
+           placeholder="粘贴访问令牌" required>
+    <p class="error hidden" id="loginError"></p>
+    <button class="primary" type="submit" id="loginSubmit">登录</button>
+  </form>
+</div>
+
+<script src="app.js"></script>
+<div class="toast hidden" id="toast"></div>
+</body>
+</html>

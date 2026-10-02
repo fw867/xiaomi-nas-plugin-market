@@ -1,0 +1,16 @@
+{
+  "plugin": "nasconsole",
+  "name": "控制台",
+  "id": 11020,
+  "desc": "硬件状态、硬盘、容器与服务；可浏览和整理文件（删除进回收站）",
+  "tags": [
+    "tool",
+    "monitoring"
+  ],
+  "developer": "Kingwell Community",
+  "publisher": "community",
+  "system": false,
+  "type": "standard",
+  "service": "xiaomi-nas-console.service",
+  "uiKey": "nasconsole"
+}

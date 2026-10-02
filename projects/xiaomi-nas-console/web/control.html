@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="format-detection" content="telephone=no">
+<link rel="icon" href="data:,">
+<title>控制台 · 开关与令牌</title>
+<link rel="stylesheet" href="styles.css">
+<link rel="stylesheet" href="control.css">
+</head>
+<body class="control-body">
+<div class="wallpaper" aria-hidden="true"></div>
+
+<!-- 顶栏按其它插件（内网穿透等）的写法：贴顶、sticky、自带下边框，
+     不再依赖 env(safe-area-inset-top)，客户端本来就把页面放在状态栏下面 -->
+<header class="control-topbar">
+  <img class="app-icon" src="icon.png" alt="">
+  <div class="brand">
+    <strong>控制台</strong>
+    <small>nasconsole</small>
+  </div>
+  <span class="state" id="stateChip">读取中…</span>
+</header>
+
+<main class="control-page">
+  <section class="control-card">
+    <div class="switch-row">
+      <div class="switch-text">
+        <h2>桌面 Web 控制台</h2>
+        <p class="muted" id="switchHint">在电脑浏览器里打开下面的地址查看</p>
+      </div>
+      <button class="switch" id="switchBtn" type="button" role="switch" aria-checked="false"
+              aria-label="桌面 Web 控制台开关">
+        <span class="knob" aria-hidden="true"></span>
+      </button>
+    </div>
+  </section>
+
+  <section class="control-card">
+    <div class="card-title"><h2>访问地址</h2><span class="muted" id="portHint"></span></div>
+    <div class="value-row">
+      <code id="urlValue">—</code>
+      <button class="mini" id="copyUrl" type="button">复制</button>
+      <a class="mini link" id="openUrl" href="#" target="_blank" rel="noreferrer">打开</a>
+    </div>
+    <p class="muted">仅局域网可访问。请勿把这个端口转发到公网；令牌等同密码。</p>
+  </section>
+
+  <section class="control-card">
+    <div class="card-title"><h2>桌面端口</h2><span class="muted" id="portState"></span></div>
+    <div class="value-row">
+      <input class="port-input" id="portInput" type="number" min="1024" max="65535" step="1"
+             inputmode="numeric" aria-label="桌面入口端口">
+      <button class="mini" id="savePort" type="button">保存</button>
+    </div>
+    <p class="muted">改端口会重写桌面入口的 nginx 配置并 reload，校验失败自动回滚。范围 1024–65535，默认 5001。</p>
+  </section>
+
+  <section class="control-card">
+    <div class="card-title"><h2>访问令牌</h2></div>
+    <div class="value-row token-row">
+      <span class="token-field">
+        <input class="token-input" id="tokenInput" type="password" readonly autocomplete="off"
+               autocapitalize="off" spellcheck="false" aria-label="访问令牌">
+        <button class="eye" id="revealToken" type="button" title="显示 / 隐藏令牌"
+                aria-label="显示令牌" aria-pressed="false">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 5.4c-4.9 0-8.6 3.9-9.7 6a1.2 1.2 0 0 0 0 1.2c1.1 2.1 4.8 6 9.7 6s8.6-3.9 9.7-6a1.2 1.2 0 0 0 0-1.2c-1.1-2.1-4.8-6-9.7-6Z"/>
+            <circle cx="12" cy="12" r="3.1"/>
+            <path class="slash" d="M4.6 4.6 19.4 19.4"/>
+          </svg>
+        </button>
+      </span>
+      <button class="mini" id="copyToken" type="button">复制</button>
+      <button class="mini danger" id="regenToken" type="button">重新生成</button>
+    </div>
+    <p class="muted">重新生成后旧令牌立即失效，电脑端需要用新令牌重新登录（手机端这个页面不受影响）。</p>
+  </section>
+
+  <p class="version" id="versionText">—</p>
+</main>
+
+<div class="toast hidden" id="toast"></div>
+<script src="control.js"></script>
+</body>
+</html>
