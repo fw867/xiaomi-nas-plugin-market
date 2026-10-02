@@ -326,26 +326,68 @@ class RegistryShapeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             version_file = root / 'VERSION'
-            with mock.patch.object(engine, 'VERSION_FILE', version_file):
+            with mock.patch.object(engine, 'VERSION_FILE', version_file), \
+                 mock.patch.object(engine, 'HOME_ROOT', root / 'home'):
                 version_file.write_text('9.9.9\n', encoding='utf-8')
                 self.assertEqual(engine.load_version(), '9.9.9')
 
                 # 文件不在时退回框架 INFO 里的登记版本
                 version_file.unlink()
-                home = root / 'home'
-                info = home / 'u1' / 'plugin' / 'nasconsole' / 'INFO'
+                info = root / 'home' / 'u1' / 'plugin' / 'nasconsole' / 'INFO'
                 info.parent.mkdir(parents=True)
                 info.write_text(json.dumps({'version': '7.7.7'}), encoding='utf-8')
-                with mock.patch.object(engine, 'HOME_ROOT', home), \
-                     mock.patch.dict(os.environ, {'NAS_USER_ID': 'u1'}):
+                with mock.patch.dict(os.environ, {'NAS_USER_ID': 'u1'}):
                     self.assertEqual(engine.load_version(), '7.7.7')
 
                 # 两处都读不到：返回空串，不编造版本号
                 info.unlink()
                 self.assertEqual(engine.load_version(), '')
 
+    def test_version_comes_from_release_directory(self) -> None:
+        """商店安装的目录名是 0.1.1-<时间>，脚本安装是 v0.1.0-<时间>：都要能取出版本号。"""
+        cases = {
+            '/data/plugin/xiaomi-nas-console/releases/0.1.1-1790567139': '0.1.1',
+            '/data/plugin/xiaomi-nas-console/releases/v0.1.0-20261003004804': '0.1.0',
+            '/data/plugin/xiaomi-nas-console/releases/0.2.4-rc5-1790567139': '0.2.4-rc5',
+            '/data/plugin/xiaomi-nas-console/current': '',
+            '/data/plugin/xiaomi-nas-console/releases/latest': '',
+            '/data/plugin/xiaomi-nas-console/releases/0.1.1': '',
+            '/tmp/project': '',
+        }
+        for raw, expected in cases.items():
+            with self.subTest(path=raw):
+                self.assertEqual(engine.version_from_release_dir(Path(raw)), expected)
+
+    def test_release_dir_wins_over_stale_version_file(self) -> None:
+        """商店会把版本抬到 0.1.1，而包里的 VERSION 文件可能还是 0.1.0：以目录名为准。"""
+        import tempfile
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as temp:
+            release = Path(temp) / 'releases' / '0.1.1-1790567139'
+            release.mkdir(parents=True)
+            (release / 'VERSION').write_text('0.1.0\n', encoding='utf-8')
+            with mock.patch.object(engine, 'VERSION_FILE', release / 'VERSION'), \
+                 mock.patch.object(engine, 'RELEASE_DIR', release):
+                self.assertEqual(engine.load_version(), '0.1.1')
+
+    def test_module_imports_with_nas_user_set(self) -> None:
+        """NAS 上服务是带 NAS_USER_ID 启的：模块导入不能依赖尚未定义的常量。
+
+        这条回归测试是必要的：曾经把 VERSION = load_version() 放在 HOME_ROOT 之前，
+        而且三个候选值写成"立即求值的元组"，结果在 NAS 上 import engine 直接 NameError。
+        """
+        import subprocess
+
+        project = Path(__file__).resolve().parent.parent
+        environment = dict(os.environ, NAS_USER_ID='u1')
+        result = subprocess.run([sys.executable, '-c', 'import engine; print(engine.VERSION)'],
+                                cwd=str(project), env=environment, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertRegex(result.stdout.strip(), r'^\d+\.\d+\.\d+$')
+
     def test_running_version_matches_release_file(self) -> None:
-        """当前进程用的版本应当就是部署目录里那份 VERSION 的内容。"""
+        """当前进程用的版本应当能对上安装位置：开发目录看 VERSION 文件。"""
         self.assertEqual(engine.VERSION, engine.load_version())
 
 

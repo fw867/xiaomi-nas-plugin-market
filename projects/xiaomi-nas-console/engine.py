@@ -31,42 +31,66 @@ from pathlib import Path
 from typing import Any
 
 PLUGIN_KEY = os.environ.get('PLUGIN_KEY', 'nasconsole')
-VERSION_FILE = Path(__file__).resolve().parent / 'VERSION'
+RELEASE_DIR = Path(__file__).resolve().parent
+VERSION_FILE = RELEASE_DIR / 'VERSION'
+# 安装目录名：脚本安装是 v0.1.0-20261003004804，商店安装是 0.1.1-1790567139
+RELEASE_DIR_PATTERN = re.compile(r'^v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.\-]+)?)-\d{8,}$')
+
+
+def version_from_release_dir(path: Path) -> str:
+    """从 `<...>/releases/<版本>-<时间>/` 这样的目录名里取版本号（拿不到就返回空串）。"""
+    if path.parent.name != 'releases':
+        return ''
+    match = RELEASE_DIR_PATTERN.match(path.name)
+    return match.group(1) if match else ''
 
 
 def load_version() -> str:
     """版本号：真实读取安装版本，不写死。
 
-    依次尝试：① 部署目录里的 VERSION（安装脚本随 release 一起放，`current` 软链指向它，
-    所以这就是"正在运行的这份代码"的版本）；② 框架登记的插件 INFO 里的 version；
-    ③ 都读不到就返回空串——界面显示 `v-`，不假装一个版本号。
+    依次尝试：
+    ① 安装目录名 —— 商店安装是 `releases/<清单版本>-<时间>`，脚本安装是
+       `releases/v<版本>-<时间>`；这是"这一次装的是什么版本"，与注册表里登记的版本
+       必然一致（商店按清单写、脚本按 VERSION 文件写）；
+    ② 同目录的 VERSION 文件（开发目录、以及目录名不合规时）；
+    ③ 框架登记的插件 INFO 里的 version；
+    ④ 都读不到返回空串——界面显示 `v-`，不编造版本号。
     """
+    # 逐个短路求值：下面几个常量（HOME_ROOT 等）在文件更靠后的位置才定义
+    for candidate in (version_from_release_dir(RELEASE_DIR), _read_version_file()):
+        if candidate:
+            return candidate
+    return _read_info_version()
+
+
+def _read_version_file() -> str:
     try:
-        text = VERSION_FILE.read_text(encoding='utf-8').strip()
+        return VERSION_FILE.read_text(encoding='utf-8').strip()
     except OSError:
-        text = ''
-    if text:
-        return text
+        return ''
+
+
+def _read_info_version() -> str:
     user = os.environ.get('NAS_USER_ID', '')
-    if user:
-        info_path = HOME_ROOT / user / 'plugin' / PLUGIN_KEY / 'INFO'
-        try:
-            info = json.loads(info_path.read_text(encoding='utf-8'))
-        except (OSError, json.JSONDecodeError):
-            info = {}
-        version = info.get('version') if isinstance(info, dict) else None
-        if isinstance(version, str) and version.strip():
-            return version.strip()
-    return ''
+    if not user:
+        return ''
+    info_path = HOME_ROOT / user / 'plugin' / PLUGIN_KEY / 'INFO'
+    try:
+        info = json.loads(info_path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return ''
+    version = info.get('version') if isinstance(info, dict) else None
+    return version.strip() if isinstance(version, str) else ''
 
-
-VERSION = load_version()
 
 SMARTCTL = os.environ.get('SMARTCTL_BIN', '/usr/sbin/smartctl')
 HDPARM = os.environ.get('HDPARM_BIN', '/usr/sbin/hdparm')
 PLUGIN_DIR = Path(os.environ.get('PLUGIN_DIR', '/data/plugin'))
 HOME_ROOT = Path(os.environ.get('HOME_ROOT', '/home'))
 DOCKER_SOCKET = os.environ.get('DOCKER_SOCKET', '/var/run/docker.sock')
+
+# 放在常量之后计算：load_version() 在极端情况下会去读 INFO（依赖 HOME_ROOT）
+VERSION = load_version()
 
 SAMPLE_INTERVAL = float(os.environ.get('SAMPLE_INTERVAL', '2'))
 HISTORY_POINTS = int(os.environ.get('HISTORY_POINTS', '150'))      # 2s × 150 = 5 分钟
@@ -1585,8 +1609,10 @@ def cpu_temperature() -> float | None:
 # ---------------------------------------------------------------------------
 
 LAN_CONF = Path(os.environ.get('LAN_CONF', '/etc/nginx/conf.d/xiaomi-nas-console-lan.conf'))
+# 入口模板默认取本 release 目录里的那份（安装包与脚本安装都放在 <release>/lan/ 下），
+# 单元文件里的 LAN_TEMPLATE 指向 current/lan/…，两条路都落到同一个文件。
 LAN_TEMPLATE = Path(os.environ.get('LAN_TEMPLATE',
-                                   '/data/plugin/xiaomi-nas-console/lan/xiaomi-nas-console-lan.conf'))
+                                   RELEASE_DIR / 'lan' / 'xiaomi-nas-console-lan.conf'))
 LAN_PORT = int(os.environ.get('LAN_PORT', '5001'))
 ADMIN_TOKEN_FILE = Path(os.environ.get('ADMIN_TOKEN_FILE',
                                        '/data/plugin/xiaomi-nas-console/admin-token'))
