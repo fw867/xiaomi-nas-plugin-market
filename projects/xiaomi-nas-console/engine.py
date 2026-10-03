@@ -1558,6 +1558,302 @@ def save_upload(directory: Path, name: str, stream: Any, length: int, overwrite:
 
 
 # ---------------------------------------------------------------------------
+# 复制 / 移动：走后台任务
+#
+# 为什么不在请求里同步做完：跨文件系统（存储池 /nas/pool0 是 FUSE、外接盘在 /mnt）
+# 的移动必须"先复制再删源"，几百 GB 会跑几十分钟，同步请求必定超时。所以这里起一个
+# 工作线程，接口立刻返回任务号，前端轮询进度。
+# ---------------------------------------------------------------------------
+
+COPY_CHUNK = 1024 * 1024
+TASK_TTL = 1800.0                     # 结束后的任务信息保留 30 分钟，供前端收尾
+
+
+class TaskCancelled(Exception):
+    pass
+
+
+class FileTask:
+    """一次复制/移动任务的进度与结果。"""
+
+    def __init__(self, task_id: str, mode: str, sources: list[Path], target: Path | None,
+                 conflict: str = 'rename') -> None:
+        self.id = task_id
+        self.mode = mode                       # copy | move
+        self.sources = sources
+        self.target = target
+        self.conflict = conflict               # rename | skip | overwrite
+        self.state = 'running'                 # running | done | failed | cancelled
+        self.total = 0
+        self.done = 0
+        self.files = 0
+        self.copied = 0
+        self.skipped = 0
+        self.errors: list[dict[str, str]] = []
+        self.current = ''
+        self.started_at = time.time()
+        self.finished_at: float | None = None
+        self.cancel_event = threading.Event()
+        self.message = ''
+
+    def payload(self) -> dict[str, Any]:
+        elapsed = (self.finished_at or time.time()) - self.started_at
+        speed = int(self.done / elapsed) if elapsed > 0.5 and self.done else 0
+        remaining = ''
+        if self.state == 'running' and self.total > self.done and speed > 0:
+            seconds = int((self.total - self.done) / speed)
+            remaining = f'{seconds // 60} 分 {seconds % 60} 秒'
+        return {
+            'id': self.id,
+            'mode': self.mode,
+            'state': self.state,
+            'total': self.total,
+            'done': self.done,
+            'percent': round(self.done * 100 / self.total, 1) if self.total else (100.0 if self.state == 'done' else 0.0),
+            'files': self.files,
+            'copied': self.copied,
+            'skipped': self.skipped,
+            'errors': self.errors[:20],
+            'error_count': len(self.errors),
+            'current': self.current,
+            'speed': speed,
+            'eta': remaining,
+            'elapsed': int(elapsed),
+            'message': self.message,
+            'sources': [str(path) for path in self.sources],
+            'target': str(self.target) if self.target else '',
+        }
+
+    def request_cancel(self) -> None:
+        if self.state == 'running':
+            self.cancel_event.set()
+
+
+_tasks: dict[str, FileTask] = {}
+_tasks_lock = threading.Lock()
+
+
+def _prune_tasks() -> None:
+    now = time.time()
+    with _tasks_lock:
+        for key, task in list(_tasks.items()):
+            if task.finished_at and now - task.finished_at > TASK_TTL:
+                _tasks.pop(key, None)
+
+
+def file_task(task_id: str) -> FileTask | None:
+    with _tasks_lock:
+        return _tasks.get(task_id)
+
+
+def _check_target_for(source: Path, target: Path) -> None:
+    """目标不能是自己、也不能是自己的子目录（否则会无限递归）。"""
+    if source == target:
+        raise RuntimeError('目标目录就是源目录本身')
+    if source.is_dir():
+        try:
+            target.resolve().relative_to(source.resolve())
+        except ValueError:
+            return
+        raise RuntimeError(f'不能把 {source.name} 放进它自己的子目录里')
+
+
+def _conflict_target(target: Path, mode: str) -> Path | None:
+    """目标已存在时的处理：改名返回新路径，跳过返回 None。"""
+    if not target.exists():
+        return target
+    if mode == 'overwrite':
+        return target
+    if mode == 'skip':
+        return None
+    stem, suffix = target.stem, target.suffix
+    for index in range(1, 1000):
+        candidate = target.with_name(f'{stem} ({index}){suffix}')
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError(f'{target.name} 的重名副本太多了')
+
+
+def _copy_metadata(source: Path, target: Path) -> None:
+    try:
+        shutil.copystat(source, target, follow_symlinks=False)
+    except OSError:
+        pass
+    try:
+        info = source.stat()
+        os.chown(target, info.st_uid, info.st_gid)
+    except (OSError, AttributeError):
+        pass                                   # 非 root 或平台不支持时保持默认
+
+
+def _copy_file(source: Path, target: Path, task: FileTask) -> None:
+    if target.exists() and task.conflict == 'overwrite':
+        target.unlink(missing_ok=True)
+    with source.open('rb') as handle_in, target.open('wb') as handle_out:
+        while True:
+            if task.cancel_event.is_set():
+                raise TaskCancelled()
+            chunk = handle_in.read(COPY_CHUNK)
+            if not chunk:
+                break
+            handle_out.write(chunk)
+            task.done += len(chunk)
+    _copy_metadata(source, target)
+    task.copied += 1
+
+
+def _copy_tree(source: Path, target: Path, task: FileTask) -> None:
+    target.mkdir(parents=True, exist_ok=True)
+    _copy_metadata(source, target)
+    for entry in sorted(source.iterdir(), key=lambda item: item.name):
+        if task.cancel_event.is_set():
+            raise TaskCancelled()
+        destination = _conflict_target(target / entry.name, task.conflict)
+        if destination is None:
+            task.skipped += 1
+            task.done += _tree_size(entry)
+            continue
+        task.current = str(entry)
+        if entry.is_dir():
+            _copy_tree(entry, destination, task)
+        else:
+            _copy_file(entry, destination, task)
+
+
+def _copy_or_move(source: Path, directory: Path, task: FileTask) -> str:
+    """返回 'copied' 或 'skipped'。目录最后再补一次 copystat，保证时间戳不被后续写入改掉。"""
+    destination = _conflict_target(directory / source.name, task.conflict)
+    if destination is None:
+        task.skipped += 1
+        task.done += _tree_size(source)
+        return 'skipped'
+    task.current = str(source)
+    if source.is_dir():
+        _copy_tree(source, destination, task)
+        _copy_metadata(source, destination)
+    else:
+        _copy_file(source, destination, task)
+    if task.mode == 'move':
+        # 同盘 rename 先试一次（几乎瞬间）；跨文件系统才走"复制 + 校验 + 删除"
+        if not _moved_by_rename(source, destination):
+            _verify_then_remove(source, destination, task)
+    return 'copied'
+
+
+def _moved_by_rename(source: Path, destination: Path) -> bool:
+    try:
+        os.rename(source, destination)
+        return True
+    except OSError:
+        return False
+
+
+def _verify_then_remove(source: Path, destination: Path, task: FileTask) -> None:
+    """跨文件系统移动：按文件大小核对，确认无误再删源。"""
+    if source.is_dir():
+        problems = []
+        for root, _dirs, files in os.walk(source):
+            relative = Path(root).relative_to(source)
+            for name in files:
+                original = Path(root) / name
+                copy = destination / relative / name
+                try:
+                    if not copy.is_file() or copy.stat().st_size != original.stat().st_size:
+                        problems.append(str(original))
+                except OSError:
+                    problems.append(str(original))
+        if problems:
+            raise RuntimeError(f'复制校验失败，源文件已保留：{problems[:3]}')
+        shutil.rmtree(source, ignore_errors=False)
+    else:
+        if not destination.is_file() or destination.stat().st_size != source.stat().st_size:
+            raise RuntimeError(f'复制校验失败，源文件已保留：{source}')
+        source.unlink()
+
+
+def _run_task(task: FileTask) -> None:
+    try:
+        for source in task.sources:
+            if task.cancel_event.is_set():
+                raise TaskCancelled()
+            try:
+                _copy_or_move(source, task.target, task)
+            except TaskCancelled:
+                raise
+            except (OSError, RuntimeError) as error:
+                task.errors.append({'path': str(source), 'error': str(error)})
+                task.done += _tree_size(source)
+        task.state = 'cancelled' if task.cancel_event.is_set() else ('failed' if task.errors and not task.copied else 'done')
+        if task.state == 'done':
+            action = '移动' if task.mode == 'move' else '复制'
+            task.message = f'{action}完成：{task.copied} 项（跳过 {task.skipped} 项）'
+        elif task.state == 'failed':
+            task.message = f'失败：{task.errors[0]["error"]}'
+        else:
+            task.message = '已取消'
+    except TaskCancelled:
+        task.state = 'cancelled'
+        task.message = '已取消（已复制的内容会留在目标目录）'
+    except Exception as error:                                     # noqa: BLE001
+        task.state = 'failed'
+        task.message = str(error)
+    finally:
+        task.finished_at = time.time()
+        task.current = ''
+        log(f'文件任务 {task.id}（{task.mode}）{task.state}：{task.message}')
+
+
+def start_file_task(mode: str, raw_paths: list[str], raw_target: str | None,
+                    conflict: str = 'rename') -> dict[str, Any]:
+    """校验参数并启动后台复制/移动任务，立刻返回任务号。"""
+    if mode not in ('copy', 'move'):
+        raise RuntimeError('只支持 copy / move')
+    if conflict not in ('rename', 'skip', 'overwrite'):
+        raise RuntimeError('conflict 只能是 rename / skip / overwrite')
+    if not isinstance(raw_paths, list) or not raw_paths:
+        raise RuntimeError('缺少要处理的路径')
+    if len(raw_paths) > 200:
+        raise RuntimeError('一次最多处理 200 项')
+    sources: list[Path] = []
+    for item in raw_paths:
+        path = resolve_user_path(str(item))
+        if is_root_path(path):
+            raise RuntimeError('不能复制或移动存储根目录')
+        if in_trash(path):
+            raise RuntimeError('回收站里的内容请用「恢复」或「彻底删除」')
+        if not path.exists():
+            raise RuntimeError(f'{item} 不存在')
+        sources.append(path)
+
+    target: Path | None = None
+    if mode in ('copy', 'move'):
+        target = resolve_user_path(str(raw_target or ''))
+        if not target.is_dir():
+            raise RuntimeError('目标不是目录')
+        for source in sources:
+            _check_target_for(source, target)
+
+    _prune_tasks()
+    task = FileTask(secrets.token_hex(6), mode, sources, target, conflict)
+    with _tasks_lock:
+        _tasks[task.id] = task
+    threading.Thread(target=_preflight_and_run, args=(task,), daemon=True,
+                     name=f'filetask-{task.id}').start()
+    log(f'开始{("移动" if mode == "move" else "复制")}任务 {task.id}：{len(sources)} 项 -> {target}')
+    return {'ok': True, 'task': task.payload()}
+
+
+def _preflight_and_run(task: FileTask) -> None:
+    """先算总字节（算进度用），再开跑。"""
+    try:
+        task.total = sum(_tree_size(source) for source in task.sources)
+        task.files = sum(_entry_count(source) for source in task.sources)
+    except Exception:                                              # noqa: BLE001
+        task.total = 0
+    _run_task(task)
+
+
+# ---------------------------------------------------------------------------
 # 汇总
 # ---------------------------------------------------------------------------
 

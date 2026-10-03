@@ -879,6 +879,142 @@ class WriteOperationTests(unittest.TestCase):
             engine.create_folder(Path('/etc'), 'x')
 
 
+class FileOperationTests(unittest.TestCase):
+    """复制 / 移动（右键菜单用的后台任务）：冲突处理、跨盘回退、边界防护。"""
+
+    def setUp(self) -> None:
+        import tempfile
+        import time as time_module
+        from unittest import mock
+
+        self.time = time_module
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name) / 'share'
+        (self.root / 'src').mkdir(parents=True)
+        (self.root / 'src' / 'a.txt').write_text('aaa', encoding='utf-8')
+        (self.root / 'src' / 'sub').mkdir()
+        (self.root / 'src' / 'sub' / 'b.bin').write_bytes(b'b' * 2048)
+        (self.root / 'dst').mkdir()
+        self.mock = mock
+        self.patch = mock.patch.object(engine, 'FILE_ROOTS', [(str(self.root), '测试根')])
+        self.patch.start()
+
+    def tearDown(self) -> None:
+        self.patch.stop()
+        self.temp.cleanup()
+
+    def run_task(self, mode, paths, target, conflict='rename', timeout=20.0) -> engine.FileTask:
+        started = engine.start_file_task(mode, [str(item) for item in paths], str(target), conflict)
+        task_id = started['task']['id']
+        deadline = self.time.time() + timeout
+        while self.time.time() < deadline:
+            task = engine.file_task(task_id)
+            if task and task.state != 'running':
+                return task
+            self.time.sleep(0.05)
+        raise AssertionError('任务超时未结束')
+
+    def test_copy_file_and_metadata(self) -> None:
+        source = self.root / 'src' / 'a.txt'
+        os.utime(source, (1_600_000_000, 1_600_000_000))
+        task = self.run_task('copy', [source], self.root / 'dst')
+        self.assertEqual(task.state, 'done', task.message)
+        target = self.root / 'dst' / 'a.txt'
+        self.assertEqual(target.read_text(encoding='utf-8'), 'aaa')
+        self.assertEqual(int(target.stat().st_mtime), 1_600_000_000)
+        self.assertEqual(source.read_text(encoding='utf-8'), 'aaa', '复制不该动源文件')
+        self.assertEqual(task.copied, 1)
+        self.assertEqual(task.total, 3)
+        self.assertEqual(task.done, 3)
+
+    def test_copy_directory_recursive(self) -> None:
+        task = self.run_task('copy', [self.root / 'src'], self.root / 'dst')
+        self.assertEqual(task.state, 'done', task.message)
+        self.assertTrue((self.root / 'dst' / 'src' / 'sub' / 'b.bin').is_file())
+        self.assertEqual((self.root / 'dst' / 'src' / 'sub' / 'b.bin').stat().st_size, 2048)
+        self.assertEqual(task.total, 2051)
+
+    def test_copy_conflict_renames(self) -> None:
+        (self.root / 'dst' / 'a.txt').write_text('old', encoding='utf-8')
+        task = self.run_task('copy', [self.root / 'src' / 'a.txt'], self.root / 'dst')
+        self.assertEqual(task.state, 'done', task.message)
+        self.assertEqual((self.root / 'dst' / 'a.txt').read_text(encoding='utf-8'), 'old')
+        self.assertEqual((self.root / 'dst' / 'a (1).txt').read_text(encoding='utf-8'), 'aaa')
+
+    def test_copy_conflict_skip_and_overwrite(self) -> None:
+        (self.root / 'dst' / 'a.txt').write_text('old', encoding='utf-8')
+        task = self.run_task('copy', [self.root / 'src' / 'a.txt'], self.root / 'dst', 'skip')
+        self.assertEqual(task.state, 'done', task.message)
+        self.assertEqual(task.skipped, 1)
+        self.assertEqual((self.root / 'dst' / 'a.txt').read_text(encoding='utf-8'), 'old')
+
+        task = self.run_task('copy', [self.root / 'src' / 'a.txt'], self.root / 'dst', 'overwrite')
+        self.assertEqual(task.state, 'done', task.message)
+        self.assertEqual((self.root / 'dst' / 'a.txt').read_text(encoding='utf-8'), 'aaa')
+
+    def test_move_same_filesystem(self) -> None:
+        task = self.run_task('move', [self.root / 'src' / 'a.txt'], self.root / 'dst')
+        self.assertEqual(task.state, 'done', task.message)
+        self.assertFalse((self.root / 'src' / 'a.txt').exists())
+        self.assertEqual((self.root / 'dst' / 'a.txt').read_text(encoding='utf-8'), 'aaa')
+
+    def test_move_cross_device_falls_back_to_copy_then_delete(self) -> None:
+        """跨文件系统（存储池 /nas/pool0 是 FUSE、外接盘在 /mnt）rename 会失败：
+        必须退化成"复制 → 校验 → 删源"，且校验不过时绝不能删源。"""
+        with self.mock.patch.object(engine, '_moved_by_rename', lambda source, destination: False):
+            task = self.run_task('move', [self.root / 'src' / 'sub'], self.root / 'dst')
+        self.assertEqual(task.state, 'done', task.message)
+        self.assertFalse((self.root / 'src' / 'sub').exists(), '源目录应在校验通过后删除')
+        self.assertEqual((self.root / 'dst' / 'sub' / 'b.bin').stat().st_size, 2048)
+
+    def test_verify_then_remove_keeps_source_on_mismatch(self) -> None:
+        source = self.root / 'src' / 'a.txt'
+        copy = self.root / 'dst' / 'a.txt'
+        copy.write_text('shorter', encoding='utf-8')
+        task = engine.FileTask('t', 'move', [source], self.root / 'dst')
+        with self.assertRaises(RuntimeError):
+            engine._verify_then_remove(source, copy, task)
+        self.assertTrue(source.exists(), '校验失败必须保留源文件')
+
+    def test_move_into_own_subdirectory_is_refused(self) -> None:
+        with self.assertRaises(RuntimeError):
+            engine.start_file_task('move', [str(self.root / 'src')], str(self.root / 'src' / 'sub'))
+        with self.assertRaises(RuntimeError):
+            engine.start_file_task('copy', [str(self.root / 'src')], str(self.root / 'src'))
+
+    def test_refuses_roots_and_missing(self) -> None:
+        with self.assertRaises(RuntimeError):
+            engine.start_file_task('move', [str(self.root)], str(self.root / 'dst'))
+        with self.assertRaises(RuntimeError):
+            engine.start_file_task('copy', ['/nas/pool0'], str(self.root / 'dst'))
+        with self.assertRaises(RuntimeError):
+            engine.start_file_task('copy', [str(self.root / 'nope.txt')], str(self.root / 'dst'))
+        with self.assertRaises(RuntimeError):
+            engine.start_file_task('copy', [str(self.root / 'src' / 'a.txt')], str(self.root / 'nope'))
+
+    def test_refuses_trash_items_and_bad_mode(self) -> None:
+        item = engine.move_to_trash(self.root / 'src' / 'a.txt')
+        with self.assertRaises(RuntimeError):
+            engine.start_file_task('copy', [str(item['trashed'])], str(self.root / 'dst'))
+        with self.assertRaises(RuntimeError):
+            engine.start_file_task('delete', [str(self.root / 'src')], str(self.root / 'dst'))
+        with self.assertRaises(RuntimeError):
+            engine.start_file_task('copy', [str(self.root / 'src')], str(self.root / 'dst'), 'whatever')
+
+    def test_task_payload_has_progress_fields(self) -> None:
+        task = self.run_task('copy', [self.root / 'src' / 'a.txt'], self.root / 'dst')
+        payload = task.payload()
+        self.assertEqual(payload['mode'], 'copy')
+        self.assertEqual(payload['state'], 'done')
+        for field in ('id', 'state', 'total', 'done', 'percent', 'copied', 'skipped', 'eta', 'speed'):
+            self.assertIn(field, payload)
+        self.assertTrue(payload['id'])
+        self.assertEqual(payload['percent'], 100.0)
+
+    def test_missing_task_returns_none(self) -> None:
+        self.assertIsNone(engine.file_task('nope'))
+
+
 class ServerHttpTests(unittest.TestCase):
     """真实起一个 HTTP 服务打一遍关键路由。
 
@@ -1157,6 +1293,47 @@ class ServerHttpTests(unittest.TestCase):
                                      body=json.dumps({'token': 'secret-token'}).encode(),
                                      headers={'Content-Type': 'application/json'})
             self.assertEqual(status, 401)
+
+    def test_file_op_endpoints(self) -> None:
+        """右键菜单的复制/移动到：POST 起任务 → GET 轮询 → 取消。"""
+        import time as time_module
+        from unittest import mock
+
+        root = Path(self.temp.name) / 'ops'
+        (root / 'from').mkdir(parents=True)
+        (root / 'from' / 'x.txt').write_text('hello op', encoding='utf-8')
+        (root / 'to').mkdir()
+
+        with mock.patch.object(engine, 'FILE_ROOTS', [(str(root), '测试根')]):
+            status, body = self.request('/api/files/op', method='POST',
+                                        body=json.dumps({'mode': 'copy', 'paths': [str(root / 'from' / 'x.txt')],
+                                                         'target': str(root / 'to')}).encode(),
+                                        headers={'Content-Type': 'application/json'})
+            self.assertEqual(status, 200)
+            task_id = json.loads(body)['task']['id']
+
+            payload = {}
+            for _ in range(60):
+                status, body = self.request(f'/api/files/op/{task_id}')
+                self.assertEqual(status, 200)
+                payload = json.loads(body)
+                if payload['state'] != 'running':
+                    break
+                time_module.sleep(0.1)
+            self.assertEqual(payload['state'], 'done')
+            self.assertTrue((root / 'to' / 'x.txt').is_file())
+
+            # 目标不是目录 → 400
+            status, _ = self.request('/api/files/op', method='POST',
+                                     body=json.dumps({'mode': 'copy', 'paths': [str(root / 'from' / 'x.txt')],
+                                                      'target': str(root / 'nope')}).encode(),
+                                     headers={'Content-Type': 'application/json'})
+            self.assertEqual(status, 400)
+
+            # 不存在的任务 → 不是错误，返回 expired
+            status, body = self.request('/api/files/op/doesnotexist')
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body)['state'], 'expired')
 
     def test_handler_routes_exist(self) -> None:
         handler = self.server_module.Handler

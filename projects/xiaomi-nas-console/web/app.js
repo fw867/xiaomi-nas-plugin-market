@@ -29,6 +29,8 @@ const state = {
   files: {
     path: '', data: null, preview: null, filter: '', active: null, loading: false,
     selected: new Set(), mode: 'browse', trash: null,
+    clipboard: { mode: '', paths: [] }, task: null, taskTimer: 0,
+    pick: { path: '', data: null, onPick: null },
   },
   csrf: '',
   plugins: [],
@@ -1090,14 +1092,21 @@ function renderTrashList() {
 function renderFileActions() {
   const trashMode = state.files.mode === 'trash';
   const count = state.files.selected.size;
-  $('fileSelection').textContent = trashMode
+  const clip = state.files.clipboard;
+  const clipText = clip.paths.length ? ` · 剪贴板：已${clip.mode === 'cut' ? '剪切' : '复制'} ${clip.paths.length} 项` : '';
+  $('fileSelection').textContent = (trashMode
     ? (count ? `回收站已选 ${count} 项` : '回收站：选中后可恢复或彻底删除')
-    : (count ? `已选 ${count} 项` : '未选择任何项目');
-  for (const id of ['fileRename', 'fileDelete', 'fileClear']) $(id).classList.toggle('hidden', trashMode);
+    : (count ? `已选 ${count} 项` : '未选择任何项目')) + clipText;
+  for (const id of ['fileRename', 'fileDelete', 'fileClear', 'fileCopyTo', 'fileMoveTo', 'filePaste']) {
+    $(id).classList.toggle('hidden', trashMode);
+  }
   for (const id of ['fileRestore', 'filePurge', 'fileEmptyTrash']) $(id).classList.toggle('hidden', !trashMode);
   $('fileRename').disabled = count !== 1;
   $('fileDelete').disabled = count === 0;
   $('fileClear').disabled = count === 0;
+  $('fileCopyTo').disabled = count === 0;
+  $('fileMoveTo').disabled = count === 0;
+  $('filePaste').disabled = !clip.paths.length || !state.files.path;
   $('fileRestore').disabled = count === 0;
   $('filePurge').disabled = count === 0;
   $('fileEmptyTrash').disabled = !((state.files.trash && state.files.trash.items) || []).length;
@@ -1108,6 +1117,338 @@ function renderFileActions() {
   $('fileUp').disabled = trashMode || !(state.files.data && state.files.data.parent);
   $('fileHome').disabled = false;
 }
+
+/* ------------------------------------------------- 右键菜单 */
+
+// 菜单图标用内联 SVG：不依赖字体（之前用 ␡ 这类字符，某些字体会渲染成 "DEL" 字样）
+const CTX_ICON_PATHS = {
+  open: ['M6 3.5h6.5v6.5', 'M12.5 3.5 5.5 10.5', 'M11 9v3.5H3.5V5H7'],
+  eye: ['M1.8 8S4.4 4 8 4s6.2 4 6.2 4-2.6 4-6.2 4S1.8 8 1.8 8z', 'M8 6.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3z'],
+  download: ['M8 2.5v7', 'M4.9 6.6 8 9.7l3.1-3.1', 'M3 13h10'],
+  copy: ['M5.5 2.5h6a1.5 1.5 0 0 1 1.5 1.5v6', 'M4.5 5.5h6A1.5 1.5 0 0 1 12 7v5.5a1.5 1.5 0 0 1-1.5 1.5h-6A1.5 1.5 0 0 1 3 12.5V7a1.5 1.5 0 0 1 1.5-1.5z'],
+  cut: ['M4.2 3 11 12.2', 'M11.8 3 5 12.2', 'M4.6 13.4a1.9 1.9 0 1 0 0-3.8 1.9 1.9 0 0 0 0 3.8z', 'M11.4 13.4a1.9 1.9 0 1 0 0-3.8 1.9 1.9 0 0 0 0 3.8z'],
+  paste: ['M6 2.8h4v1.6H6z', 'M4.5 4.4H3.5A1.5 1.5 0 0 0 2 5.9v6.6A1.5 1.5 0 0 0 3.5 14h9a1.5 1.5 0 0 0 1.5-1.5V5.9a1.5 1.5 0 0 0-1.5-1.5h-1'],
+  rename: ['M2.5 13.5h3.2L13.4 5.8a1.4 1.4 0 0 0 0-2L12.2 2.6a1.4 1.4 0 0 0-2 0L2.5 10.3v3.2z', 'M9.6 3.4l3 3'],
+  copyto: ['M2 6h4l1.4 1.6H14v5.6H2z', 'M7.4 10.4h5', 'M10.6 8.6l1.8 1.8-1.8 1.8'],
+  moveto: ['M2.5 8h10', 'M9 4.5 12.5 8 9 11.5'],
+  trash: ['M3 4.6h10', 'M6.2 4.6V3h3.6v1.6', 'M4.6 4.6 5.3 13h5.4l.7-8.4'],
+  link: ['M6.6 9.4a2.6 2.6 0 0 0 3.7 0l2-2a2.6 2.6 0 1 0-3.7-3.7l-.7.7', 'M9.4 6.6a2.6 2.6 0 0 0-3.7 0l-2 2a2.6 2.6 0 1 0 3.7 3.7l.7-.7'],
+  check: ['M2.5 8.4 6 11.9l7.5-7.5'],
+  newfolder: ['M2 5.4h4.2L7.6 7H14v6.6H2z', 'M8 9.6v2.4', 'M6.8 10.8h2.4'],
+  upload: ['M8 13.5V6.4', 'M4.9 9.5 8 6.4l3.1 3.1', 'M3 3.5h10'],
+  refresh: ['M13 8a5 5 0 1 1-1.6-3.7', 'M13 2.6V5h-2.4'],
+  selectall: ['M2.5 8.4 5.4 11.3 13.5 3.2'],
+};
+
+function ctxIcon(name) {
+  const paths = CTX_ICON_PATHS[name];
+  if (!paths) return h('span', { class: 'ctx-icon' });
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 16 16');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('class', 'ctx-svg');
+  for (const data of paths) {
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', data);
+    svg.append(path);
+  }
+  return h('span', { class: 'ctx-icon' }, svg);
+}
+
+function closeContextMenu() {
+  $('ctxMenu').classList.add('hidden');
+  $('ctxMenu').replaceChildren();
+}
+
+function openContextMenu(x, y, items) {
+  const menu = $('ctxMenu');
+  const nodes = [];
+  for (const item of items) {
+    if (!item) continue;
+    if (item.sep) { nodes.push(h('div', { class: 'ctx-sep' })); continue; }
+    const button = h('button', { class: 'ctx-item' + (item.danger ? ' is-danger' : ''), type: 'button', role: 'menuitem' },
+      ctxIcon(item.icon),
+      h('span', { text: item.label }),
+      item.key ? h('span', { class: 'ctx-key', text: item.key }) : null);
+    if (item.disabled) button.disabled = true;
+    else button.addEventListener('click', () => { closeContextMenu(); item.run(); });
+    nodes.push(button);
+  }
+  menu.replaceChildren(...nodes);
+  menu.classList.remove('hidden');
+  menu.style.setProperty('left', '0px');
+  menu.style.setProperty('top', '0px');
+  const box = menu.getBoundingClientRect();
+  menu.style.setProperty('left', `${Math.max(4, Math.min(x, window.innerWidth - box.width - 8))}px`);
+  menu.style.setProperty('top', `${Math.max(4, Math.min(y, window.innerHeight - box.height - 8))}px`);
+}
+
+function rowPath(row) {
+  if (!row || state.files.mode === 'trash') return '';
+  const data = state.files.data;
+  if (!data || !data.path || !row.dataset.name) return '';
+  return joinPath(data.path, row.dataset.name);
+}
+
+function rowEntry(row) {
+  const data = state.files.data;
+  if (!data || !row || !row.dataset.name) return null;
+  return (data.entries || []).find((item) => item.name === row.dataset.name) || null;
+}
+
+function selectRow(row, additive) {
+  const path = rowPath(row);
+  if (!path) return;
+  if (!additive) state.files.selected = new Set([path]);
+  else if (state.files.selected.has(path)) state.files.selected.delete(path);
+  else state.files.selected.add(path);
+  renderFileList();
+  renderFileActions();
+}
+
+function selectAll() {
+  if (state.files.mode === 'trash') {
+    const items = (state.files.trash && state.files.trash.items) || [];
+    state.files.selected = new Set(items.map((item) => String(item.id)));
+    renderTrashList();
+  } else {
+    const data = state.files.data;
+    if (!data || !data.path) return;
+    state.files.selected = new Set((data.entries || []).map((entry) => joinPath(data.path, entry.name)));
+    renderFileList();
+  }
+  renderFileActions();
+}
+
+function contextMenuForRow(event, row) {
+  const trashMode = state.files.mode === 'trash';
+  const path = trashMode ? '' : rowPath(row);
+  const entry = rowEntry(row);
+  const items = [];
+  if (trashMode) {
+    const ids = selectedPaths();
+    items.push(
+      { label: '恢复到原位置', icon: 'refresh', run: doRestore, disabled: !ids.length },
+      { sep: true },
+      { label: '彻底删除…', icon: 'trash', key: 'Del', danger: true, run: () => doPurge(ids, `彻底删除 ${ids.length} 项`) },
+      { sep: true },
+      { label: '全选', icon: 'check', key: 'Ctrl+A', run: selectAll },
+    );
+    openContextMenu(event.clientX, event.clientY, items);
+    return;
+  }
+  const isDir = entry && entry.kind === 'dir';
+  const count = state.files.selected.size;
+  items.push(
+    isDir
+      ? { label: '打开', icon: 'open', run: () => loadFiles(path).catch(markFail) }
+      : { label: '预览', icon: 'eye', run: () => { if (entry) selectFile(entry, path).catch(markFail); } },
+    !isDir && entry ? { label: '下载', icon: 'download', run: () => downloadPath(path) } : null,
+    { sep: true },
+    { label: '复制', icon: 'copy', key: 'Ctrl+C', run: () => clipboardSet('copy') },
+    { label: '剪切', icon: 'cut', key: 'Ctrl+X', run: () => clipboardSet('cut') },
+    { label: '粘贴到此处', icon: 'paste', key: 'Ctrl+V', disabled: !state.files.clipboard.paths.length, run: () => pasteInto(state.files.path) },
+    { sep: true },
+    { label: '重命名…', icon: 'rename', key: 'F2', disabled: count !== 1, run: doRename },
+    { label: '复制到…', icon: 'copyto', run: () => copyMoveTo('copy') },
+    { label: '移动到…', icon: 'moveto', run: () => copyMoveTo('move') },
+    { label: '删除（进回收站）', icon: 'trash', key: 'Del', danger: true, run: doDelete },
+    { sep: true },
+    { label: '复制完整路径', icon: 'link', run: async () => {
+      const ok = await copyText(selectedPaths().join('\n'));
+      toast(ok ? '路径已复制' : '复制失败，请长按选择', ok ? '' : 'error');
+    } },
+    { label: '全选', icon: 'check', key: 'Ctrl+A', run: selectAll },
+  );
+  openContextMenu(event.clientX, event.clientY, items);
+}
+
+function contextMenuForEmpty(event) {
+  const trashMode = state.files.mode === 'trash';
+  openContextMenu(event.clientX, event.clientY, [
+    { label: '新建文件夹…', icon: 'newfolder', disabled: trashMode, run: doMkdir },
+    { label: '上传文件…', icon: 'upload', disabled: trashMode, run: () => $('fileInput').click() },
+    { label: '粘贴到当前目录', icon: 'paste', key: 'Ctrl+V', disabled: trashMode || !state.files.clipboard.paths.length, run: () => pasteInto(state.files.path) },
+    { sep: true },
+    { label: '刷新', icon: 'refresh', run: () => (trashMode ? loadTrash() : loadFiles(state.files.path || '')).catch(markFail) },
+    { label: '全选', icon: 'check', key: 'Ctrl+A', run: selectAll },
+  ]);
+}
+
+/* ------------------------------------------------- 剪贴板与复制/移动 */
+
+function clipboardSet(mode) {
+  const paths = selectedPaths();
+  if (!paths.length) { toast('先选中要处理的项目', 'error'); return; }
+  state.files.clipboard = { mode, paths };
+  renderFileActions();
+  toast(`已${mode === 'cut' ? '剪切' : '复制'} ${paths.length} 项：到目标目录右键「粘贴到当前目录」`);
+}
+
+async function pasteInto(directory) {
+  const clip = state.files.clipboard;
+  if (!clip.paths.length) { toast('剪贴板是空的', 'error'); return; }
+  if (!directory) { toast('请先进入一个目录', 'error'); return; }
+  if (clip.paths.includes(directory)) { toast('不能粘贴到源目录本身', 'error'); return; }
+  await runFileOp(clip.mode === 'cut' ? 'move' : 'copy', clip.paths, directory);
+}
+
+async function runFileOp(mode, paths, target) {
+  if (!paths.length) { toast('先选中要处理的项目', 'error'); return; }
+  try {
+    const result = await writeApi('files/op', { mode, paths, target, conflict: 'rename' });
+    watchTask(result.task);
+  } catch (error) {
+    toast(error.message, 'error');
+  }
+}
+
+function copyMoveTo(mode) {
+  const paths = selectedPaths();
+  if (!paths.length) { toast('先选中要处理的项目', 'error'); return; }
+  const label = mode === 'move' ? '移动到' : '复制到';
+  pickDirectory({
+    title: `${label}哪里？（已选 ${paths.length} 项）`,
+    onPick: (target) => runFileOp(mode, paths, target),
+  });
+}
+
+function watchTask(task) {
+  state.files.task = task;
+  renderTaskBar();
+  clearInterval(state.files.taskTimer);
+  state.files.taskTimer = setInterval(pollTask, 1000);
+}
+
+async function pollTask() {
+  const task = state.files.task;
+  if (!task) { clearInterval(state.files.taskTimer); state.files.taskTimer = 0; return; }
+  try {
+    const info = await api(`files/op/${task.id}`);
+    state.files.task = info;
+    renderTaskBar();
+    if (info.state === 'running') return;
+    clearInterval(state.files.taskTimer);
+    state.files.taskTimer = 0;
+    state.files.clipboard = { mode: '', paths: [] };
+    toast(info.message || '完成', info.state === 'failed' ? 'error' : '');
+    await loadFiles(state.files.path || '');
+    setTimeout(() => {
+      if (state.files.task && state.files.task.state !== 'running') {
+        state.files.task = null;
+        renderTaskBar();
+      }
+    }, 5000);
+  } catch (error) {
+    /* 网关抖动之类的瞬时错误忽略，下一次轮询继续 */
+  }
+}
+
+function renderTaskBar() {
+  const task = state.files.task;
+  const bar = $('taskBar');
+  if (!task) { bar.classList.add('hidden'); return; }
+  bar.classList.remove('hidden');
+  const percent = task.state === 'running' ? (task.percent || 0) : 100;
+  $('taskFill').style.setProperty('width', `${percent}%`);
+  const action = task.mode === 'move' ? '移动' : '复制';
+  const parts = [];
+  if (task.state === 'running') {
+    parts.push(`${action}中 ${task.percent}%`);
+    parts.push(`${fmtBytes(task.done)} / ${fmtBytes(task.total)}`);
+    if (task.speed) parts.push(`${fmtBytes(task.speed)}/s`);
+    if (task.eta) parts.push(`剩约 ${task.eta}`);
+    if (task.current) parts.push(task.current.split('/').pop());
+  } else {
+    parts.push(task.message || action);
+    if (task.error_count) parts.push(`错误 ${task.error_count} 项`);
+  }
+  $('taskText').textContent = parts.join(' · ');
+  $('taskCancel').classList.toggle('hidden', task.state !== 'running');
+}
+
+/* ------------------------------------------------- 目标目录选择器 */
+
+function pickDirectory(options) {
+  state.files.pick = { path: '', data: null, onPick: options.onPick, title: options.title };
+  $('pickTitle').textContent = options.title || '选择目标文件夹';
+  $('pickError').classList.add('hidden');
+  $('pickDialog').classList.remove('hidden');
+  loadPick('');
+}
+
+async function loadPick(path) {
+  const pick = state.files.pick;
+  pick.path = path;
+  try {
+    pick.data = await api(`files?path=${encodeURIComponent(path)}`);
+  } catch (error) {
+    $('pickError').textContent = error.message;
+    $('pickError').classList.remove('hidden');
+    return;
+  }
+  renderPick();
+}
+
+function renderPick() {
+  const pick = state.files.pick;
+  const data = pick.data;
+  const roots = data && data.path ? [] : ((data && data.roots) || []).filter((root) => root.exists);
+  const crumbs = $('pickCrumbs');
+  const nodes = [h('button', {
+    class: 'crumb' + (data && data.path ? '' : ' is-current'), type: 'button', 'data-path': '', text: '根目录',
+  })];
+  if (data && data.path) {
+    const segments = data.path.split('/').filter(Boolean);
+    let accumulated = '';
+    segments.forEach((segment, index) => {
+      accumulated += `/${segment}`;
+      nodes.push(h('span', { class: 'crumb-sep', text: '›' }));
+      nodes.push(h('button', {
+        class: `crumb${index === segments.length - 1 ? ' is-current' : ''}`,
+        type: 'button', 'data-path': accumulated, text: segment,
+      }));
+    });
+  }
+  crumbs.replaceChildren(...nodes);
+  $('pickUp').disabled = !(data && data.parent);
+
+  const rows = [];
+  if (roots.length) {
+    for (const root of roots) rows.push(pickRow(root.label, root.path, true));
+  } else if (data && data.path) {
+    for (const entry of (data.entries || [])) {
+      if (entry.kind !== 'dir') continue;
+      rows.push(pickRow(entry.name, joinPath(data.path, entry.name), true));
+    }
+  }
+  $('pickList').replaceChildren(...(rows.length ? rows : [h('div', { class: 'pick-empty', text: '这一层没有子文件夹（可以直接选当前文件夹）' })]));
+}
+
+function pickRow(label, path, canEnter) {
+  const button = h('button', { class: 'pick-row', type: 'button' },
+    ctxIcon('open'),
+    h('span', { class: 'pick-name', text: label }));
+  button.addEventListener('click', () => loadPick(canEnter ? path : ''));
+  return button;
+}
+
+function downloadPath(path) {
+  const link = document.createElement('a');
+  link.href = downloadUrl(path);
+  link.rel = 'noreferrer';
+  link.download = '';
+  document.body.append(link);
+  link.click();
+  link.remove();
+}
+
+function closePick() {
+  $('pickDialog').classList.add('hidden');
+  state.files.pick = { path: '', data: null, onPick: null };
+}
+
+/* ------------------------------------------------- 行内/空处右键绑定 */
 
 function renderFileAside() {
   const host = $('fileAside');
@@ -1498,6 +1839,100 @@ function setupFileBrowser() {
     const crumb = closestWithClass(event.target, 'crumb');
     if (!crumb || !crumb.dataset.path) return;
     loadFiles(crumb.dataset.path === '/' ? '' : crumb.dataset.path).catch(markFail);
+  });
+
+  // 右键：行上出行的菜单，空白处出目录级菜单
+  $('fileList').addEventListener('contextmenu', (event) => {
+    event.preventDefault();
+    const row = closestWithClass(event.target, 'frow');
+    if (row) {
+      const path = rowPath(row);
+      const additive = event.ctrlKey || event.metaKey;
+      if (path && !state.files.selected.has(path)) selectRow(row, false);
+      else if (path && additive) selectRow(row, true);
+      contextMenuForRow(event, row);
+      return;
+    }
+    contextMenuForEmpty(event);
+  });
+  // 点其他地方关掉菜单
+  document.addEventListener('click', (event) => {
+    if (!event.target.closest || !event.target.closest('#ctxMenu')) closeContextMenu();
+  });
+  document.addEventListener('scroll', closeContextMenu, true);
+  window.addEventListener('resize', closeContextMenu);
+  window.addEventListener('blur', closeContextMenu);
+
+  // 目标目录选择器
+  $('pickCrumbs').addEventListener('click', (event) => {
+    const crumb = closestWithClass(event.target, 'crumb');
+    if (!crumb) return;
+    loadPick(crumb.dataset.path === '/' ? '' : crumb.dataset.path);
+  });
+  $('pickUp').addEventListener('click', () => {
+    const data = state.files.pick.data;
+    if (data && data.parent) loadPick(data.parent);
+  });
+  $('pickCancel').addEventListener('click', closePick);
+  $('pickDialog').addEventListener('click', (event) => {
+    if (event.target === $('pickDialog')) closePick();
+  });
+  $('pickOk').addEventListener('click', () => {
+    const pick = state.files.pick;
+    const target = pick.data && pick.data.path;
+    if (!target) { $('pickError').textContent = '请先进入要作为目标的文件夹'; $('pickError').classList.remove('hidden'); return; }
+    const callback = pick.onPick;
+    closePick();
+    if (callback) callback(target);
+  });
+
+  // 任务进度条
+  $('taskCancel').addEventListener('click', async () => {
+    const task = state.files.task;
+    if (!task || task.state !== 'running') return;
+    try {
+      const info = await writeApi('files/op/cancel', { id: task.id });
+      state.files.task = info.task || task;
+      renderTaskBar();
+    } catch (error) {
+      toast(error.message, 'error');
+    }
+  });
+
+  // 工具栏的复制到 / 移动到 / 粘贴
+  $('fileCopyTo').addEventListener('click', () => copyMoveTo('copy'));
+  $('fileMoveTo').addEventListener('click', () => copyMoveTo('move'));
+  $('filePaste').addEventListener('click', () => pasteInto(state.files.path));
+
+  // 快捷键（只在文件窗口打开、且没有弹窗时生效）
+  document.addEventListener('keydown', (event) => {
+    if (!state.open.has('files')) return;
+    // 正在输入框里打字时不抢快捷键；但复选框/按钮获得焦点时快捷键仍要能用
+    const target = event.target || {};
+    const tag = target.tagName || '';
+    const type = target.type || '';
+    const typing = tag === 'TEXTAREA' || (tag === 'INPUT' && !['checkbox', 'radio', 'button', 'file', 'submit'].includes(type));
+    if (typing) return;
+    if (!$('fileDialog').classList.contains('hidden') || !$('pickDialog').classList.contains('hidden')) return;
+    const key = event.key.toLowerCase();
+    const modify = event.ctrlKey || event.metaKey;
+    if (event.key === 'F2') { event.preventDefault(); doRename(); return; }
+    if (event.key === 'Delete') {
+      event.preventDefault();
+      if (state.files.mode === 'trash') {
+        const ids = selectedPaths();
+        if (ids.length) doPurge(ids, `彻底删除 ${ids.length} 项`);
+      } else {
+        doDelete();
+      }
+      return;
+    }
+    if (event.key === 'Escape') { closeContextMenu(); return; }
+    if (!modify) return;
+    if (key === 'c') { event.preventDefault(); clipboardSet('copy'); }
+    else if (key === 'x') { event.preventDefault(); clipboardSet('cut'); }
+    else if (key === 'v') { event.preventDefault(); pasteInto(state.files.path); }
+    else if (key === 'a') { event.preventDefault(); selectAll(); }
   });
 
   $('fileUp').addEventListener('click', () => {

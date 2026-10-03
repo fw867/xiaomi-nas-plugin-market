@@ -436,6 +436,92 @@ button { font: inherit; color: inherit; }
   box-shadow: var(--shadow);
 }
 .toast.is-error { background: rgba(150, 30, 26, .94); }
+
+/* ---------- 右键菜单 ---------- */
+.ctx-menu {
+  position: fixed;
+  z-index: 200;
+  min-width: 190px;
+  max-width: 268px;
+  padding: 6px;
+  border-radius: 12px;
+  border: 1px solid var(--line);
+  background: var(--panel-solid);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.ctx-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.ctx-item:hover:not([disabled]) { background: var(--accent-soft); }
+.ctx-item[disabled] { opacity: .42; cursor: default; }
+.ctx-item.is-danger { color: var(--bad); }
+.ctx-item.is-danger:hover:not([disabled]) { background: color-mix(in srgb, var(--bad) 16%, transparent); }
+.ctx-item .ctx-key { margin-left: auto; font-size: 11.5px; color: var(--muted); }
+.ctx-item .ctx-icon { width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center; }
+.ctx-icon .ctx-svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.pick-row .ctx-icon .ctx-svg { stroke-width: 1.4; }
+.ctx-sep { height: 1px; margin: 4px 6px; background: var(--line); }
+
+/* ---------- 任务进度条（复制 / 移动） ---------- */
+#taskBar .bar { flex: 1 1 auto; }
+#taskBar .muted { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- 目标文件夹选择器 ---------- */
+.dialog-card.is-wide { max-width: 470px; }
+.pick-list {
+  max-height: 46vh;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.pick-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+  width: 100%;
+}
+.pick-row:hover { background: var(--accent-soft); }
+.pick-row .pick-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pick-empty { padding: 12px; text-align: center; color: var(--muted); font-size: 13px; }
+.mini2.is-primary { border-color: var(--accent); color: var(--accent); }
+.mini2.is-primary:hover { background: var(--accent-soft); }
 .overlay-loading {
   display: flex; align-items: center; justify-content: center;
   padding: 26px 0; color: var(--muted); font-size: 13.5px;

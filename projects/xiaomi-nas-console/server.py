@@ -431,6 +431,13 @@ class Handler(BaseHTTPRequestHandler):
             if path == '/api/files/trash':
                 self._json(HTTPStatus.OK, engine.trash_payload())
                 return
+            if path.startswith('/api/files/op/'):
+                task = engine.file_task(path.rsplit('/', 1)[-1])
+                if task is None:
+                    self._json(HTTPStatus.OK, {'state': 'expired', 'message': '任务不存在或已过期'})
+                    return
+                self._json(HTTPStatus.OK, task.payload())
+                return
             if path == '/api/files' and not raw:
                 self._json(HTTPStatus.OK, {
                     'path': '', 'name': '', 'parent': None, 'entries': [],
@@ -539,6 +546,21 @@ class Handler(BaseHTTPRequestHandler):
                 if ids is not None and not isinstance(ids, list):
                     raise RuntimeError('ids 必须是数组')
                 result = engine.purge_trash([str(item) for item in ids] if ids else None)
+            elif path == '/api/files/op':
+                paths = payload.get('paths')
+                if not isinstance(paths, list):
+                    raise RuntimeError('paths 必须是数组')
+                result = engine.start_file_task(
+                    str(payload.get('mode') or 'copy'),
+                    [str(item) for item in paths],
+                    str(payload.get('target') or ''),
+                    str(payload.get('conflict') or 'rename'))
+            elif path == '/api/files/op/cancel':
+                task = engine.file_task(str(payload.get('id') or ''))
+                if task is None:
+                    raise RuntimeError('任务不存在或已过期')
+                task.request_cancel()
+                result = {'ok': True, 'task': task.payload()}
             else:
                 self._error(HTTPStatus.NOT_FOUND, '未知接口')
                 return
