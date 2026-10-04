@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -176,14 +177,15 @@ class ApplyTargetTests(unittest.TestCase):
         self.template = root / 'template.conf'
         self.state = root / 'settings.json'
         self.template.write_text(
+            # 与真实模板同构：不含任何占位符（商店安装会原样使用这份文件）
             'location ~ ^/plugin/(?<rc_user>[^/]+)/rtrcenter/(?:index\\.html|control(?:\\.html)?|)$ {\n'
             '    rewrite ^/plugin/[^/]+/rtrcenter/.*$ /root/ break;\n'
-            '    proxy_pass http://127.0.0.1:__PLUGIN_PORT__;\n'
+            '    proxy_pass http://127.0.0.1:18101;\n'
             '    proxy_set_header X-Plugin-Prefix /plugin/$rc_user/rtrcenter;\n'
             '}\n'
             'location ~ ^/plugin/[^/]+/rtrcenter/api/(.*)$ {\n'
-            '    rewrite ^/plugin/[^/]+/rtrcenter/api/(.*)$ /api/$1 break;\n'
-            '    proxy_pass __ROUTER_TARGET__;\n'
+            '    rewrite ^/plugin/[^/]+/rtrcenter/api/(.*)$ /view/api/$1 break;\n'
+            '    proxy_pass http://127.0.0.1:18101;\n'
             '}\n'
             'location ~ ^/plugin/[^/]+/rtrcenter/(.*)$ {\n'
             '    alias /data/plugin/router-center/current/web/$1;\n'
@@ -204,38 +206,48 @@ class ApplyTargetTests(unittest.TestCase):
             patcher.stop()
         self.temp.cleanup()
 
-    def test_render_substitutes_everything(self) -> None:
+    def test_render_conf_is_placeholder_free(self) -> None:
         text = engine.render_conf('http://10.0.0.9:9958/', 'u1', 18101)
-        # 正则 location 里不能有带 URI 的 proxy_pass，所以目标地址不能带结尾斜杠
-        self.assertIn('proxy_pass http://10.0.0.9:9958;', text)
-        self.assertNotIn('http://10.0.0.9:9958/;', text)
-        self.assertIn('rewrite ^/plugin/[^/]+/rtrcenter/.*$ /root/ break;', text)
-        self.assertIn('http://127.0.0.1:18101;', text)
+        self.assertIsNone(re.search(r'__[A-Z_]+__', text), '模板里不能有占位符')
+        self.assertIn('proxy_pass http://127.0.0.1:18101;', text)          # 端口写死
+        self.assertIn('rewrite ^/plugin/[^/]+/rtrcenter/api/(.*)$ /view/api/$1 break;', text)
         self.assertIn('/data/plugin/router-center/current/web/', text)
-        self.assertNotIn('__', text)
+        for line in text.splitlines():
+            if 'proxy_pass' in line and line.rstrip().endswith('/;'):
+                self.fail(f'proxy_pass 不能带 URI：{line.strip()}')
 
-    def test_success_writes_conf_and_settings(self) -> None:
+    def test_apply_target_only_saves_settings(self) -> None:
+        """目标地址只存设置：接口由插件服务转发，改地址不需要动 nginx。"""
         engine.apply_target('http://10.0.0.9:9958', 'u1', 18101)
-        self.assertIn('http://10.0.0.9:9958', self.conf.read_text(encoding='utf-8'))
         self.assertEqual(engine.load_settings()['target'], 'http://10.0.0.9:9958/')
+        self.assertFalse(self.conf.exists(), '改目标地址不应该再写 nginx 配置')
 
-    def test_bad_nginx_rolls_back_conf_and_settings(self) -> None:
-        engine.apply_target('http://10.0.0.9:9958/', 'u1', 18101)
-        before = self.conf.read_text(encoding='utf-8')
+    def test_ensure_conf_rewrites_stale_placeholder_config(self) -> None:
+        """商店可能装进一份带占位符的旧模板；服务启动时要纠正过来（并保证 nginx -t 通过）。"""
+        self.conf.write_text('location ~ ^/plugin/[^/]+/rtrcenter/ {\n'
+                             '    proxy_pass http://127.0.0.1:__PLUGIN_PORT__;\n'
+                             '}\n', encoding='utf-8')
+        result = engine.ensure_conf('u1', 18101)
+        self.assertTrue(result['changed'])
+        self.assertTrue(result['ok'])
+        written = self.conf.read_text(encoding='utf-8')
+        self.assertNotIn('__PLUGIN_PORT__', written)
+        self.assertIn('proxy_pass http://127.0.0.1:18101;', written)
+
+    def test_ensure_conf_is_noop_when_already_correct(self) -> None:
+        engine.ensure_conf('u1', 18101)
+        again = engine.ensure_conf('u1', 18101)
+        self.assertFalse(again['changed'])
+        self.assertTrue(again['ok'])
+
+    def test_ensure_conf_rolls_back_when_nginx_rejects_it(self) -> None:
+        stale = 'proxy_pass http://127.0.0.1:__PLUGIN_PORT__;\n'
+        self.conf.write_text(stale, encoding='utf-8')
         with mock.patch.object(engine, 'nginx_test', lambda: (False, 'syntax error')):
-            with self.assertRaises(RuntimeError):
-                engine.apply_target('http://10.0.0.10:9958/', 'u1', 18101)
-        self.assertEqual(self.conf.read_text(encoding='utf-8'), before)
-        self.assertEqual(engine.load_settings()['target'], 'http://10.0.0.9:9958/')
-
-    def test_reload_failure_rolls_back(self) -> None:
-        engine.apply_target('http://10.0.0.9:9958/', 'u1', 18101)
-        before = self.conf.read_text(encoding='utf-8')
-        with mock.patch.object(engine, 'nginx_reload', lambda: False):
-            with self.assertRaises(RuntimeError):
-                engine.apply_target('http://10.0.0.11:9958/', 'u1', 18101)
-        self.assertEqual(self.conf.read_text(encoding='utf-8'), before)
-        self.assertEqual(engine.load_settings()['target'], 'http://10.0.0.9:9958/')
+            result = engine.ensure_conf('u1', 18101)
+        self.assertTrue(result['changed'])
+        self.assertFalse(result['ok'])
+        self.assertEqual(self.conf.read_text(encoding='utf-8'), stale)   # 回滚成原样
 
 
 class RewriteTests(unittest.TestCase):
@@ -490,30 +502,25 @@ class FrontendTests(unittest.TestCase):
         conf = (PROJECT / 'deploy' / 'xiaomi-router-center.nginx.conf').read_text(encoding='utf-8')
         # 用户名的两种写法都靠 [^/]+ 匹配（不依赖占位符，商店安装也不会漏渲染）
         self.assertIn('/plugin/(?<rc_user>[^/]+)/rtrcenter/', conf)
-        self.assertIn('__ROUTER_TARGET__', conf)
-        self.assertIn('__PLUGIN_PORT__', conf)
+        # 商店安装是原样装这份配置的，所以这里绝不能有占位符（曾经因此 nginx -t 失败、更新报错）
+        self.assertIsNone(re.search(r'__[A-Z_]+__', conf), '模板里不能有占位符，商店安装会原样使用')
         for route in ('api', 'ctl', 'view'):
             self.assertIn(f'rtrcenter/{route}', conf, f'缺少 {route} 路由')
         self.assertIn('/data/plugin/router-center/current/web/', conf)
-        residue = conf
-        for token in ('__ROUTER_TARGET__', '__PLUGIN_PORT__'):
-            residue = residue.replace(token, 'x')
-        self.assertNotIn('__', residue, '模板里出现了未预期的占位符')
+        self.assertIn('proxy_pass http://127.0.0.1:18101;', conf)
         # 关键：正则 location 里绝不能出现带 URI 的 proxy_pass（nginx 会 emerg，配置根本不生效）
         for line in conf.splitlines():
             if 'proxy_pass' in line and line.rstrip().endswith('/;'):
                 self.fail(f'正则 location 里的 proxy_pass 不能带 URI：{line.strip()}')
         self.assertIn('rewrite ^/plugin/[^/]+/rtrcenter/.*$ /root/ break;', conf)
-        # 安装脚本必须把目标地址的结尾斜杠去掉，否则上面那条 proxy_pass 又变成带 URI
-        installer = (PROJECT / 'deploy' / 'install-on-nas.sh').read_text(encoding='utf-8')
-        self.assertIn('ROUTER_TARGET_NO_SLASH="${ROUTER_TARGET%/}"', installer)
 
     def test_install_script_has_no_leftover_placeholder(self) -> None:
         script = (PROJECT / 'deploy' / 'install-on-nas.sh').read_text(encoding='utf-8')
-        for token in ('__NAS_USER_ID__', '__PLUGIN_PORT__', '__ROUTER_TARGET__'):
-            self.assertIn(token, script)                      # 模板里必须有占位符
         self.assertIn('nginx -t', script)
         self.assertIn('__[A-Z_]+__', script)                  # 渲染后残留占位符的硬校验
+        # 模板本身已经不含占位符，安装脚本里的替换是"有则替换、无则原样"的保险
+        template = (PROJECT / 'deploy' / 'xiaomi-router-center.nginx.conf').read_text(encoding='utf-8')
+        self.assertIsNone(re.search(r'__[A-Z_]+__', template), '模板里不能有占位符')
 
 
 class VersionTests(unittest.TestCase):

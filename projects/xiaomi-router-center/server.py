@@ -292,6 +292,15 @@ def main(argv: list[str] | None = None) -> int:
 
     handler = type('BoundHandler', (Handler,), {'app': RouterCenter(args.port)})
     server = ThreadingHTTPServer((args.host, args.port), handler)
+    # 启动自愈：商店安装可能把带占位符的旧模板装进 nginx 配置目录，那份会让 nginx -t 直接失败
+    try:
+        result = engine.ensure_conf(os.environ.get('NAS_USER_ID', ''), args.port)
+        if result.get('changed'):
+            engine.log(f'客户端入口配置自愈：{result}')
+        elif not result.get('ok'):
+            engine.log(f'客户端入口配置自愈未成功：{result.get("error")}')
+    except Exception as error:                                     # noqa: BLE001
+        engine.log(f'入口配置自愈异常（不影响服务启动）：{error}')
     engine.log(f'路由器软件中心已启动：http://{args.host}:{args.port}'
                f'（目标 {engine.load_settings()["target"]}，前端 {STATIC_DIR}）')
     try:

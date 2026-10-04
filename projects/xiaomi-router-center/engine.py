@@ -339,17 +339,13 @@ def assets_present(static_dir: Path) -> dict[str, bool]:
 
 
 def render_conf(target: str, user: str, port: int) -> str:
-    """渲染客户端入口配置。
+    """返回客户端入口配置。
 
-    注意两处 nginx 限制：正则 location 里的 proxy_pass 不能带 URI，
-    所以模板用 rewrite ... break + 不带 URI 的 proxy_pass，目标地址也要去掉结尾斜杠。
+    这个文件刻意不含占位符：商店安装会把包里的配置原样装到 /etc/nginx/conf.d/luci/，
+    带 __XXX__ 占位符会让 nginx -t 直接失败（踩过）。所以端口写死 18101、路由器接口
+    转给插件服务转发——参数留在这里只是为了保持调用方兼容。
     """
-    template = NGINX_TEMPLATE.read_text(encoding='utf-8')
-    return (template
-            .replace('__ROUTER_TARGET__', target.rstrip('/'))
-            .replace('__NAS_USER_ID__', user)
-            .replace('__NAS_USER_NUM__', user[1:] if user.startswith('u') else user)
-            .replace('__PLUGIN_PORT__', str(port)))
+    return NGINX_TEMPLATE.read_text(encoding='utf-8')
 
 
 def nginx_test() -> tuple[bool, str]:
@@ -371,25 +367,47 @@ def nginx_reload() -> bool:
         return False
 
 
+def ensure_conf(user: str = '', port: int = 18101) -> dict[str, Any]:
+    """保证装到系统里的是"渲染后"的配置。
+
+    正常路径（脚本安装）写的就是同一份内容；商店安装可能装进一份带占位符的旧模板，
+    这里在服务启动时纠正过来：内容不同才写、写前先 nginx -t，失败回滚。
+    """
+    desired = render_conf('', user, port)
+    try:
+        current = NGINX_CONF.read_text(encoding='utf-8')
+    except OSError:
+        current = ''
+    if current == desired:
+        return {'changed': False, 'ok': True}
+    if 'placeholder' in desired or re.search(r'__[A-Z_]+__', desired):
+        log('模板里仍有占位符，拒绝写入')
+        return {'changed': False, 'ok': False, 'error': '模板含占位符'}
+    try:
+        atomic_write(NGINX_CONF, desired, mode=0o644)
+        ok, output = nginx_test()
+        if not ok:
+            raise RuntimeError(output)
+        if not nginx_reload():
+            raise RuntimeError('nginx 重载失败')
+    except (RuntimeError, OSError) as error:
+        if current:
+            atomic_write(NGINX_CONF, current, mode=0o644)
+        nginx_reload()
+        log(f'入口配置自愈失败，已回滚：{error}')
+        return {'changed': True, 'ok': False, 'error': str(error)}
+    log('已把客户端入口配置纠正为最新版本')
+    return {'changed': True, 'ok': True}
+
+
 def apply_target(target: str, user: str, port: int) -> dict[str, Any]:
-    """渲染 nginx 入口并热加载；只有全部成功才把新目标落盘，失败一定回滚。"""
+    """保存目标地址。
+
+    地址只存在设置里（路由器接口由插件服务转发），所以改地址**不需要动 nginx**，
+    也就没有"渲染失败要回滚"的问题了。
+    """
     normalized = normalize_target(target)
     with _toggle_lock:
-        backup = NGINX_CONF.read_text(encoding='utf-8') if NGINX_CONF.is_file() else ''
-        try:
-            atomic_write(NGINX_CONF, render_conf(normalized, user, port), mode=0o644)
-            ok, output = nginx_test()
-            if not ok:
-                raise RuntimeError(f'nginx 配置校验失败，已回滚：{output}')
-            if not nginx_reload():
-                raise RuntimeError('nginx 重载失败，已回滚')
-        except RuntimeError:
-            if backup:
-                atomic_write(NGINX_CONF, backup, mode=0o644)
-            else:
-                NGINX_CONF.unlink(missing_ok=True)
-            nginx_reload()
-            raise
         settings = save_settings({'target': normalized})
         log(f'目标地址已更新为 {normalized}')
         return settings
