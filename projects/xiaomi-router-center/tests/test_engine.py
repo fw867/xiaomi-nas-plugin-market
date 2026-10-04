@@ -113,7 +113,13 @@ class _MockRouter(BaseHTTPRequestHandler):
             self._send(200, json.dumps({'Version': '0.0.0-mock', 'Device': 'MockUDM'}).encode(),
                        'application/json')
             return
-        self._send(200, b'<html><head><title>UniFi SoftCenter - \xe5\xae\x89\xe5\x85\xa8\xe7\xae\xa1\xe7\x90\x86\xe4\xb8\xad\xe5\xbf\x83</title></head></html>')
+        # 首页带三个外部 CDN 脚本，用来验证重写
+        page = ('<html><head><title>UniFi SoftCenter - 安全管理中心</title>'
+                '<script src="https://cdn.tailwindcss.com"></script>'
+                '<script src="https://cdn.jsdelivr.net/npm/vue@3.4.21/dist/vue.global.min.js"></script>'
+                '<script src="https://cdn.jsdelivr.net/npm/lucide@0.359.0/dist/umd/lucide.min.js"></script>'
+                '</head><body>softcenter</body></html>')
+        self._send(200, page.encode('utf-8'))
 
 
 class ProbeTests(unittest.TestCase):
@@ -170,11 +176,17 @@ class ApplyTargetTests(unittest.TestCase):
         self.template = root / 'template.conf'
         self.state = root / 'settings.json'
         self.template.write_text(
-            'location ^~ /plugin/__NAS_USER_ID__/rtrcenter/site/ {\n'
+            'location ~ ^/plugin/(?<rc_user>[^/]+)/rtrcenter/(?:index\\.html|control(?:\\.html)?|)$ {\n'
+            '    rewrite ^/plugin/[^/]+/rtrcenter/.*$ /root/ break;\n'
+            '    proxy_pass http://127.0.0.1:__PLUGIN_PORT__;\n'
+            '    proxy_set_header X-Plugin-Prefix /plugin/$rc_user/rtrcenter;\n'
+            '}\n'
+            'location ~ ^/plugin/[^/]+/rtrcenter/api/(.*)$ {\n'
+            '    rewrite ^/plugin/[^/]+/rtrcenter/api/(.*)$ /api/$1 break;\n'
             '    proxy_pass __ROUTER_TARGET__;\n'
             '}\n'
-            'location ^~ /plugin/__NAS_USER_ID__/rtrcenter/api/ {\n'
-            '    proxy_pass http://127.0.0.1:__PLUGIN_PORT__/api/;\n'
+            'location ~ ^/plugin/[^/]+/rtrcenter/(.*)$ {\n'
+            '    alias /data/plugin/router-center/current/web/$1;\n'
             '}\n', encoding='utf-8')
         self.patchers = [
             mock.patch.object(engine, 'NGINX_CONF', self.conf),
@@ -194,14 +206,17 @@ class ApplyTargetTests(unittest.TestCase):
 
     def test_render_substitutes_everything(self) -> None:
         text = engine.render_conf('http://10.0.0.9:9958/', 'u1', 18101)
-        self.assertIn('http://10.0.0.9:9958/', text)
-        self.assertIn('/plugin/u1/rtrcenter/site/', text)
-        self.assertIn('http://127.0.0.1:18101/api/', text)
+        # 正则 location 里不能有带 URI 的 proxy_pass，所以目标地址不能带结尾斜杠
+        self.assertIn('proxy_pass http://10.0.0.9:9958;', text)
+        self.assertNotIn('http://10.0.0.9:9958/;', text)
+        self.assertIn('rewrite ^/plugin/[^/]+/rtrcenter/.*$ /root/ break;', text)
+        self.assertIn('http://127.0.0.1:18101;', text)
+        self.assertIn('/data/plugin/router-center/current/web/', text)
         self.assertNotIn('__', text)
 
     def test_success_writes_conf_and_settings(self) -> None:
         engine.apply_target('http://10.0.0.9:9958', 'u1', 18101)
-        self.assertIn('http://10.0.0.9:9958/', self.conf.read_text(encoding='utf-8'))
+        self.assertIn('http://10.0.0.9:9958', self.conf.read_text(encoding='utf-8'))
         self.assertEqual(engine.load_settings()['target'], 'http://10.0.0.9:9958/')
 
     def test_bad_nginx_rolls_back_conf_and_settings(self) -> None:
@@ -221,6 +236,90 @@ class ApplyTargetTests(unittest.TestCase):
                 engine.apply_target('http://10.0.0.11:9958/', 'u1', 18101)
         self.assertEqual(self.conf.read_text(encoding='utf-8'), before)
         self.assertEqual(engine.load_settings()['target'], 'http://10.0.0.9:9958/')
+
+
+class RewriteTests(unittest.TestCase):
+    """页面加工：外部 CDN 换本地副本、GitHub 改走 NAS、注入令牌与设置按钮。"""
+
+    PAGE = (
+        '<!doctype html><html><head>'
+        '<script src="https://cdn.tailwindcss.com"></script>\n'
+        '<script src="https://cdn.jsdelivr.net/npm/vue@3.4.21/dist/vue.global.min.js"></script>\n'
+        '<script src="https://cdn.jsdelivr.net/npm/lucide@0.359.0/dist/umd/lucide.min.js"></script>\n'
+        '<script src="https://example.com/other.js"></script>\n'
+        '<script>const PAGE_DIR = 1;</script>'
+        '</head><body>hi</body></html>'
+    )
+
+    def test_all_three_cdns_become_local(self) -> None:
+        rewritten, unknown = engine.rewrite_page(self.PAGE, '/plugin/u1/rtrcenter')
+        self.assertIn('/plugin/u1/rtrcenter/assets/tailwind.js', rewritten)
+        self.assertIn('/plugin/u1/rtrcenter/assets/vue.js', rewritten)
+        self.assertIn('/plugin/u1/rtrcenter/assets/lucide.js', rewritten)
+        self.assertNotIn('cdn.tailwindcss.com', rewritten)
+        self.assertNotIn('cdn.jsdelivr.net', rewritten)
+        self.assertEqual(unknown, ['https://example.com/other.js'])   # 不认识的保持原样
+
+    def test_other_content_untouched(self) -> None:
+        rewritten, _ = engine.rewrite_page(self.PAGE, '/p/u/rtrcenter')
+        self.assertIn('<script>const PAGE_DIR = 1;</script>', rewritten)
+        self.assertIn('<body>hi</body>', rewritten)
+
+    def test_prefix_with_or_without_slashes(self) -> None:
+        for prefix in ('/plugin/u1/rtrcenter', 'plugin/u1/rtrcenter/', '/plugin/u1/rtrcenter/'):
+            with self.subTest(prefix=prefix):
+                rewritten, _ = engine.rewrite_page(self.PAGE, prefix)
+                self.assertIn('/plugin/u1/rtrcenter/assets/vue.js', rewritten)
+
+    def test_page_without_cdn_is_unchanged(self) -> None:
+        html = '<html><body><script src="app.js"></script></body></html>'
+        rewritten, unknown = engine.rewrite_page(html, '/x')
+        self.assertEqual(rewritten, html)
+        self.assertEqual(unknown, [])
+
+    def test_github_direct_calls_go_through_the_plugin(self) -> None:
+        """云端插件库/Release 检查是页面里直接 fetch GitHub 的，也得改走 NAS。"""
+        html = ("<script>const a = await fetch('https://raw.githubusercontent.com/fw867/unifi-softcenterstore"
+                "/master/apps/apps.json');</script>"
+                "<script>fetch('https://api.github.com/repos/fw867/unifi-softcenterstore/releases/latest')</script>")
+        rewritten, _ = engine.rewrite_page(html, '/plugin/3943892/rtrcenter', service_base='/plugin/3943892/rtrcenter/ctl')
+        self.assertNotIn('raw.githubusercontent.com', rewritten)
+        self.assertNotIn('api.github.com', rewritten)
+        self.assertIn('/plugin/3943892/rtrcenter/ctl/github/raw/fw867/unifi-softcenterstore/master/apps/apps.json', rewritten)
+        self.assertIn('/plugin/3943892/rtrcenter/ctl/github/api/repos/fw867/unifi-softcenterstore/releases/latest', rewritten)
+
+    def test_prepare_page_injects_token_icon_and_overlay(self) -> None:
+        """prepare_page 是"能直接在 App 里打开"的关键：令牌注入 + favicon + 设置按钮。"""
+        prepared, unknown = engine.prepare_page(
+            self.PAGE, '/plugin/3943892/rtrcenter', service_base='/plugin/3943892/rtrcenter/ctl',
+            token='tok-"x"')
+        self.assertEqual(unknown, ['https://example.com/other.js'])
+        self.assertIn('href="/plugin/3943892/rtrcenter/icon.png"', prepared)
+        self.assertIn('localStorage.setItem("sc_token","tok-\\"x\\"")', prepared)     # JSON 转义过
+        self.assertLess(prepared.index('sc_token'), prepared.index('cdn.jsdelivr.net') if 'cdn.jsdelivr.net' in prepared else len(prepared))
+
+    def test_prepare_page_without_token_skips_injection(self) -> None:
+        prepared, _ = engine.prepare_page(self.PAGE, '/plugin/u/rtrcenter', service_base='/plugin/u/rtrcenter/ctl')
+        self.assertNotIn('sc_token', prepared)
+
+    def test_github_upstream_mapping(self) -> None:
+        cases = {
+            'github/raw/fw867/repo/master/apps/apps.json': 'https://raw.githubusercontent.com/fw867/repo/master/apps/apps.json',
+            '/github/api/repos/fw867/repo/releases/latest': 'https://api.github.com/repos/fw867/repo/releases/latest',
+            'api/system/info': '',
+            '': '',
+        }
+        for raw, expected in cases.items():
+            with self.subTest(path=raw):
+                self.assertEqual(engine.github_upstream(raw), expected)
+
+    def test_local_assets_exist_in_repo(self) -> None:
+        present = engine.assets_present(PROJECT / 'web')
+        self.assertEqual(present, {name: True for name in engine.LOCAL_ASSETS})
+        for name in engine.LOCAL_ASSETS:
+            size = (PROJECT / 'web' / name).stat().st_size
+            self.assertGreater(size, 50_000, f'{name} 看起来不是完整的库（{size} 字节）')
+        self.assertTrue((PROJECT / 'web' / 'assets' / 'overlay.js').is_file())
 
 
 class HttpTests(unittest.TestCase):
@@ -256,20 +355,30 @@ class HttpTests(unittest.TestCase):
         self.port = self.httpd.server_address[1]
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
 
+        # 假路由器：/view/ 的页面取回与接口转发都打到它
+        self.router = ThreadingHTTPServer(('127.0.0.1', 0), _MockRouter)
+        self.router_target = f'http://127.0.0.1:{self.router.server_address[1]}/'
+        threading.Thread(target=self.router.serve_forever, daemon=True).start()
+        engine.STATE_FILE.write_text(json.dumps({'target': self.router_target}), encoding='utf-8')
+
     def tearDown(self) -> None:
         self.httpd.shutdown()
         self.httpd.server_close()
+        self.router.shutdown()
+        self.router.server_close()
         for patcher in self.patchers:
             patcher.stop()
         self.temp.cleanup()
 
-    def request(self, path: str, method: str = 'GET', body: bytes | None = None):
+    def request(self, path: str, method: str = 'GET', body: bytes | None = None, headers: dict | None = None):
         import urllib.error
         import urllib.request
 
         request = urllib.request.Request(f'http://127.0.0.1:{self.port}{path}', data=body, method=method)
         if body is not None:
             request.add_header('Content-Type', 'application/json')
+        for name, value in (headers or {}).items():
+            request.add_header(name, value)
         try:
             with urllib.request.urlopen(request, timeout=20) as response:
                 return response.status, response.read()
@@ -281,7 +390,9 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(status, 200)
         payload = json.loads(body)
         self.assertTrue(payload['ok'])
-        self.assertEqual(payload['target'], 'http://192.168.1.1:9958/')
+        self.assertEqual(payload['target'], self.router_target)
+        # 夹具目录里没有本地副本，所以这里只看结构；真实资源的存在性由 RewriteTests 校验
+        self.assertEqual(sorted(payload['assets']), sorted(engine.LOCAL_ASSETS))
 
     def test_status_and_settings(self) -> None:
         status, body = self.request('/api/status')
@@ -311,34 +422,91 @@ class HttpTests(unittest.TestCase):
         status, _ = self.request('/api/nope')
         self.assertEqual(status, 404)
 
+    def test_view_page_is_rewritten_to_local_assets(self) -> None:
+        """/root/（插件根路径）必须把外部 CDN 换成本地副本，并按配置状态注入脚本。"""
+        engine.STATE_FILE.write_text(json.dumps({'target': self.router_target}), encoding='utf-8')
+        engine.save_router_token('')
+        status, body = self.request('/root/', headers={'X-Plugin-Prefix': '/plugin/3943892/rtrcenter'})
+        self.assertEqual(status, 200)
+        text = body.decode('utf-8')
+        self.assertIn('/plugin/3943892/rtrcenter/assets/vue.js', text)
+        self.assertIn('/plugin/3943892/rtrcenter/assets/tailwind.js', text)
+        self.assertIn('/plugin/3943892/rtrcenter/assets/lucide.js', text)
+        self.assertIn('/plugin/3943892/rtrcenter/assets/overlay.js', text)   # 插件只注入常驻入口
+        self.assertIn('/plugin/3943892/rtrcenter/assets/close.js', text)     # 右侧中间的关闭按钮
+        self.assertIn('href="/plugin/3943892/rtrcenter/icon.png"', text)
+        self.assertNotIn('cdn.jsdelivr.net', text)
+
+    def test_view_api_forwards_authorization(self) -> None:
+        """/view/api/... 要原样把 Authorization 转给路由器（软件中心靠它鉴权）。"""
+        engine.STATE_FILE.write_text(json.dumps({'target': self.router_target}), encoding='utf-8')
+        status, body = self.request('/view/api/system/info', headers={'Authorization': _MockRouter.token})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)['Device'], 'MockUDM')
+        status, _ = self.request('/view/api/system/info')
+        self.assertEqual(status, 401)                       # 没令牌 → 路由器的 401 原样透传
+
+    def test_ctl_github_route_reports_unmapped_path(self) -> None:
+        status, _ = self.request('/api/github/not-a-github-path')
+        self.assertEqual(status, 404)
+
     def test_path_traversal_is_refused(self) -> None:
         status, _ = self.request('/../settings.json')
         self.assertIn(status, (403, 404))
 
 
 class FrontendTests(unittest.TestCase):
-    def test_app_js_syntax_and_ids(self) -> None:
+    def test_panel_js_syntax_and_ids(self) -> None:
         import re
         import shutil
         import subprocess
 
         project = PROJECT
         app_js = (project / 'web' / 'app.js').read_text(encoding='utf-8')
-        index_html = (project / 'web' / 'index.html').read_text(encoding='utf-8')
+        panel_html = (project / 'web' / 'panel.html').read_text(encoding='utf-8')
 
         node = shutil.which('node')
         if node:
-            result = subprocess.run([node, '--check', str(project / 'web' / 'app.js')],
-                                    capture_output=True, text=True)
-            self.assertEqual(result.returncode, 0, result.stderr)
+            for script in ('app.js', os.path.join('assets', 'overlay.js'), os.path.join('assets', 'close.js')):
+                result = subprocess.run([node, '--check', str(project / 'web' / script)],
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, f'{script}: {result.stderr}')
 
         ids = set(re.findall(r"\$\('([A-Za-z]+)'\)", app_js))
         self.assertTrue(ids)
         for name in sorted(ids):
-            self.assertIn(f'id="{name}"', index_html, f'app.js 引用了不存在的 id: {name}')
+            self.assertIn(f'id="{name}"', panel_html, f'app.js 引用了不存在的 id: {name}')
 
-        self.assertNotIn('style="', index_html, '内联 style 会被严格 CSP 拦掉')
-        self.assertNotIn("'/api/", app_js, '前端必须用相对接口基址（api/...）')
+        self.assertNotIn('style="', panel_html, '内联 style 会被严格 CSP 拦掉')
+        self.assertNotIn("'/api/", app_js, '前端必须用相对接口基址（ctl/...）')
+        self.assertIn("const API = 'ctl'", app_js)
+        self.assertIn('assets/close.js', (project / 'web' / 'panel.html').read_text(encoding='utf-8'))
+        # 软件中心页面不再套 iframe（厂商插件里没有一个用 iframe，实测在 App 里不可靠）
+        self.assertNotIn('<iframe', panel_html)
+        self.assertNotIn('<iframe', (project / 'web' / 'index.html').read_text(encoding='utf-8'))
+
+    def test_nginx_conf_supports_both_user_id_forms(self) -> None:
+        """App 请求的是不带 u 前缀的用户名，配置必须两种写法都认。"""
+        conf = (PROJECT / 'deploy' / 'xiaomi-router-center.nginx.conf').read_text(encoding='utf-8')
+        # 用户名的两种写法都靠 [^/]+ 匹配（不依赖占位符，商店安装也不会漏渲染）
+        self.assertIn('/plugin/(?<rc_user>[^/]+)/rtrcenter/', conf)
+        self.assertIn('__ROUTER_TARGET__', conf)
+        self.assertIn('__PLUGIN_PORT__', conf)
+        for route in ('api', 'ctl', 'view'):
+            self.assertIn(f'rtrcenter/{route}', conf, f'缺少 {route} 路由')
+        self.assertIn('/data/plugin/router-center/current/web/', conf)
+        residue = conf
+        for token in ('__ROUTER_TARGET__', '__PLUGIN_PORT__'):
+            residue = residue.replace(token, 'x')
+        self.assertNotIn('__', residue, '模板里出现了未预期的占位符')
+        # 关键：正则 location 里绝不能出现带 URI 的 proxy_pass（nginx 会 emerg，配置根本不生效）
+        for line in conf.splitlines():
+            if 'proxy_pass' in line and line.rstrip().endswith('/;'):
+                self.fail(f'正则 location 里的 proxy_pass 不能带 URI：{line.strip()}')
+        self.assertIn('rewrite ^/plugin/[^/]+/rtrcenter/.*$ /root/ break;', conf)
+        # 安装脚本必须把目标地址的结尾斜杠去掉，否则上面那条 proxy_pass 又变成带 URI
+        installer = (PROJECT / 'deploy' / 'install-on-nas.sh').read_text(encoding='utf-8')
+        self.assertIn('ROUTER_TARGET_NO_SLASH="${ROUTER_TARGET%/}"', installer)
 
     def test_install_script_has_no_leftover_placeholder(self) -> None:
         script = (PROJECT / 'deploy' / 'install-on-nas.sh').read_text(encoding='utf-8')

@@ -233,15 +233,122 @@ def probe_router(target: str | None = None, token: str | None = None) -> dict[st
 
 
 # ---------------------------------------------------------------------------
+# 页面重写：把软件中心依赖的外部 CDN 换成本地副本
+#
+# 为什么需要：小米客户端打开插件页用的是 App 内置 webview，这类 webview 常常只允许
+# 访问 NAS 自己的域名（外部域名被拦），而软件中心的前端是从 jsdelivr / tailwindcss.com
+# 加载 Vue、Tailwind、Lucide 的 —— 资源被拦，iframe 里就是一片空白。
+# 所以这里把页面取回来、把三个 CDN 脚本换成本插件自带的副本（web/assets/），
+# 再交给客户端，整条链路就只剩 NAS 一个域名。
+# ---------------------------------------------------------------------------
+
+ASSET_ROUTES: tuple[tuple[str, str], ...] = (
+    ('cdn.tailwindcss.com', 'assets/tailwind.js'),
+    ('cdn.jsdelivr.net/npm/vue@', 'assets/vue.js'),
+    ('cdn.jsdelivr.net/npm/lucide@', 'assets/lucide.js'),
+)
+SCRIPT_SRC_PATTERN = re.compile(r'(<script[^>]*\bsrc=")(https?://[^"]+)(")', re.IGNORECASE)
+LOCAL_ASSETS = ('assets/vue.js', 'assets/lucide.js', 'assets/tailwind.js')
+
+# 软件中心前端还会在浏览器里直接 fetch GitHub（云端插件库、Release 检查、安装前的哈希校验）。
+# App 内 webview 拦外网时这些都会失败，所以一并改走 NAS 转发（NAS 能直连 GitHub）。
+GITHUB_ROUTES: tuple[tuple[str, str], ...] = (
+    ('https://raw.githubusercontent.com/', 'github/raw/'),
+    ('https://api.github.com/', 'github/api/'),
+)
+
+
+# 页面在插件里的路径段：GitHub 转发要经这个前缀（走插件服务），
+# 而本地资源是 nginx 直接从 UI 目录发的，所以两者前缀不同
+PAGE_SEGMENT = 'view'
+
+
+def prepare_page(html: str, prefix: str, service_base: str, token: str = '') -> tuple[str, list[str]]:
+    """把软件中心页面加工成"能直接在 App 里打开"的版本：
+
+    1. 外部 CDN（Vue/Tailwind/Lucide）换成本地副本；
+    2. 页面里直连 GitHub 的地址改走本插件的转发（App 内 webview 访问不了外网）；
+    3. 已保存的 AdminToken 直接注入 localStorage（同源，软件中心一加载就通过鉴权）；
+    4. 补一个本地 favicon（否则 App 会去请求站点根目录的 /favicon.ico 报 404）。
+
+    注入的脚本（配置门或常驻设置按钮）由调用方按配置状态决定，见 server._serve_router_page。
+    """
+    rewritten, unknown = rewrite_page(html, prefix, service_base)
+    head = f'<link rel="icon" href="{prefix}/icon.png">'
+    rewritten = rewritten.replace('</head>', head + '</head>', 1) if '</head>' in rewritten else head + rewritten
+    if token:
+        payload = json.dumps(token)
+        rewritten = rewritten.replace('</head>',
+                                      f'<script>try{{localStorage.setItem("sc_token",{payload});}}catch(e){{}}</script></head>', 1)
+    return rewritten, unknown
+
+
+def rewrite_page(html: str, prefix: str, service_base: str = '') -> tuple[str, list[str]]:
+    """把页面里的 CDN 脚本与 GitHub 直连地址换成本插件的路径。
+
+    * 本地资源（Vue/Tailwind/Lucide）由 nginx 直接从插件 UI 目录发 → 用 {prefix}/assets/…
+    * GitHub 转发要走插件服务 → 用 {service_base}/github/…（例如 /plugin/3943892/rtrcenter/ctl）
+    """
+    base = '/' + prefix.strip('/') if prefix.strip('/') else ''
+    service = '/' + service_base.strip('/') if service_base.strip('/') else base
+    unknown: list[str] = []
+
+    def replace(match: re.Match[str]) -> str:
+        head, url, tail = match.groups()
+        for marker, local in ASSET_ROUTES:
+            if marker in url:
+                return f'{head}{base}/{local}{tail}'
+        unknown.append(url)
+        return match.group(0)
+
+    rewritten = SCRIPT_SRC_PATTERN.sub(replace, html)
+    for upstream, local in GITHUB_ROUTES:
+        rewritten = rewritten.replace(upstream, f'{service}/{local}')
+    return rewritten, unknown
+
+
+def github_upstream(rest: str) -> str:
+    """把 `github/raw/...`、`github/api/...` 映射回真正的 GitHub 地址（不认识就返回空串）。"""
+    path = rest.lstrip('/')
+    for upstream, local in GITHUB_ROUTES:
+        if path.startswith(local):
+            return upstream + path[len(local):]
+    return ''
+
+
+def fetch_router_page(target: str | None = None) -> str:
+    """取软件中心首页 HTML（只读）。"""
+    base = normalize_target(target or load_settings()['target'])
+    request = urllib.request.Request(base, headers={
+        'User-Agent': 'XiaomiNasRouterCenter/' + (VERSION or '?'),
+        'Accept': 'text/html,application/xhtml+xml',
+        'Accept-Language': 'zh-CN,zh;q=0.9',
+    })
+    with urllib.request.urlopen(request, timeout=PROBE_TIMEOUT * 2) as response:
+        return response.read().decode('utf-8', 'replace')
+
+
+def assets_present(static_dir: Path) -> dict[str, bool]:
+    """本地 CDN 副本是否齐全（缺失时页面会退回直连模式，不至于白屏）。"""
+    return {name: (Path(static_dir) / name).is_file() for name in LOCAL_ASSETS}
+
+
+# ---------------------------------------------------------------------------
 # 渲染自己的 nginx 入口并热加载（失败回滚）
 # ---------------------------------------------------------------------------
 
 
 def render_conf(target: str, user: str, port: int) -> str:
+    """渲染客户端入口配置。
+
+    注意两处 nginx 限制：正则 location 里的 proxy_pass 不能带 URI，
+    所以模板用 rewrite ... break + 不带 URI 的 proxy_pass，目标地址也要去掉结尾斜杠。
+    """
     template = NGINX_TEMPLATE.read_text(encoding='utf-8')
     return (template
-            .replace('__ROUTER_TARGET__', target)
+            .replace('__ROUTER_TARGET__', target.rstrip('/'))
             .replace('__NAS_USER_ID__', user)
+            .replace('__NAS_USER_NUM__', user[1:] if user.startswith('u') else user)
             .replace('__PLUGIN_PORT__', str(port)))
 
 

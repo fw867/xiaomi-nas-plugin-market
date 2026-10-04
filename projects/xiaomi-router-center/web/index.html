@@ -2,56 +2,12 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="light dark">
-<meta name="format-detection" content="telephone=no">
+<title>Unifi</title>
 <link rel="icon" href="icon.png">
-<title>路由器软件中心</title>
-<link rel="stylesheet" href="styles.css">
+<meta http-equiv="refresh" content="0; url=./">
 </head>
-<body class="rc-body">
-<header class="rc-bar">
-  <span class="rc-dot" id="statusDot" aria-hidden="true"></span>
-  <div class="rc-brand">
-    <strong id="brandTitle">路由器软件中心</strong>
-    <small id="brandSub">正在探测…</small>
-  </div>
-  <span class="rc-meta" id="routerMeta"></span>
-  <div class="rc-actions">
-    <button class="rc-btn" id="reloadFrame" type="button" title="重新加载软件中心">↻</button>
-    <button class="rc-btn" id="openSettings" type="button" title="设置">⚙</button>
-  </div>
-</header>
-
-<main class="rc-main">
-  <div class="rc-placeholder" id="framePlaceholder">
-    <p id="frameHint">正在连接路由器软件中心…</p>
-    <p class="rc-muted" id="frameDetail"></p>
-  </div>
-  <iframe class="rc-frame hidden" id="siteFrame" title="UniFi SoftCenter" referrerpolicy="no-referrer"></iframe>
-</main>
-
-<div class="rc-drawer hidden" id="settingsDrawer">
-  <div class="rc-card">
-    <h2>设置</h2>
-    <label class="rc-field">
-      <span>路由器软件中心地址</span>
-      <input id="targetInput" type="text" autocomplete="off" spellcheck="false" placeholder="http://192.168.1.1:9958/">
-    </label>
-    <label class="rc-field">
-      <span>AdminToken（存在 NAS 上，0600；打开本页时自动注入给软件中心）</span>
-      <input id="tokenInput" type="password" autocomplete="off" spellcheck="false" placeholder="留空表示不保存">
-    </label>
-    <p class="rc-error hidden" id="settingsError"></p>
-    <p class="rc-muted" id="settingsHint">改地址会重新渲染本插件自己的 nginx 入口（`nginx -t` 通过才生效，失败自动回滚）。</p>
-    <div class="rc-card-actions">
-      <button class="rc-btn" id="closeSettings" type="button">取消</button>
-      <button class="rc-btn is-primary" id="saveSettings" type="button">保存</button>
-    </div>
-  </div>
-</div>
-
-<div class="rc-toast hidden" id="toast"></div>
-<script src="app.js"></script>
+<body>
+<p>正在打开 <a href="./">Unifi 软件中心</a>…</p>
+<p>设置入口：<a href="panel.html">panel.html</a></p>
 </body>
 </html>

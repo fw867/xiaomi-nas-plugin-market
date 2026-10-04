@@ -35,7 +35,7 @@ def plugin_record(plugin_id: int, version: str, now: int) -> dict[str, Any]:
         'enable': True,
         'icon': '/icon/router-center.icon?v=1',
         'frontend': {
-            'title': '路由器软件中心',
+            'title': 'Unifi',
             'desc': '远程管理 UniFi 软件中心',
             'type': 'url',
             'permission': ['admin'],
@@ -49,7 +49,7 @@ def plugin_record(plugin_id: int, version: str, now: int) -> dict[str, Any]:
         },
         'info': {
             'plugin': PLUGIN_KEY,
-            'name': '路由器软件中心',
+            'name': 'Unifi',
             'id': plugin_id,
             'version': version,
             'tags': ['tool', 'network'],

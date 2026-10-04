@@ -81,6 +81,19 @@ html, body {
 
 .rc-frame { width: 100%; height: 100%; border: 0; display: block; background: #fff; }
 
+/* 设置/状态页：卡片列表 */
+.rc-panel {
+  flex: 1 1 auto; min-height: 0; overflow: auto;
+  padding: 16px max(16px, env(safe-area-inset-right, 0px)) calc(20px + env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px));
+  display: flex; flex-direction: column; gap: 14px;
+  max-width: 720px; width: 100%; margin: 0 auto;
+}
+.rc-kv { display: grid; grid-template-columns: minmax(90px, auto) 1fr; gap: 6px 14px; margin: 0; font-size: 13.5px; }
+.rc-kv dt { color: var(--muted); }
+.rc-kv dd { margin: 0; word-break: break-all; }
+.rc-kv dd.is-ok { color: var(--ok); }
+.rc-kv dd.is-bad { color: var(--bad); }
+
 .rc-placeholder {
   height: 100%;
   display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -88,6 +101,8 @@ html, body {
 }
 .rc-placeholder p { margin: 0; }
 .rc-muted { color: var(--muted); font-size: 12.5px; }
+.rc-fallback-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 6px; }
+a.rc-btn { display: inline-flex; align-items: center; text-decoration: none; color: var(--text); }
 
 /* ---------- 设置抽屉 ---------- */
 .rc-drawer {

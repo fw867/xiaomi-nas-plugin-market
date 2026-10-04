@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="format-detection" content="telephone=no">
+<link rel="icon" href="icon.png">
+<title>Unifi 设置</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body class="rc-body">
+<header class="rc-bar">
+  <span class="rc-dot" id="statusDot" aria-hidden="true"></span>
+  <div class="rc-brand">
+    <strong id="brandTitle">Unifi</strong>
+    <small id="brandSub">正在探测…</small>
+  </div>
+  <span class="rc-meta" id="routerMeta"></span>
+  <div class="rc-actions">
+    <a class="rc-btn is-primary" id="openCenter" href="./">打开软件中心</a>
+  </div>
+</header>
+
+<main class="rc-panel">
+  <section class="rc-card">
+    <h2>连接</h2>
+    <label class="rc-field">
+      <span>路由器软件中心地址</span>
+      <input id="targetInput" type="text" autocomplete="off" spellcheck="false" placeholder="http://192.168.1.1:9958/">
+    </label>
+    <label class="rc-field">
+      <span>AdminToken（存在 NAS 上，权限 0600；打开软件中心时自动注入，手机端不用每次输入）</span>
+      <input id="tokenInput" type="password" autocomplete="off" spellcheck="false" placeholder="留空表示不保存">
+    </label>
+    <p class="rc-error hidden" id="settingsError"></p>
+    <p class="rc-muted" id="settingsHint">改地址会重新渲染本插件自己的 nginx 入口（`nginx -t` 通过才生效，失败自动回滚）。</p>
+    <div class="rc-card-actions">
+      <button class="rc-btn is-primary" id="saveSettings" type="button">保存</button>
+      <button class="rc-btn" id="refreshStatus" type="button">重新探测</button>
+    </div>
+  </section>
+
+  <section class="rc-card">
+    <h2>状态</h2>
+    <dl class="rc-kv" id="statusList"></dl>
+  </section>
+
+  <section class="rc-card">
+    <h2>说明</h2>
+    <p class="rc-muted">这个插件把路由器上的 UniFi SoftCenter 经 NAS 转发给小米存储：手机 App 里直接打开就能装插件、看日志、改定时任务，<strong>不需要给路由器做端口映射</strong>。
+      软件中心的页面已把 Vue/Tailwind/Lucide 换成本地副本、云端插件库也改走 NAS，因此在只信任 NAS 域名的 App 内 webview 里也能正常显示。</p>
+  </section>
+</main>
+
+<div class="rc-toast hidden" id="toast"></div>
+<script src="assets/close.js" data-mode="back" defer></script>
+<script src="app.js"></script>
+</body>
+</html>

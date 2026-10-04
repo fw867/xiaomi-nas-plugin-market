@@ -16,6 +16,8 @@ import posixpath
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -89,7 +91,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/healthz':
             settings = engine.load_settings()
             self._json(HTTPStatus.OK, {'ok': True, 'version': engine.VERSION,
-                                       'target': settings['target'], 'uptime': int(time.time() - STARTED)})
+                                       'target': settings['target'], 'uptime': int(time.time() - STARTED),
+                                       'assets': engine.assets_present(STATIC_DIR)})
             return
         if path == '/api/status':
             self._json(HTTPStatus.OK, engine.status_payload(self.app.port))
@@ -100,7 +103,17 @@ class Handler(BaseHTTPRequestHandler):
                                        'default_target': engine.DEFAULT_TARGET,
                                        'token_set': bool(engine.router_token()),
                                        'token': engine.router_token(),
+                                       'assets': engine.assets_present(STATIC_DIR),
                                        'entry': self.entry()})
+            return
+        if path.startswith('/view'):
+            self._proxy_view(path[len('/view'):], parsed.query)
+            return
+        if path == '/root' or path.startswith('/root/'):
+            self._serve_router_page(path[len('/root'):], parsed.query)
+            return
+        if path.startswith('/api/github/'):
+            self._proxy_github(path[len('/api/'):], parsed.query)
             return
         if path.startswith('/api/'):
             self._error(HTTPStatus.NOT_FOUND, '未知接口')
@@ -110,6 +123,13 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:                                            # noqa: N802
         parsed = urlparse(self.path)
         length = int(self.headers.get('Content-Length') or 0)
+        if parsed.path.startswith('/view') or parsed.path.startswith('/api/github/'):
+            body = self.rfile.read(length) if length else None
+            if parsed.path.startswith('/api/github/'):
+                self._proxy_github(parsed.path[len('/api/'):], parsed.query)
+            else:
+                self._proxy_view(parsed.path[len('/view'):], parsed.query, body=body)
+            return
         if length > 32768:
             self._error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, '请求体过大')
             return
@@ -126,6 +146,101 @@ class Handler(BaseHTTPRequestHandler):
             self._save_settings(payload)
             return
         self._error(HTTPStatus.NOT_FOUND, '未知接口')
+
+    # -- 软件中心的本地化反代 --------------------------------------------
+    def _serve_router_page(self, rest: str, query: str) -> None:
+        """插件根路径（App 打开的就是这里）：直接返回本地化后的软件中心页面。
+
+        不做 iframe 套壳 —— 厂商客户端里没有一个插件用 iframe，直接给页面最稳。
+        """
+        try:
+            html = engine.fetch_router_page()
+        except Exception as error:                                     # noqa: BLE001
+            self.log_event(f'取软件中心页面失败：{error}')
+            self._error(HTTPStatus.BAD_GATEWAY, f'无法访问软件中心：{error}')
+            return
+        prefix = (self.headers.get('X-Plugin-Prefix') or '').rstrip('/')
+        if not prefix:
+            prefix = '/plugin'
+        rewritten, unknown = engine.prepare_page(
+            html, prefix, service_base=f'{prefix}/ctl', token=engine.router_token())
+        # 常驻入口：右下/右上角一个小按钮，进插件自己的设置页（目标地址、状态）。
+        # 令牌校验那层门由软件中心自己负责（电脑端与移动端同一套），插件不再重复。
+        scripts = (f'<script src="{prefix}/assets/close.js" defer></script>'
+                   f'<script src="{prefix}/assets/overlay.js" defer></script>')
+        rewritten = rewritten.replace('</body>', scripts + '</body>', 1)
+        if unknown:
+            self.log_event(f'页面里仍有外部脚本未本地化：{unknown[:3]}')
+        missing = [name for name, present in engine.assets_present(STATIC_DIR).items() if not present]
+        if missing:
+            self.log_event(f'本地资源缺失 {missing}，页面可能显示不全')
+        self._send(HTTPStatus.OK, rewritten.encode('utf-8'), 'text/html; charset=utf-8')
+
+    def _proxy_github(self, rest: str, query: str) -> None:
+        """把页面里对 GitHub 的直连改为经 NAS 转发（App 内 webview 访问不了外网）。
+
+        注意：绝不能把客户端的 Authorization 带过去，否则 GitHub 会判成无效凭据返回 401。
+        """
+        upstream = engine.github_upstream(rest)
+        if not upstream:
+            self._error(HTTPStatus.NOT_FOUND, '不是 GitHub 转发路径')
+            return
+        url = upstream + (f'?{query}' if query else '')
+        try:
+            request = urllib.request.Request(url, headers={
+                'User-Agent': 'XiaomiNasRouterCenter/' + (engine.VERSION or '?'),
+                'Accept': self.headers.get('Accept') or 'application/json',
+            }, method='GET')
+            with urllib.request.urlopen(request, timeout=120) as response:
+                self._send(HTTPStatus(response.status), response.read(),
+                           response.headers.get('Content-Type') or 'application/json; charset=utf-8')
+        except urllib.error.HTTPError as error:
+            self._send(HTTPStatus(error.code), error.read() or b'',
+                       error.headers.get('Content-Type') or 'application/json; charset=utf-8')
+        except Exception as error:                                     # noqa: BLE001
+            self.log_event(f'GitHub 转发失败 {rest}: {error}')
+            self._error(HTTPStatus.BAD_GATEWAY, f'GitHub 转发失败：{error}')
+
+    def _proxy_view(self, rest: str, query: str, body: bytes | None = None) -> None:
+        """`/view/...` 是软件中心在客户端里的入口：
+
+        * `/view/`（首页）—— 取回来把外部 CDN 换成本地副本再发出去；
+        * `/view/api/...` —— 原样转发到路由器（含 Authorization），不缓冲；
+        * 其它（favicon 等）—— 直接转发。
+        """
+        suffix = rest.lstrip('/')
+        target = engine.load_settings()['target'].rstrip('/')
+        try:
+            if suffix in ('', 'index.html') and self.command == 'GET':
+                self._serve_router_page(suffix, query)
+                return
+            if suffix.startswith('github/'):
+                self._proxy_github(suffix, query)
+                return
+            url = f'{target}/{suffix}'
+            if query:
+                url += f'?{query}'
+            headers = {
+                'User-Agent': self.headers.get('User-Agent') or 'XiaomiNasRouterCenter',
+                'Accept': self.headers.get('Accept') or '*/*',
+            }
+            for name in ('Authorization', 'Content-Type', 'Accept-Language'):
+                value = self.headers.get(name)
+                if value:
+                    headers[name] = value
+            request = urllib.request.Request(url, data=body, headers=headers, method=self.command)
+            with urllib.request.urlopen(request, timeout=120) as response:
+                payload = response.read()
+                content_type = response.headers.get('Content-Type') or 'application/octet-stream'
+                self._send(HTTPStatus(response.status), payload, content_type)
+        except urllib.error.HTTPError as error:
+            # 401/404 这些要原样回给页面（软件中心靠 401 判断令牌错误）
+            payload = error.read() or b''
+            self._send(HTTPStatus(error.code), payload,
+                       error.headers.get('Content-Type') or 'application/json; charset=utf-8')
+        except Exception as error:                                     # noqa: BLE001
+            self.log_event(f'转发失败 {suffix}: {error}')
+            self._error(HTTPStatus.BAD_GATEWAY, f'无法访问软件中心：{error}')
 
     def _save_settings(self, payload: dict[str, object]) -> None:
         user = os.environ.get('NAS_USER_ID', '')

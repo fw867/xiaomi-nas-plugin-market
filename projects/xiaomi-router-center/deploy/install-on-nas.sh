@@ -100,9 +100,14 @@ printf '路由器软件中心地址：%s\n' "${ROUTER_TARGET}"
 REMOTE_UI_ROOT="/home/${NAS_USER_ID}/plugin/rtrcenter"
 
 printf '2/8 渲染客户端入口配置 …\n'
+# 正则 location 里不能写带 URI 的 proxy_pass（nginx 会直接报 emerg），所以模板用
+# rewrite ... break + 不带 URI 的 proxy_pass；也正因如此目标地址要去掉结尾斜杠。
+NAS_USER_NUM="${NAS_USER_ID#u}"
+ROUTER_TARGET_NO_SLASH="${ROUTER_TARGET%/}"
 sed -e "s|__NAS_USER_ID__|${NAS_USER_ID}|g" \
+    -e "s|__NAS_USER_NUM__|${NAS_USER_NUM}|g" \
     -e "s|__PLUGIN_PORT__|${PLUGIN_PORT}|g" \
-    -e "s|__ROUTER_TARGET__|${ROUTER_TARGET}|g" \
+    -e "s|__ROUTER_TARGET__|${ROUTER_TARGET_NO_SLASH}|g" \
   "${SCRIPT_DIR}/xiaomi-router-center.nginx.conf" > "${TEMP_DIR}/rtrcenter.conf"
 sed -e "s|__NAS_USER_ID__|${NAS_USER_ID}|g" \
   "${SCRIPT_DIR}/xiaomi-router-center.service" > "${TEMP_DIR}/rtrcenter.service"
@@ -160,7 +165,7 @@ ssh "${SSH_OPTIONS[@]}" "${REMOTE_TARGET}" "
 set -eu
 python3 /tmp/register_plugin.py --user '${NAS_USER_ID}' --plugin-id '${PLUGIN_ID}' --version '${VERSION}' --quiet
 python3 /tmp/native_layout.py --user '${NAS_USER_ID}' --name rtrcenter \
-  --service xiaomi-router-center.service --title '路由器软件中心' \
+  --service xiaomi-router-center.service --title 'Unifi' \
   --plugin-id '${PLUGIN_ID}' --version '${VERSION}' \
   --desc '把局域网里 UniFi SoftCenter 搬进小米存储，手机 App 远程管理路由器插件' \
   --tags 'tool,network' --control /tmp/rtrcenter-control --quiet
@@ -201,7 +206,7 @@ STATUS="$(ssh "${SSH_OPTIONS[@]}" "${REMOTE_TARGET}" \
 printf '  路由器探测：%s\n' "$(printf '%s' "${STATUS}" | head -c 400)"
 
 printf '\n安装完成。\n'
-printf '  小米客户端：完全退出并重新打开小米智能存储，在「全部应用」里打开「路由器软件中心」\n'
+printf '  小米客户端：完全退出并重新打开小米智能存储，在「全部应用」里打开「Unifi」\n'
 printf '  直连地址（局域网）：https://%s/plugin/%s/rtrcenter/\n' "${NAS_IP}" "${NAS_USER_ID}"
 printf '  目标软件中心：%s\n' "${ROUTER_TARGET}"
 printf '  首次打开请在插件页右上角「设置」里填一次 AdminToken（会存在 NAS 上，0600）。\n'

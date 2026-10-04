@@ -1,15 +1,11 @@
 'use strict';
 
-/* 路由器软件中心插件的壳页面：
-   顶栏显示路由器状态；下面用同源 iframe 承载真实的软件中心页面。
-   两个关键点：
-   1) 被嵌入的页面与本页同源，所以本页可以先把 AdminToken 写进 localStorage，
-      软件中心一加载就自动带上令牌 —— 手机上不用每次重新输入；
-   2) 所有请求都走相对路径，浏览器入口 / 客户端入口 / 任意反代前缀下都能用。 */
+/* Unifi 插件的设置/状态页（panel.html）。
+   软件中心本身由插件服务直接提供在插件根路径上，这里只管连接参数与状态。
+   接口前缀用相对路径 ctl/ → 解析为 /plugin/<用户名>/rtrcenter/ctl/...（用户名带不带 u 都行）。 */
 
-const API = 'api';
+const API = 'ctl';
 const $ = (id) => document.getElementById(id);
-const state = { settings: null, status: null };
 
 async function api(path, options) {
   const response = await fetch(`${API}/${path}`, { credentials: 'same-origin', ...options });
@@ -31,92 +27,69 @@ function toast(message, kind) {
   toast.timer = setTimeout(() => node.classList.add('hidden'), 3200);
 }
 
-function fmtLatency(value) {
-  return typeof value === 'number' ? `${value} ms` : '—';
+function addRow(list, label, value, kind) {
+  const dt = document.createElement('dt');
+  dt.textContent = label;
+  const dd = document.createElement('dd');
+  dd.textContent = value;
+  if (kind) dd.classList.add(`is-${kind}`);
+  list.append(dt, dd);
 }
 
-function renderBar() {
-  const status = state.status;
-  const router = (status && status.router) || {};
+function renderStatus(panel) {
+  const router = (panel && panel.router) || {};
   const dot = $('statusDot');
   dot.classList.toggle('is-ok', Boolean(router.reachable));
-  dot.classList.toggle('is-bad', status !== null && !router.reachable);
+  dot.classList.toggle('is-bad', Boolean(panel) && !router.reachable);
 
-  $('brandTitle').textContent = '路由器软件中心';
-  if (!status) {
-    $('brandSub').textContent = '正在探测…';
-  } else if (router.reachable) {
-    const title = router.title ? router.title.replace(/\s*-\s*安全管理中心$/, '') : 'UniFi SoftCenter';
-    $('brandSub').textContent = `${title} · ${fmtLatency(router.latency_ms)}`;
-  } else {
-    $('brandSub').textContent = `连不上目标：${router.error || '未知错误'}`;
-  }
+  $('brandSub').textContent = router.reachable
+    ? `${(router.title || 'UniFi SoftCenter').replace(/\s*-\s*安全管理中心$/, '')} · ${typeof router.latency_ms === 'number' ? `${router.latency_ms} ms` : ''}`
+    : (panel ? `连不上目标：${router.error || '未知错误'}` : '正在探测…');
   const bits = [];
-  if (status && status.target) bits.push(status.target.replace(/^https?:\/\//, '').replace(/\/$/, ''));
+  if (panel && panel.target) bits.push(panel.target.replace(/^https?:\/\//, '').replace(/\/$/, ''));
   if (router.device) bits.push(router.device);
   if (router.version) bits.push(`v${router.version}`);
-  if (status && status.token_set) bits.push(router.authenticated ? '令牌有效' : '令牌已存');
   $('routerMeta').textContent = bits.join(' · ');
-}
 
-function frameUrl() {
-  return 'site/?embed=1&_t=' + Date.now();
-}
-
-function loadFrame(force) {
-  const frame = $('siteFrame');
-  const router = (state.status && state.status.router) || {};
-  if (!router.reachable) {
-    frame.classList.add('hidden');
-    $('framePlaceholder').classList.remove('hidden');
-    $('frameHint').textContent = '连不上路由器软件中心';
-    $('frameDetail').textContent = `${(state.settings && state.settings.target) || ''} — ${router.error || ''}`;
+  const list = $('statusList');
+  list.replaceChildren();
+  if (!panel) {
+    addRow(list, '插件服务', '无法读取状态', 'bad');
     return;
   }
-  $('framePlaceholder').classList.add('hidden');
-  frame.classList.remove('hidden');
-  if (force || !frame.getAttribute('src')) frame.setAttribute('src', frameUrl());
+  addRow(list, '插件版本', panel.version || '—');
+  addRow(list, '目标地址', panel.target || '—');
+  addRow(list, '路由器', router.reachable ? `可达（HTTP ${router.status}）` : `不可达：${router.error || ''}`,
+    router.reachable ? 'ok' : 'bad');
+  addRow(list, '响应延迟', typeof router.latency_ms === 'number' ? `${router.latency_ms} ms` : '—');
+  addRow(list, '软件中心', router.title || '—');
+  addRow(list, 'AdminToken', panel.token_set ? (router.authenticated ? '已保存且有效' : '已保存（未验证）') : '未保存',
+    panel.token_set ? 'ok' : '');
+  const assets = panel.assets || {};
+  const missing = Object.entries(assets).filter(([, present]) => !present).map(([name]) => name);
+  addRow(list, '本地资源', missing.length ? `缺失：${missing.join('、')}` : 'Vue / Tailwind / Lucide 都已本地化',
+    missing.length ? 'bad' : 'ok');
+  addRow(list, 'nginx 入口', panel.nginx_conf_ready ? '已渲染' : '未渲染', panel.nginx_conf_ready ? 'ok' : 'bad');
 }
 
 async function loadStatus() {
   try {
-    state.status = await api('status');
+    renderStatus(await api('status'));
   } catch (error) {
-    state.status = null;
-    $('frameDetail').textContent = error.message;
+    renderStatus(null);
   }
-  renderBar();
-  loadFrame(false);
 }
 
 async function loadSettings() {
   try {
-    state.settings = await api('settings');
+    const settings = await api('settings');
+    $('targetInput').value = settings.target || '';
+    $('tokenInput').value = '';
+    $('tokenInput').placeholder = settings.token_set ? '已保存（留空则保持不变）' : '留空表示不保存';
   } catch (error) {
-    state.settings = null;
-    return;
+    $('settingsError').textContent = error.message;
+    $('settingsError').classList.remove('hidden');
   }
-  // 把存在 NAS 上的令牌注入给同源的软件中心页面，手机端就不用每次手输
-  if (state.settings.token) {
-    try {
-      localStorage.setItem('sc_token', state.settings.token);
-    } catch (error) {
-      /* 隐私模式下写不了 localStorage，忽略 */
-    }
-  }
-  $('targetInput').value = state.settings.target || '';
-  $('tokenInput').value = '';
-  $('tokenInput').placeholder = state.settings.token_set ? '已保存（留空则保持不变）' : '留空表示不保存';
-}
-
-function openSettings() {
-  $('settingsError').classList.add('hidden');
-  $('settingsDrawer').classList.remove('hidden');
-  $('targetInput').focus();
-}
-
-function closeSettings() {
-  $('settingsDrawer').classList.add('hidden');
 }
 
 async function saveSettings() {
@@ -127,24 +100,17 @@ async function saveSettings() {
   const payload = { target: $('targetInput').value.trim() };
   if ($('tokenInput').value.trim()) payload.token = $('tokenInput').value.trim();
   try {
-    state.status = await api('settings', {
+    renderStatus(await api('settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
-    });
-    state.settings = await api('settings');
-    if (state.settings.token) localStorage.setItem('sc_token', state.settings.token);
-    closeSettings();
+    }));
+    await loadSettings();
     toast('已保存');
-    renderBar();
-    loadFrame(true);
   } catch (failure) {
     error.textContent = failure.message;
     error.classList.remove('hidden');
-    if (failure.payload && failure.payload.router) {
-      state.status = failure.payload;
-      renderBar();
-    }
+    if (failure.payload && failure.payload.router) renderStatus(failure.payload);
   } finally {
     button.disabled = false;
   }
@@ -153,17 +119,9 @@ async function saveSettings() {
 async function init() {
   await loadSettings();
   await loadStatus();
-  $('reloadFrame').addEventListener('click', () => { loadFrame(true); toast('已重新加载'); });
-  $('openSettings').addEventListener('click', openSettings);
-  $('closeSettings').addEventListener('click', closeSettings);
   $('saveSettings').addEventListener('click', saveSettings);
-  $('settingsDrawer').addEventListener('click', (event) => {
-    if (event.target === $('settingsDrawer')) closeSettings();
-  });
-  document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') closeSettings();
-  });
-  setInterval(loadStatus, 20000);       // 只探测本机服务，不频繁打扰路由器页面
+  $('refreshStatus').addEventListener('click', async () => { await loadStatus(); toast('已重新探测'); });
+  setInterval(loadStatus, 20000);
 }
 
 document.addEventListener('DOMContentLoaded', init);

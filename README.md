@@ -80,7 +80,7 @@ NAS_USER_ID=u123456 bash -c "$(curl -fsSL https://raw.githubusercontent.com/fw86
 | [硬盘休眠](projects/xiaomi-disk-sleep-plugin) | 0.1.0 | 与系统休眠开关联动，自定义休眠时长（官方固定 30 分钟），可查休眠/唤醒日志 |
 | [网络邻居](projects/xiaomi-netneighbor-plugin) | 0.1.0 | 让主机出现在 Windows 资源管理器「网络」里；并支持一个账号挂多个共享目录 |
 | [控制台](projects/xiaomi-nas-console) | 0.1.0 | 电脑端桌面式控制台（硬件、硬盘 SMART、文件、容器、服务与已装插件）；文件可上传/重命名/删除（进回收站），支持右键菜单与复制/移动后台任务；手机端只管开关、端口与令牌 |
-| [路由器软件中心](projects/xiaomi-router-center) | 0.1.0 | 手机 App 里远程打开路由器上的 UniFi SoftCenter（插件中心），在 NAS 上反代、无需给路由器做端口映射；可存 AdminToken 自动鉴权、目标地址可改 |
+| [Unifi](projects/xiaomi-router-center) | 0.1.1 | 手机 App 里远程打开路由器上的 UniFi SoftCenter（插件中心）：插件在 NAS 上反代、**无需给路由器做端口映射**，客户端 webview 也能用（Vue/Tailwind/Lucide 本地化、GitHub 走 NAS）；左侧中间一个关闭按钮，插件里可改目标地址并保存 AdminToken 自动注入 |
 | 应用商店（本体） | 0.2.21 | 浏览、安装、更新上述插件；见 [xiaomi-community-app-store](projects/xiaomi-community-app-store) |
 | 夸克网盘 | 未发布 | 目前没有可用实现 |
 
