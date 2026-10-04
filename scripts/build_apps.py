@@ -693,7 +693,7 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
     {
         "id": "rtrcenter",
         "name": "Unifi",
-        "version": "0.1.1",
+        "version": "0.1.3",
         "summary": "把局域网里的 UniFi SoftCenter 搬进小米存储，手机 App 远程管理路由器插件",
         "description": "在小米智能存储的手机 App 里直接打开路由器上的 UniFi SoftCenter，装插件、看日志、"
                        "改定时任务、重启服务：插件在 NAS 上做反向代理，软件中心的页面与接口都经 NAS 的"

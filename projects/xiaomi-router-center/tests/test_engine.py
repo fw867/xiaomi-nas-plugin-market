@@ -518,9 +518,12 @@ class FrontendTests(unittest.TestCase):
         script = (PROJECT / 'deploy' / 'install-on-nas.sh').read_text(encoding='utf-8')
         self.assertIn('nginx -t', script)
         self.assertIn('__[A-Z_]+__', script)                  # 渲染后残留占位符的硬校验
-        # 模板本身已经不含占位符，安装脚本里的替换是"有则替换、无则原样"的保险
-        template = (PROJECT / 'deploy' / 'xiaomi-router-center.nginx.conf').read_text(encoding='utf-8')
-        self.assertIsNone(re.search(r'__[A-Z_]+__', template), '模板里不能有占位符')
+        # 商店是原样安装这些文件的，所以它们一个占位符都不能有
+        # （踩过：nginx 配置里的 __PLUGIN_PORT__ 让 nginx -t 直接失败、插件更新报错）
+        for name in ('xiaomi-router-center.nginx.conf', 'xiaomi-router-center.service',
+                     'plugin-meta.json', 'control'):
+            text = (PROJECT / 'deploy' / name).read_text(encoding='utf-8')
+            self.assertIsNone(re.search(r'__[A-Z_]+__', text), f'{name} 里不能有占位符')
 
 
 class VersionTests(unittest.TestCase):
