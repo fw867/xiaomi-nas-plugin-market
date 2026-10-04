@@ -19,6 +19,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import zipfile
@@ -963,6 +964,14 @@ def bump_patch(version: str) -> str:
 
 
 def main() -> int:
+    # 输出统一走 UTF-8：Windows 控制台默认 GBK 时，打印 "⚠" 之类的字符会直接
+    # UnicodeEncodeError 把整个构建打断（跳过插件的分支正好会打印它）。
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError, ValueError):
+            pass
+
     parser = argparse.ArgumentParser(description="Build apps/ bundles and apps.json")
     parser.add_argument("--only", help="Build a single app id")
     parser.add_argument("--include-candidates", action="store_true", help="Include rc/beta packages")
