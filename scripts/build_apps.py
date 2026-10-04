@@ -692,14 +692,16 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
     },
     {
         "id": "rtrcenter",
-        "name": "路由器软件中心",
-        "version": "0.1.0",
+        "name": "Unifi",
+        "version": "0.1.1",
         "summary": "把局域网里的 UniFi SoftCenter 搬进小米存储，手机 App 远程管理路由器插件",
         "description": "在小米智能存储的手机 App 里直接打开路由器上的 UniFi SoftCenter，装插件、看日志、"
                        "改定时任务、重启服务：插件在 NAS 上做反向代理，软件中心的页面与接口都经 NAS 的"
                        "客户端入口（客户端证书）转发到路由器，因此**不需要给路由器做端口映射**，"
-                       "路由器也不会暴露到公网。顶部细栏显示目标地址、延迟与令牌状态，可在插件里"
-                       "改目标地址并保存 AdminToken（存在 NAS 上，0600，打开页面时自动注入给软件中心）。",
+                       "路由器也不会暴露到公网。为适配 App 内置 webview（通常只允许访问 NAS 自己的域名），"
+                       "插件把软件中心依赖的 Vue/Tailwind/Lucide 换成本地副本、把页面里直连 GitHub 的"
+                       "地址改经 NAS 转发，并在左上角提供关闭按钮、右上角提供设置页（改目标地址与看状态）。"
+                       "AdminToken 存在 NAS 上（0600），打开软件中心时自动注入，换设备不用重输。",
         "project": "xiaomi-router-center",
         "pluginId": 11021,
         "port": 18101,
@@ -727,7 +729,7 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
         "registry": {
             "icon": "/icon/router-center.icon?v=1",
             "frontend": {
-                "title": "路由器软件中心",
+                "title": "Unifi",
                 "desc": "远程管理 UniFi 软件中心",
                 "type": "url",
                 "permission": ["admin"],
