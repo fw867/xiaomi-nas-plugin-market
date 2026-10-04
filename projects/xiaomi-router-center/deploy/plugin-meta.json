@@ -1,0 +1,16 @@
+{
+  "plugin": "rtrcenter",
+  "name": "路由器软件中心",
+  "id": 11021,
+  "desc": "把局域网里 UniFi SoftCenter 搬进小米存储，手机 App 远程管理路由器插件",
+  "tags": [
+    "tool",
+    "network"
+  ],
+  "developer": "Kingwell Community",
+  "publisher": "community",
+  "system": false,
+  "type": "standard",
+  "service": "xiaomi-router-center.service",
+  "uiKey": "rtrcenter"
+}

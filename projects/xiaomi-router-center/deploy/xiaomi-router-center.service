@@ -1,0 +1,34 @@
+[Unit]
+Description=Xiaomi NAS Router Center (UniFi SoftCenter gateway)
+Documentation=https://github.com/fw867/xiaomi-nas-plugin-market
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/data/plugin/router-center/current
+Environment=PYTHONUNBUFFERED=1
+Environment=HOST=127.0.0.1
+Environment=PORT=18101
+Environment=NAS_USER_ID=__NAS_USER_ID__
+Environment=STATIC_DIR=/data/plugin/router-center/current/web
+Environment=PLUGIN_ROOT=/data/plugin/router-center
+Environment=STATE_FILE=/data/plugin/router-center/settings.json
+Environment=TOKEN_FILE=/data/plugin/router-center/router-token
+Environment=NGINX_CONF=/etc/nginx/conf.d/luci/xiaomi-router-center.conf
+Environment=NGINX_TEMPLATE=/data/plugin/router-center/current/deploy/xiaomi-router-center.nginx.conf
+ExecStart=/usr/bin/python3 /data/plugin/router-center/current/server.py
+Restart=on-failure
+RestartSec=3
+
+# 只需要读 /proc 拿主机名、访问局域网里的路由器，以及写自己那一个 nginx 入口文件
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=false
+ProtectKernelTunables=true
+ProtectControlGroups=true
+ReadWritePaths=/data/plugin/router-center /etc/nginx/conf.d
+
+[Install]
+WantedBy=multi-user.target
