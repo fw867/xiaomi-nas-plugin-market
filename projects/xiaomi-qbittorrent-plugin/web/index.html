@@ -40,6 +40,13 @@
                     <span class="muted" id="forwardState">路由器端口映射未尝试</span>
                     <button id="forwardPort" type="button" class="btn">映射端口</button>
                 </div>
+                <div class="setting-row">
+                    <span class="muted">目录设置</span>
+                    <div class="setting-actions">
+                        <button id="reconfigure" type="button" class="btn small">修改目录</button>
+                        <button id="reset" type="button" class="btn small danger">重新初始化</button>
+                    </div>
+                </div>
             </section>
 
             <p id="error" class="alert" role="alert" hidden></p>
@@ -91,6 +98,7 @@
                     <li>WebUI 端口 18123 对整个局域网开放，可直接用 qBittorrent 官方客户端或网页连接，登录用户名 <code>admin</code>、密码为安装时设置的那个。</li>
                     <li>BT 入站端口固定为 36754（TCP/UDP）并已映射到宿主机；要让公网上的其他 peer 连进来，还需在路由器上把该端口转发到本机。</li>
                     <li>「移除任务」始终保留已下载文件，插件里没有删除文件的操作。</li>
+                    <li>「修改目录」只更换下载位置并按新目录重建容器，已下载的文件不会被删除或移动；「重新初始化」会清空插件配置并移除容器，下载目录同样不受影响。</li>
                     <li>停止或卸载插件只停止容器，qBittorrent 配置与已下载文件都会保留。</li>
                 </ul>
             </details>
@@ -150,6 +158,7 @@
                 <h2>选择下载目录</h2>
                 <button class="dialog-close" data-close="browse" aria-label="关闭"><img data-icon="close" alt=""></button>
             </div>
+            <div id="roots" class="root-row" hidden></div>
             <div class="field-row">
                 <button class="btn small" id="up" aria-label="上一级" title="上一级">上一级</button>
                 <code id="browsePath">用户存储根目录</code>
@@ -157,6 +166,42 @@
             <div id="folders"></div>
             <div class="dialog-actions">
                 <button id="selectFolder" class="btn primary">选择此目录</button>
+            </div>
+        </dialog>
+
+        <dialog id="reconfigureDialog">
+            <div class="dialog-head">
+                <h2>修改下载目录</h2>
+                <button class="dialog-close" data-close="reconfigureDialog" aria-label="关闭"><img data-icon="close" alt=""></button>
+            </div>
+            <p class="muted">只会更换下载位置：插件会停止并删除当前容器，再用新目录重建（旧容器的挂载不会保留），qBittorrent 的任务与设置仍在。<strong>原下载目录里的文件不会被删除或移动</strong>；新位置如果本来没有内容，下载服务就以全新状态启动。</p>
+            <form id="reconfigureForm" autocomplete="off">
+                <div class="field">
+                    <span class="field-label">新的下载目录</span>
+                    <div class="field-row">
+                        <input name="path" id="reconfigurePath" readonly required placeholder="选择目录">
+                        <button type="button" id="chooseNew" class="btn">选择</button>
+                    </div>
+                    <p class="muted" id="currentDirectory"></p>
+                </div>
+                <div class="field">
+                    <span class="field-label">新的管理密码</span>
+                    <input name="password" type="password" minlength="8" maxlength="200" autocomplete="new-password" placeholder="留空表示不修改">
+                </div>
+                <div class="dialog-actions">
+                    <button type="button" class="btn" data-close="reconfigureDialog">取消</button>
+                    <button type="submit" class="btn primary">确认修改</button>
+                </div>
+            </form>
+        </dialog>
+
+        <dialog id="resetDialog">
+            <h2>重新初始化？</h2>
+            <p>这会清空本插件的配置、停止并移除 qBittorrent 容器（插件自己的 qBittorrent 配置会另存为备份），页面回到初始化表单，之后需要重新初始化。</p>
+            <p><strong>下载目录不受影响</strong>：里面的文件不会被删除、移动或改写，请放心。</p>
+            <div class="dialog-actions">
+                <button type="button" class="btn" data-close="resetDialog">取消</button>
+                <button type="button" id="confirmReset" class="btn danger">清空并重新初始化</button>
             </div>
         </dialog>
 

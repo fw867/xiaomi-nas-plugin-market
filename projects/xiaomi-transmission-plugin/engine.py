@@ -41,6 +41,8 @@ FORWARD_RETRY_SECONDS = 1800
 SCHEDULE_HOURS = tuple(str(hour) for hour in range(24))
 SCHEDULE_VALUES = ('off',) + SCHEDULE_HOURS
 SCHEDULE_KINDS = (('start', 'torrent-start'), ('stop', 'torrent-stop'))
+# 容器已经按新配置起来、只有 Web 还没就绪时用这个错误：改目录不能因此把新目录回滚掉。
+NOT_READY = '容器已启动，但 Transmission Web 尚未就绪；可稍后刷新'
 
 
 def next_hour_epoch(hour, now=None):
@@ -169,6 +171,22 @@ def covering_mount(path):
 def volatile_identity(fstype):
     """该文件系统的设备号/inode 号是否"每次挂载都变"——FUSE 都是。"""
     return fstype.startswith('fuse')
+
+
+# 可供选择的存储位置：内置存储池（厂商的 FUSE 卷）与外接设备（U 盘）。
+# 外接设备有两条等价路径：稳定 bind 的 /nas/mnt/usb，以及 U 盘自己的挂载点 /mnt/usb-xxxx。
+STORAGE_POOL_PREFIX = '/nas/pool0'
+EXTERNAL_PREFIXES = ('/nas/mnt/usb', '/mnt/usb-')
+
+
+def root_label(path):
+    """存储位置在页面上显示的名字：存储池 / 外接设备 / 其它用最后一段目录名。"""
+    text = str(path).rstrip('/') or '/'
+    if text == STORAGE_POOL_PREFIX or text.startswith(STORAGE_POOL_PREFIX + '/'):
+        return '存储池'
+    if any(text == prefix or text.startswith(prefix) for prefix in EXTERNAL_PREFIXES):
+        return '外接设备'
+    return Path(text).name or text
 
 
 def confined(root, relative):
@@ -429,8 +447,16 @@ def container_config(config, data, password):
 
 
 class Engine:
-    def __init__(self, data, root, dev=False):
-        self.data, self.root, self.dev = Path(data), Path(root), dev
+    def __init__(self, data, root, dev=False, roots=None):
+        self.data, self.dev = Path(data), dev
+        # 可选存储位置（LOCAL_ROOTS，顺序即页面上的顺序）：去重且保序。
+        # self.root 仍是第 0 个位置，既有的单根代码和测试照常工作。
+        self.roots = []
+        for candidate in (roots or [root]):
+            path = Path(candidate)
+            if path not in self.roots:
+                self.roots.append(path)
+        self.root = self.roots[0]
         self.data.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.data, 0o700)
         self.lock = threading.Lock()
@@ -504,8 +530,43 @@ class Engine:
             raise Error('同名容器不属于本插件，拒绝接管')
         return item
 
-    def browse(self, relative):
-        folder = confined(self.root, relative)
+    def root_at(self, index):
+        """按序号取存储位置；序号无效时报错，绝不悄悄换成别的盘。"""
+        try:
+            position = int(index)
+        except (TypeError, ValueError) as exc:
+            raise Error('存储位置无效') from exc
+        if not 0 <= position < len(self.roots):
+            raise Error('存储位置无效')
+        return self.roots[position]
+
+    def roots_snapshot(self):
+        """页面用的存储位置列表：序号、标签、绝对路径、当前是否可读。
+
+        exists 同时排掉符号链接：confined() 不接受符号链接根，页面也不该让用户选它。
+        """
+        return [{'index': index, 'label': root_label(path), 'path': str(path),
+                 'exists': path.is_dir() and not path.is_symlink()}
+                for index, path in enumerate(self.roots)]
+
+    def match_root(self, path):
+        """绝对路径反查：(根, 相对路径)；多个根都能匹配时取最长的那个，都不匹配返回 None。"""
+        target = Path(path)
+        best = None
+        for root in self.roots:
+            try:
+                relative = target.relative_to(root)
+            except ValueError:
+                continue
+            if best is None or len(root.parts) > len(best[0].parts):
+                best = (root, relative.as_posix())
+        if best is None:
+            return None
+        relative = best[1]
+        return best[0], ('' if relative in ('', '.') else relative)
+
+    def browse(self, relative, root_index=0):
+        folder = confined(self.root_at(root_index), relative)
         return sorted([{'name': p.name, 'path': (relative + '/' if relative else '') + p.name}
                        for p in folder.iterdir() if not p.name.startswith('.') and p.is_dir() and not p.is_symlink()],
                       key=lambda p: p['name'])[:1000]
@@ -724,6 +785,15 @@ class Engine:
             'download': self.config.get('download_relative', '') if self.config else '',
             'config': self.config.get('config_relative', '') if self.config else '',
             'watch': self.config.get('watch_relative', '') if self.config else '',
+            # 状态卡片显示完整绝对路径（表单里存的相对值仍照发，向后兼容）
+            'download_abs': self.config.get('download', '') if self.config else '',
+            'config_abs': self.config.get('config', '') if self.config else '',
+            'watch_abs': self.config.get('watch', '') if self.config else '',
+            # 可选的存储位置（存储池 / 外接设备），目录选择弹窗用它切换
+            'roots': self.roots_snapshot(),
+            # 配置还在、凭据文件却没了（手工恢复配置备份会遇到）：页面据此引导用户
+            # 用「修改目录」重设密码，别让人卡在"起不来也初始化不了"的状态里
+            'credentialMissing': bool(self.config) and not self.saved_password(),
             'username': self.config.get('username', '') if self.config else '',
             # daemon 真正读写的配置文件（页面用它告诉用户改哪里）
             'settingsFile': str(settings_path(Path(self.config['config']))) if self.config else '',
@@ -740,25 +810,43 @@ class Engine:
             'schedule': self.schedule_snapshot(),
         }
 
-    def _claim_folder(self, relative, field):
-        folder = confined(self.root, relative)
-        if ',' in str(folder):
-            raise Error(field + '路径不能包含逗号')
-        return folder
+    def _locate(self, value, root_index=0):
+        """把提交的目录解析成 (存储位置的根, 相对路径)。
 
-    def setup(self, paths, username, password):
-        if self.config:
-            raise Error('已完成初始化；现有目录和账号不会被覆盖')
-        username = webui_username(username)
-        password = webui_password(password)
-        download_rel = paths.get('download', '')
-        config_rel = paths.get('config', '')
-        watch_rel = paths.get('watch', '')
-        if not download_rel or not config_rel or not watch_rel:
-            raise Error('请分别选择下载目录、配置文件夹目录和监控目录')
-        download = self._claim_folder(download_rel, '下载目录')
-        config_folder = self._claim_folder(config_rel, '配置文件夹目录')
-        watch = self._claim_folder(watch_rel, '监控目录')
+        绝对路径（表单现在直接写绝对路径）按"属于哪个存储位置"反查；相对路径按第
+        root_index 个位置解释。越界/不存在仍由 confined() 按原来的方式报错。
+        """
+        if not isinstance(value, str):
+            raise Error('目录路径无效')
+        if value.startswith('/') or Path(value).is_absolute():
+            matched = self.match_root(value)
+            if matched is None:
+                raise Error('所选目录必须位于已挂载的存储位置内')
+            return matched
+        return self.root_at(root_index), value
+
+    def _claim(self, value, label, root_index=0):
+        """校验一个待提交目录，返回 (目录 Path, 所属存储位置的根 Path, 相对路径)。"""
+        root, relative = self._locate(value, root_index)
+        folder = confined(root, relative)
+        if ',' in str(folder):
+            raise Error(label + '路径不能包含逗号')
+        return folder, root, relative
+
+    def _claim_folder(self, value, label, root_index=0):
+        """只关心目录本身的调用：返回校验过的目录 Path。"""
+        return self._claim(value, label, root_index)[0]
+
+    def _directories(self, values):
+        """校验三个待选目录（setup 与 reconfigure 共用同一套规则）。
+
+        绝对路径与相对路径都接受：绝对路径会反查成"哪个存储位置 + 相对路径"。返回
+        三个目录、它们所属存储位置的根与相对路径，以及三个目录共同的属主 uid/gid。
+        """
+        download, download_root, download_relative = self._claim(values.get('download', ''), '下载目录')
+        config_folder, config_root, config_relative = self._claim(
+            values.get('config', ''), '配置文件夹目录')
+        watch, watch_root, watch_relative = self._claim(values.get('watch', ''), '监控目录')
         resolved = [str(p.resolve()) for p in (download, config_folder, watch)]
         if len(set(resolved)) != 3:
             raise Error('下载、配置与监控目录不能是同一个文件夹')
@@ -767,7 +855,23 @@ class Engine:
             raise Error('所选目录须由非 root 的 NAS 用户拥有')
         if len(set(owners)) != 1:
             raise Error('三个目录的属主用户必须相同')
-        uid, gid = owners[0]
+        return {'download': download, 'download_root': download_root,
+                'download_relative': download_relative,
+                'config': config_folder, 'config_root': config_root,
+                'config_relative': config_relative,
+                'watch': watch, 'watch_root': watch_root, 'watch_relative': watch_relative,
+                'uid': owners[0][0], 'gid': owners[0][1]}
+
+    def setup(self, paths, username, password):
+        if self.config:
+            raise Error('已完成初始化；现有目录和账号不会被覆盖')
+        username = webui_username(username)
+        password = webui_password(password)
+        if not paths.get('download', '') or not paths.get('config', '') or not paths.get('watch', ''):
+            raise Error('请分别选择下载目录、配置文件夹目录和监控目录')
+        plan = self._directories(paths)
+        download, config_folder, watch = plan['download'], plan['config'], plan['watch']
+        uid, gid = plan['uid'], plan['gid']
         self._call('GET', '/info')
         if self.inspect() is not None:
             raise Error('同名容器已存在，拒绝覆盖')
@@ -781,15 +885,18 @@ class Engine:
             'gid': gid,
             'username': username,
             'download': str(download),
-            'download_relative': download_rel,
+            'download_root': str(plan['download_root']),
+            'download_relative': plan['download_relative'],
             'download_device': stats['download'].st_dev,
             'download_inode': stats['download'].st_ino,
             'config': str(config_folder),
-            'config_relative': config_rel,
+            'config_root': str(plan['config_root']),
+            'config_relative': plan['config_relative'],
             'config_device': stats['config'].st_dev,
             'config_inode': stats['config'].st_ino,
             'watch': str(watch),
-            'watch_relative': watch_rel,
+            'watch_root': str(plan['watch_root']),
+            'watch_relative': plan['watch_relative'],
             'watch_device': stats['watch'].st_dev,
             'watch_inode': stats['watch'].st_ino,
             'enabled': True,
@@ -805,17 +912,29 @@ class Engine:
             return ''
         return password if isinstance(password, str) and password else ''
 
+    def root_for(self, path_key, root_key):
+        """这个目录当初是从哪个存储位置选的。
+
+        优先用配置里的 *_root；旧配置（升级前初始化）没有这个键时按绝对路径前缀反查；
+        再退化为第 0 个根，所以老配置照常能启动。
+        """
+        configured = self.config.get(root_key)
+        if isinstance(configured, str) and configured:
+            return Path(configured)
+        matched = self.match_root(self.config.get(path_key) or '')
+        return matched[0] if matched else self.root
+
     def check_directories(self):
         if not self.config:
             return
         pairs = [
-            ('download', 'download_relative', 'download_device', 'download_inode', '下载目录'),
-            ('config', 'config_relative', 'config_device', 'config_inode', '配置文件夹目录'),
-            ('watch', 'watch_relative', 'watch_device', 'watch_inode', '监控目录'),
+            ('download', 'download_root', 'download_relative', 'download_device', 'download_inode', '下载目录'),
+            ('config', 'config_root', 'config_relative', 'config_device', 'config_inode', '配置文件夹目录'),
+            ('watch', 'watch_root', 'watch_relative', 'watch_device', 'watch_inode', '监控目录'),
         ]
         refreshed = []
-        for path_key, rel_key, dev_key, ino_key, label in pairs:
-            folder = confined(self.root, self.config[rel_key])
+        for path_key, root_key, rel_key, dev_key, ino_key, label in pairs:
+            folder = confined(self.root_for(path_key, root_key), self.config[rel_key])
             try:
                 stat = folder.stat()
             except OSError as exc:
@@ -1019,7 +1138,8 @@ class Engine:
         else:
             password = self.saved_password()
             if not password:
-                raise Error('缺少 WebUI 密码，请重新初始化或检查插件数据目录')
+                raise Error('缺少 WebUI 密码，请点「修改目录」设置新的 WebUI 密码，'
+                            '或点「重新初始化」重新设置目录与账号密码')
             self.pull()
             self.check_directories()
             self._call('POST', '/containers/create?name=' + NAME,
@@ -1039,7 +1159,7 @@ class Engine:
             except Error:
                 pass
             time.sleep(1)
-        raise Error('容器已启动，但 Transmission Web 尚未就绪；可稍后刷新')
+        raise Error(NOT_READY)
 
     def stop(self, remember=True):
         if not self.config:
@@ -1053,11 +1173,210 @@ class Engine:
             self.config['enabled'] = False
             atomic_json(self.cfgfile, self.config)
 
-    def launch(self, action, data):
+    def remove_container(self):
+        """停止并删除本插件的容器，返回是否真的删了。
+
+        只删容器：bind 挂载的配置、下载、监控目录都留在宿主上，里面的文件一个都不动。
+        同名但不属于本插件的容器由 owned() 拒绝接管，绝不会被误删。
+        """
+        item = self.owned()
+        if item is None:
+            return False
+        if item.get('State', {}).get('Running'):
+            self._call('POST', '/containers/' + NAME + '/stop?t=15', timeout=90)
+        # v=1 顺手清掉容器自带的匿名卷，避免残留；数据都在 bind 挂载里，不受影响
+        self._call('DELETE', '/containers/' + NAME + '?force=1&v=1', timeout=60)
+        return True
+
+    def start_quietly(self):
+        """启动容器，返回容器是否已经按当前配置跑起来了。
+
+        Web 没就绪不算失败：容器确实已经起来，只是还差几秒才监听端口。
+        """
+        try:
+            self.start()
+            return True
+        except Error as exc:
+            return str(exc) == NOT_READY
+        except OSError:
+            return False
+
+    def backup_name(self, path):
+        """备份文件名：<名字>.bak-<时间戳>；同一秒内再次操作时顺延，不覆盖旧备份。"""
+        stamp = time.strftime('%Y%m%d%H%M%S')
+        backup = path.with_name(path.name + '.bak-' + stamp)
+        suffix = 1
+        while backup.exists():
+            suffix += 1
+            backup = path.with_name(path.name + '.bak-' + stamp + '-' + str(suffix))
+        return backup
+
+    def backup_settings(self, folder):
+        """把 <配置目录>/settings.json 复制成 settings.json.bak-<时间戳>（没有则返回 None）。"""
+        source = settings_path(Path(folder))
+        if not source.is_file():
+            return None
+        target = self.backup_name(source)
+        shutil.copy2(source, target)
+        return target
+
+    def restore_config(self, backup, previous, previous_password='', settings_backup=None):
+        """重建失败时回滚：恢复插件配置、凭据与 daemon 的 settings.json。
+
+        备份文件本身留着（settings.json.bak-<时间戳>），便于人工核对出了什么事。
+        """
+        try:
+            self.cfgfile.write_bytes(backup.read_bytes())
+            os.chmod(self.cfgfile, 0o600)
+        except OSError:
+            atomic_json(self.cfgfile, previous)
+        self.config = dict(previous)
+        try:
+            if previous_password:
+                atomic_json(self.credentialfile, {'password': previous_password,
+                                                  'username': previous.get('username', '')})
+            else:
+                self.credentialfile.unlink(missing_ok=True)
+        except OSError:
+            pass
+        if settings_backup is not None and settings_backup.is_file():
+            try:
+                shutil.copy2(settings_backup, settings_path(Path(previous['config'])))
+            except OSError:
+                pass
+
+    def reconfigure(self, paths, password=None, username=None):
+        """换目录（可选换 WebUI 账号密码）：保留数据，但容器必须按新宿主路径重建。
+
+        容器里的 /downloads、/config、/watch 都是 bind 挂载，只在创建容器时确定，
+        所以必须停掉并删除旧容器再按新配置创建；只 restart 的话它仍然挂着旧目录。
+        新密码/账号也可以直接放在 paths 里（页面就是这么发的），留空表示不修改。
+        重建失败会回滚配置并尽量把原容器拉回来；用户目录里的文件任何时候都不会被
+        删除或移走。并发保护由 launch() 负责（有操作在跑时直接拒绝）。
+        """
+        if not self.config:
+            raise Error('请先初始化')
+        if password is None:
+            password = paths.get('password', '')
+        if not username:
+            username = paths.get('username', '') or self.config.get('username', '')
+        username = webui_username(username)
+        password = webui_password(password) if password else ''
+        plan = self._directories(paths)
+        download, config_folder, watch = plan['download'], plan['config'], plan['watch']
+        previous = dict(self.config)
+        previous_password = self.saved_password()
+        if not previous_password and not password:
+            # 配置还在、凭据却没了（例如手工恢复了配置备份）：必须在动手前就说清楚，
+            # 否则会一路走到重建容器才发现没密码，用户既起不来也没法重新初始化。
+            raise Error('凭据文件缺失，请填写新的 WebUI 密码后再确认修改')
+        if (str(download) == self.config['download'] and str(config_folder) == self.config['config']
+                and str(watch) == self.config['watch'] and not password
+                and username == self.config.get('username', '')):
+            raise Error('目录和 WebUI 账号都没有变化，无需重新配置')
+        # 先备份现有配置与容器设置：重建失败要能原样退回去
+        backup = self.backup_name(self.cfgfile)
+        try:
+            backup.write_bytes(self.cfgfile.read_bytes())
+            os.chmod(backup, 0o600)
+        except OSError as exc:
+            raise Error('无法备份现有配置，已取消修改（%s）' % (exc.strerror or exc)) from exc
+        settings_backup = self.backup_settings(previous['config'])
+        try:
+            stats = {key: path.stat() for key, path in
+                     [('download', download), ('config', config_folder), ('watch', watch)]}
+            self.config.update({
+                'download': str(download), 'download_root': str(plan['download_root']),
+                'download_relative': plan['download_relative'],
+                'download_device': stats['download'].st_dev,
+                'download_inode': stats['download'].st_ino,
+                'config': str(config_folder), 'config_root': str(plan['config_root']),
+                'config_relative': plan['config_relative'],
+                'config_device': stats['config'].st_dev,
+                'config_inode': stats['config'].st_ino,
+                'watch': str(watch), 'watch_root': str(plan['watch_root']),
+                'watch_relative': plan['watch_relative'],
+                'watch_device': stats['watch'].st_dev,
+                'watch_inode': stats['watch'].st_ino,
+                'uid': plan['uid'], 'gid': plan['gid'],
+                'username': username, 'enabled': True,
+            })
+            atomic_json(self.cfgfile, self.config)
+            if password:
+                atomic_json(self.credentialfile, {'password': password, 'username': username})
+            # bind 挂载只有删掉重建才会换目录，restart 不行
+            self.remove_container()
+            try:
+                self.start()
+            except Error as exc:
+                if str(exc) != NOT_READY:
+                    raise
+                # 容器已经按新目录起来了，只是 Web 还没就绪：不算重建失败，别把新目录回滚掉
+                print('transmission: 目录已更换，容器已重建，但 Transmission Web 尚未就绪',
+                      flush=True)
+        except (Error, OSError) as exc:
+            self.restore_config(backup, previous, previous_password, settings_backup)
+            note = '已恢复原来的目录设置' + ('，容器已按原设置启动' if self.start_quietly()
+                                      else '，但容器没能自动恢复，请点「启动服务」重试')
+            raise Error('%s；%s' % (exc, note)) from exc
+        return self.snapshot()
+
+    def reset(self, confirm=False):
+        """重新初始化：移除容器、撤掉路由器映射、把配置与凭据归档。
+
+        绝不动用户的下载/配置/监控目录：里面的文件一个都不会被删除、移动或改写。
+        插件自己的 settings.json 挪成 settings.json.bak-<时间戳>（页面回到初始化表单），
+        凭据 credential.json 也**只改名归档**成 credential.json.bak-<时间戳>——直接删掉
+        会让用户在恢复配置备份后既起不来容器、又因为"配置已存在"没法重新初始化，等于
+        把 WebUI 密码永久弄丢。daemon 的 settings.json 只另存一份备份、原文件留在原处
+        （用户在里面调过的参数不属于插件状态）。必须由调用方显式确认（confirm=True）。
+        """
+        if not self.config:
+            raise Error('请先初始化')
+        if confirm is not True:
+            raise Error('请确认重新初始化：插件配置会被清空、容器会被移除')
+        config_folder = Path(self.config['config'])
+        self.remove_container()
+        # 容器都删了，路由器上那条 BT 端口映射也没人应答了，一并撤掉（尽力而为）
+        try:
+            self.remove_port_forward()
+        except Exception:                    # noqa: BLE001 路由器抽风不该挡住重新初始化
+            pass
+        # 凭据先归档再动插件配置：归档失败时插件仍是"已初始化"，用户重试即可
+        if self.credentialfile.is_file():
+            try:
+                archived = self.credentialfile.replace(self.backup_name(self.credentialfile))
+            except OSError as exc:
+                raise Error('容器已移除，但凭据文件无法归档（%s），请再试一次'
+                            % (exc.strerror or exc)) from exc
+            print('transmission: 重新初始化，WebUI 凭据已归档到 %s（改回 %s 并重启服务即可恢复）'
+                  % (archived, self.credentialfile.name), flush=True)
+        if self.cfgfile.is_file():
+            try:
+                self.cfgfile.replace(self.backup_name(self.cfgfile))
+            except OSError as exc:
+                raise Error('容器已移除，但插件配置无法备份（%s），请再试一次'
+                            % (exc.strerror or exc)) from exc
+        try:
+            self.backup_settings(config_folder)
+        except OSError:
+            pass
+        self.config = None
+        return self.snapshot()
+
+    def launch(self, action, data, wait=False):
+        """启动一个服务操作；动作在后台线程里跑，页面轮询状态就能看到结果。
+
+        wait=True 时等它跑完再返回：成功给最新 snapshot，失败抛出具体原因。改目录与
+        重新初始化要立刻知道成败（还会停删容器），走这条同步路径。
+        """
         if self.dev:
             raise Error('预览模式不会启动下载或修改 NAS')
-        if action not in ('setup', 'start', 'stop', 'port-test'):
+        if action not in ('setup', 'start', 'stop', 'port-test', 'reconfigure', 'reset'):
             raise Error('未知服务操作')
+        # 改目录/重新初始化会停删容器并改写配置：有操作在跑时直接拒绝，不当成排队
+        if action in ('reconfigure', 'reset') and self.busy:
+            raise Error('当前有操作正在进行，请稍后再试')
         if not self.lock.acquire(False):
             raise Error('服务操作正在进行，请稍候')
         self.busy, self.error = True, ''
@@ -1068,6 +1387,10 @@ class Engine:
                     self.setup(data, data.get('username', ''), data.get('password', ''))
                 if action == 'port-test':
                     self.test_port()
+                elif action == 'reconfigure':
+                    self.reconfigure(data, data.get('password', ''), data.get('username', ''))
+                elif action == 'reset':
+                    self.reset(data.get('confirm'))
                 elif action in ('setup', 'start'):
                     self.start()
                 else:
@@ -1082,6 +1405,12 @@ class Engine:
 
         self.worker = threading.Thread(target=work, daemon=False)
         self.worker.start()
+        if not wait:
+            return None
+        self.worker.join()
+        if self.error:
+            raise Error(self.error)
+        return self.snapshot()
 
 
 def tr_rpc(method, username=None, password=None, session_id='', timeout=15, arguments=None):

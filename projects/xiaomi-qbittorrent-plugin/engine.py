@@ -35,10 +35,27 @@ SESSION_TIMEOUT = 30 * 24 * 3600
 DOCKER_SOCKET = os.environ.get('DOCKER_SOCKET', '/var/run/docker.sock')
 # 路由器映射失败后隔多久再试（路由器重启、UPnP 刚打开这类情况能自愈）
 FORWARD_RETRY_SECONDS = 1800
+# 容器起来了但 Web API 还没就绪。换目录时这不算重建失败（挂载已经换好了），
+# 所以单独抽出来给 reconfigure() 判断，别把用户刚选的目录回滚掉。
+NOT_READY = '容器已启动，但 Web API 尚未就绪；可稍后刷新'
+# 可供选择的存储位置：内置存储池（厂商的 FUSE 卷）与外接设备（U 盘）。
+# 外接设备有两条等价路径：稳定 bind 的 /nas/mnt/usb，以及 U 盘自己的挂载点 /mnt/usb-xxxx。
+STORAGE_POOL_PREFIX = '/nas/pool0'
+EXTERNAL_PREFIXES = ('/nas/mnt/usb', '/mnt/usb-')
 
 
 class Error(RuntimeError):
     pass
+
+
+def root_label(path):
+    """存储位置在页面上显示的名字：存储池 / 外接设备 / 其它用最后一段目录名。"""
+    text = str(path).rstrip('/') or '/'
+    if text == STORAGE_POOL_PREFIX or text.startswith(STORAGE_POOL_PREFIX + '/'):
+        return '存储池'
+    if any(text == prefix or text.startswith(prefix) for prefix in EXTERNAL_PREFIXES):
+        return '外接设备'
+    return Path(text).name or text
 
 
 def installed_version():
@@ -231,8 +248,16 @@ def container_config(config, data):
 
 
 class Engine:
-    def __init__(self, data, root, dev=False):
-        self.data, self.root, self.dev = Path(data), Path(root), dev
+    def __init__(self, data, root, dev=False, roots=None):
+        self.data, self.dev = Path(data), dev
+        # 可选存储位置（LOCAL_ROOTS，顺序即页面上的顺序）：去重且保序。
+        # self.root 仍是第 0 个位置，既有的单根代码和测试照常工作。
+        self.roots = []
+        for candidate in (roots or [root]):
+            path = Path(candidate)
+            if path not in self.roots:
+                self.roots.append(path)
+        self.root = self.roots[0]
         self.data.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.data, 0o700)
         self.lock = threading.Lock()
@@ -296,8 +321,43 @@ class Engine:
             raise Error('同名容器不属于本插件，拒绝接管')
         return item
 
-    def browse(self, relative):
-        folder = confined(self.root, relative)
+    def root_at(self, index):
+        """按序号取存储位置；序号无效时报错，绝不悄悄换成别的盘。"""
+        try:
+            position = int(index)
+        except (TypeError, ValueError) as exc:
+            raise Error('存储位置无效') from exc
+        if not 0 <= position < len(self.roots):
+            raise Error('存储位置无效')
+        return self.roots[position]
+
+    def roots_snapshot(self):
+        """页面用的存储位置列表：序号、标签、绝对路径、当前是否可读。
+
+        exists 同时排掉符号链接：confined() 不接受符号链接根，页面也不该让用户选它。
+        """
+        return [{'index': index, 'label': root_label(path), 'path': str(path),
+                 'exists': path.is_dir() and not path.is_symlink()}
+                for index, path in enumerate(self.roots)]
+
+    def match_root(self, path):
+        """绝对路径反查：(根, 根内相对路径)；都能匹配时取最长的那个，都不匹配返回 None。"""
+        target = Path(path)
+        best = None
+        for root in self.roots:
+            try:
+                relative = target.relative_to(root)
+            except ValueError:
+                continue
+            if best is None or len(root.parts) > len(best[0].parts):
+                best = (root, relative.as_posix())
+        if best is None:
+            return None
+        relative = best[1]
+        return best[0], ('' if relative in ('', '.') else relative)
+
+    def browse(self, relative, root_index=0):
+        folder = confined(self.root_at(root_index), relative)
         return sorted([{'name': p.name, 'path': (relative + '/' if relative else '') + p.name}
                        for p in folder.iterdir() if not p.name.startswith('.') and p.is_dir() and not p.is_symlink()], key=lambda p: p['name'])[:1000]
 
@@ -319,24 +379,61 @@ class Engine:
         return {'version': installed_version(), 'configured': bool(self.config), 'running': running, 'ready': ready,
                 'busy': self.busy, 'error': error, 'preview': self.dev,
                 'directory': self.config['relative'] if self.config else '',
+                # 状态卡片显示完整绝对路径：存储位置多于一个时，相对路径看不出在哪
+                'download_abs': self.config.get('download', '') if self.config else '',
+                # 可选的存储位置（存储池 / 外接设备），目录选择弹窗用它切换
+                'roots': self.roots_snapshot(),
                 'imageVersion': '5.2.3 / LSIO ls474',
                 # 路由器上的 BT 端口映射（UPnP/NAT-PMP）
                 'forward': self.forward_snapshot()}
 
-    def setup(self, relative, password):
+    def _locate(self, value, root_index=0):
+        """把提交的目录解析成 (存储位置的根, 根内相对路径)。
+
+        绝对路径（页面现在直接写绝对路径）按「属于哪个存储位置」反查，多个位置都能
+        匹配时取最长的那个；相对路径按第 root_index 个位置解释，与旧版语义一致。
+        """
+        if not isinstance(value, str):
+            raise Error('目录路径无效')
+        if value.startswith('/') or Path(value).is_absolute():
+            matched = self.match_root(value)
+            if matched is None:
+                raise Error('所选目录必须位于已挂载的存储位置内')
+            return matched
+        return self.root_at(root_index), value
+
+    def _claim_download(self, value, root_index=0):
+        """校验待提交的下载目录，返回 (目录 Path, 所属存储位置的根 Path, 相对路径)。
+
+        setup() 与 reconfigure() 用同一套规则：必须在已挂载的存储位置内、存在、
+        不是符号链接、不能含逗号、由非 root 的 NAS 用户拥有。
+        """
+        root, relative = self._locate(value, root_index)
+        if not relative:
+            raise Error('请选择存储根目录下的文件夹')
+        folder = confined(root, relative)
+        if ',' in str(folder):
+            raise Error('Docker 挂载目录不能包含逗号')
+        # 下载目录不能和插件自己的配置目录重叠：容器里 /config 与 /downloads 是两路挂载
+        private = (self.data / 'config').resolve()
+        target = folder.resolve()
+        if target == private or private in target.parents or target in private.parents:
+            raise Error('下载目录不能与插件配置目录相同或互相包含')
+        stat = folder.stat()
+        if not stat.st_uid or not stat.st_gid:
+            raise Error('所选目录须由非 root 的 NAS 用户拥有')
+        return folder, root, relative
+
+    def setup(self, relative, password, root_index=0):
         if self.config:
             raise Error('已完成初始化；现有目录和密码不会被覆盖')
         hashed = password_hash(password)
-        if not relative:
+        if not isinstance(relative, str) or len(relative) > 1024:
             raise Error('请选择存储根目录下的文件夹')
-        folder = confined(self.root, relative)
-        if ',' in str(folder):
-            raise Error('Docker 挂载目录不能包含逗号')
+        folder, download_root, relative = self._claim_download(relative, root_index)
         # 直接使用所选目录：PUID/PGID 取自它的属主，容器以该身份读写下载内容。
         # 不新建子目录，也不 chown 用户目录，因此不会改动已有文件的所有权。
         uid, gid = folder.stat().st_uid, folder.stat().st_gid
-        if not uid or not gid:
-            raise Error('所选目录须由非 root 的 NAS 用户拥有')
         self._call('GET', '/info')
         if self.inspect() is not None:
             raise Error('同名容器已存在，拒绝覆盖')
@@ -361,7 +458,8 @@ class Engine:
         os.chown(confpath, uid, gid)
         stat = folder.stat()
         self.config = {'owner': secrets.token_hex(24), 'relative': relative,
-                       'download': str(folder), 'uid': uid, 'gid': gid, 'device': stat.st_dev,
+                       'download': str(folder), 'download_root': str(download_root),
+                       'uid': uid, 'gid': gid, 'device': stat.st_dev,
                        'inode': stat.st_ino, 'enabled': True}
         atomic_json(self.cfgfile, self.config)
         self.save_credential(password)
@@ -383,8 +481,20 @@ class Engine:
             return ''
         return password if isinstance(password, str) and password else ''
 
+    def root_for(self):
+        """这个下载目录当初是从哪个存储位置选的。
+
+        优先用配置里的 download_root；旧配置（升级前初始化）没有这个键时按绝对路径
+        前缀反查；再退化为第 0 个根，所以老配置照常能启动。
+        """
+        configured = self.config.get('download_root')
+        if isinstance(configured, str) and configured:
+            return Path(configured)
+        matched = self.match_root(self.config.get('download') or '')
+        return matched[0] if matched else self.root
+
     def check_directory(self):
-        folder = confined(self.root, self.config['relative'])
+        folder = confined(self.root_for(), self.config['relative'])
         try:
             stat = folder.stat()
         except OSError as exc:
@@ -548,7 +658,7 @@ class Engine:
             except Error:
                 pass
             time.sleep(1)
-        raise Error('容器已启动，但 Web API 尚未就绪；可稍后刷新')
+        raise Error(NOT_READY)
 
     def stop(self, remember=True):
         if not self.config:
@@ -563,19 +673,202 @@ class Engine:
             self.config['enabled'] = False
             atomic_json(self.cfgfile, self.config)
 
-    def launch(self, action, data):
+    def remove_container(self):
+        """停止并删除本插件的容器，返回是否真的删了。
+
+        只删容器：bind 挂载的配置与下载目录都留在宿主上，里面的文件一个都不动。
+        同名但不属于本插件的容器由 owned() 拒绝接管，绝不会被误删。
+        """
+        item = self.owned()
+        if item is None:
+            return False
+        if item.get('State', {}).get('Running'):
+            self._call('POST', '/containers/' + NAME + '/stop?t=15', timeout=90)
+        # v=1 顺手清掉容器自带的匿名卷，避免残留；数据都在 bind 挂载里，不受影响
+        self._call('DELETE', '/containers/' + NAME + '?v=1', timeout=60, ok=(200, 204, 404))
+        return True
+
+    def start_quietly(self):
+        """启动容器，返回容器是否已经按当前配置跑起来了。
+
+        Web API 没就绪不算失败：容器确实已经起来，只是还差几秒才监听端口。
+        """
+        try:
+            self.start()
+            return True
+        except Error as exc:
+            return str(exc) == NOT_READY
+        except OSError:
+            return False
+
+    def backup_name(self, path):
+        """备份文件名：<名字>.bak-<时间戳>；同一秒内再次操作时顺延，不覆盖旧备份。"""
+        stamp = time.strftime('%Y%m%d%H%M%S')
+        backup = path.with_name(path.name + '.bak-' + stamp)
+        suffix = 1
+        while backup.exists():
+            suffix += 1
+            backup = path.with_name(path.name + '.bak-' + stamp + '-' + str(suffix))
+        return backup
+
+    def write_config_text(self, path, text, uid, gid):
+        """原子写回容器里的配置文件（0600，属主为所选目录的 NAS 用户）。"""
+        tmp = path.with_suffix('.tmp')
+        with tmp.open('w', encoding='utf-8') as stream:
+            os.chmod(tmp, 0o600)
+            stream.write(text)
+        os.chown(tmp, uid, gid)
+        tmp.replace(path)
+
+    def replace_webui_password(self, hashed, uid, gid):
+        """把新的 WebUI 密码哈希写进 qBittorrent.conf，返回改动前的内容（回滚用）。
+
+        qB 只在启动时读这个文件，所以改密码必须和重建容器一起做才生效。
+        """
+        confpath = self.data / 'config' / 'qBittorrent' / 'qBittorrent.conf'
+        try:
+            text = confpath.read_text(encoding='utf-8')
+        except OSError as exc:
+            raise Error('找不到 qBittorrent 配置，密码未修改') from exc
+        line = 'WebUI\\Password_PBKDF2="@ByteArray(' + hashed + ')"'
+        lines = text.splitlines()
+        for position, value in enumerate(lines):
+            if value.startswith('WebUI\\Password_PBKDF2='):
+                lines[position] = line
+                break
+        else:
+            lines.append(line)
+        self.write_config_text(confpath, '\n'.join(lines) + '\n', uid, gid)
+        return text
+
+    def restore_config(self, backup, previous, conf_text=''):
+        """重建失败时回滚：恢复备份的 settings.json，并还原 WebUI 密码。
+
+        备份文件本身留着（settings.json.bak-<时间戳>），便于人工核对出了什么事。
+        """
+        try:
+            self.cfgfile.write_bytes(backup.read_bytes())
+            os.chmod(self.cfgfile, 0o600)
+        except OSError:
+            atomic_json(self.cfgfile, previous)
+        self.config = dict(previous)
+        if conf_text and previous.get('uid') and previous.get('gid'):
+            try:
+                self.write_config_text(self.data / 'config' / 'qBittorrent' / 'qBittorrent.conf',
+                                       conf_text, previous['uid'], previous['gid'])
+            except OSError:
+                pass
+
+    def reconfigure(self, relative, password='', root_index=0):
+        """换下载目录（保留已下载的文件），并按新的宿主路径重建容器。
+
+        容器的 bind 挂载只在创建容器时确定，所以必须停掉并删除旧容器再按新配置创建；
+        只 restart 的话它仍然指着旧目录。重建失败会回滚配置并尽量把原容器拉回来，
+        下载目录里的文件任何时候都不会被删除或移走。
+        并发保护由 launch() 负责（有操作在跑时直接拒绝）。
+        """
+        if not self.config:
+            raise Error('请先初始化')
+        folder, download_root, relative = self._claim_download(relative, root_index)
+        hashed = password_hash(password) if password else ''
+        stat = folder.stat()
+        previous = dict(self.config)
+        # 先备份现有配置：重建失败要能原样退回去
+        backup = self.backup_name(self.cfgfile)
+        try:
+            backup.write_bytes(self.cfgfile.read_bytes())
+            os.chmod(backup, 0o600)
+        except OSError as exc:
+            raise Error('无法备份现有配置，已取消修改（%s）' % (exc.strerror or exc)) from exc
+        previous_conf = ''
+        try:
+            # 先把新密码写进容器配置：qB 只在启动时读它，重建容器正好一起吃进去
+            if hashed:
+                previous_conf = self.replace_webui_password(hashed, stat.st_uid, stat.st_gid)
+            self.config.update({'relative': relative, 'download': str(folder),
+                                'download_root': str(download_root),
+                                'uid': stat.st_uid, 'gid': stat.st_gid,
+                                'device': stat.st_dev, 'inode': stat.st_ino, 'enabled': True})
+            atomic_json(self.cfgfile, self.config)
+            # 容器里的 /downloads 是 bind 挂载：只有删掉重建才会换成新目录
+            self.remove_container()
+            try:
+                self.start()
+            except Error as exc:
+                if str(exc) != NOT_READY:
+                    raise
+                # 容器已经按新目录起来了，只是 Web API 还没就绪：不算重建失败，别把
+                # 配置回滚回去（那会白白丢掉用户刚选的目录）。
+                print('qbittorrent: 下载目录已更换，容器已重建，但 Web API 尚未就绪', flush=True)
+        except (Error, OSError) as exc:
+            self.restore_config(backup, previous, previous_conf)
+            note = '已恢复原来的下载目录设置' + ('，容器已按原设置启动' if self.start_quietly()
+                                          else '，但容器没能自动恢复，请点「启动服务」重试')
+            raise Error('%s；%s' % (exc, note)) from exc
+        if hashed:
+            self.save_credential(password)
+        return self.snapshot()
+
+    def reset(self, confirm=False):
+        """重新初始化：移除容器、把插件配置挪成备份、清掉路由器映射。
+
+        绝不动用户的下载目录：里面的文件一个都不会被删除、移动或改写。容器自己的
+        qBittorrent 配置目录也一并挪开（另有备份），否则重新初始化时写不出新的密码
+        文件。必须由调用方显式确认（confirm=True），免得误点按钮就把配置清掉。
+        """
+        if not self.config:
+            raise Error('请先初始化')
+        if confirm is not True:
+            raise Error('请先确认重新初始化：插件配置会被清空、容器会被移除')
+        self.remove_container()
+        # 容器都删了，路由器上那条 BT 端口映射也没人应答了，一并撤掉（尽力而为）
+        try:
+            self.remove_port_forward()
+        except Exception:                    # noqa: BLE001 路由器抽风不该挡住重新初始化
+            pass
+        for path in (self.cfgfile, self.data / 'config'):
+            if not path.exists():
+                continue
+            try:
+                path.replace(self.backup_name(path))
+            except OSError as exc:
+                raise Error('容器已移除，但插件配置无法备份（%s），请再试一次'
+                            % (exc.strerror or exc)) from exc
+        self.config = None
+        # 凭据也清掉：下一次初始化要重新设置密码
+        try:
+            self.credentialfile.unlink()
+        except OSError:
+            pass
+        return self.snapshot()
+
+    def launch(self, action, data, wait=False):
+        """启动一个服务操作；动作在后台线程里跑，页面轮询状态就能看到结果。
+
+        wait=True 时等它跑完再返回：成功给最新 snapshot，失败抛出具体原因。改目录与
+        重新初始化要立刻知道成败（还会停删容器），走这条同步路径。
+        """
         if self.dev:
             raise Error('预览模式不会启动下载或修改 NAS')
-        if action not in ('setup', 'start', 'stop'):
+        if action not in ('setup', 'start', 'stop', 'reconfigure', 'reset'):
             raise Error('未知服务操作')
+        # 改目录/重新初始化会停删容器并改写配置：有操作在跑时直接拒绝，不当成排队
+        if action in ('reconfigure', 'reset') and self.busy:
+            raise Error('当前有操作正在进行，请稍后再试')
         if not self.lock.acquire(False):
             raise Error('服务操作正在进行，请稍候')
         self.busy, self.error = True, ''
+
         def work():
             try:
                 if action == 'setup':
-                    self.setup(data.get('path', ''), data.get('password', ''))
-                if action in ('setup', 'start'):
+                    self.setup(data.get('path', ''), data.get('password', ''), data.get('pathRoot', 0))
+                    self.start()
+                elif action == 'reconfigure':
+                    self.reconfigure(data.get('path', ''), data.get('password', ''), data.get('pathRoot', 0))
+                elif action == 'reset':
+                    self.reset(data.get('confirm'))
+                elif action == 'start':
                     self.start()
                 else:
                     self.stop()
@@ -586,8 +879,15 @@ class Engine:
             finally:
                 self.busy = False
                 self.lock.release()
+
         self.worker = threading.Thread(target=work, daemon=False)
         self.worker.start()
+        if not wait:
+            return None
+        self.worker.join()
+        if self.error:
+            raise Error(self.error)
+        return self.snapshot()
 
 
 def qb_request(route, params=None, cookie='', raw=None, content_type=None):

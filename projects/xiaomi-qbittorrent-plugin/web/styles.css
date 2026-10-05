@@ -262,6 +262,19 @@ button:focus-visible { outline: 2px solid rgba(24, 120, 187, .45); outline-offse
 }
 .forward-row span { min-width: 0; overflow-wrap: anywhere; }
 
+/* 「目录设置」：修改目录 / 重新初始化，整行铺开在服务卡片下面 */
+.setting-row {
+  flex: 1 1 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+.setting-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
 /* ---------- 入口地址与控制台 ---------- */
 
 .address-row {
@@ -434,7 +447,21 @@ dialog::backdrop { background: rgba(29, 41, 61, .45); }
   margin-top: 16px;
 }
 
-#browsePath { display: block; flex: 1; min-width: 0; padding: 0; background: transparent; font-size: 12.5px; }
+/* 目录选择弹窗顶部：存储位置切换（存储池 / 外接设备），只有一个位置时整行隐藏 */
+.root-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.root-row .btn.active { border-color: var(--blue); background: var(--blue); color: #fff; }
+
+/* 弹窗顶部显示完整绝对路径：路径可能很长，必须能换行 */
+#browsePath {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
 
 #folders {
   min-height: 120px;

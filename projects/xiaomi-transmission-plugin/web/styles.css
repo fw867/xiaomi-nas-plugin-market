@@ -205,6 +205,19 @@ code {
 }
 #scheduleHint { font-size: 12px; }
 
+/* 「目录设置」：修改目录 / 重新初始化，整行铺在服务卡片底下 */
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  border-top: 1px solid var(--line);
+  margin-top: 12px;
+  padding-top: 12px;
+}
+.setting-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
 /* 入站端口没真正发布到宿主机时的提示（docker-proxy 掉线会出现） */
 .port-warning {
   margin: 10px 0 0;
@@ -260,7 +273,18 @@ code {
   align-items: center;
   gap: 8px;
 }
-.field-row input { flex: 1; min-width: 0; }
+.field-row input,
+.field-row textarea { flex: 1; min-width: 0; }
+
+/* 目录输入框是 textarea：完整的绝对路径很长，要能换行显示（input 换不了行） */
+.field-row textarea {
+  height: auto;
+  min-height: 44px;
+  padding: 10px 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  resize: none;
+}
 
 input:not([type=checkbox]):not([type=file]),
 select,
@@ -301,6 +325,7 @@ button:focus-visible { outline: 2px solid rgba(24, 120, 187, .45); outline-offse
 .btn.primary:active { background: var(--blue-dark); }
 .btn.small { min-height: 36px; padding: 0 14px; font-size: 13.5px; }
 .btn.block { width: 100%; }
+.btn.danger { border-color: #e2c3c0; color: var(--red); }
 .btn:disabled { opacity: .5; cursor: default; }
 
 .check {
@@ -424,6 +449,29 @@ dialog::backdrop { background: rgba(29, 41, 61, .45); }
 
 #browsePath { display: block; flex: 1; min-width: 0; padding: 0; background: transparent; font-size: 12.5px; }
 
+/* 目录选择弹窗的「存储位置」切换（内置存储池 / 外接设备），只有一个位置时不显示 */
+.roots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.roots button {
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid #ccd5df;
+  border-radius: 999px;
+  background: #fff;
+  color: #34465a;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.roots button:active { background: #eef2f6; }
+.roots button.active { border-color: var(--blue); background: var(--blue); color: #fff; }
+.roots button:disabled { opacity: .5; cursor: default; }
+
 #folders {
   min-height: 120px;
   max-height: 40vh;
@@ -482,9 +530,13 @@ dialog::backdrop { background: rgba(29, 41, 61, .45); }
     --bg: #131a24;
   }
   code { background: #232d3b; }
-  input:not([type=checkbox]):not([type=file]) { background: #1b2330; border-color: #333f4f; }
+  input:not([type=checkbox]):not([type=file]),
+  textarea { background: #1b2330; border-color: #333f4f; }
   .btn { background: #1b2330; border-color: #333f4f; color: #cfd8e3; }
   .btn:active { background: #232d3b; }
+  .btn.danger { border-color: #4a3230; }
+  .roots button { background: #1b2330; border-color: #333f4f; color: #cfd8e3; }
+  .roots button:active { background: #232d3b; }
   .fold { background: #161e29; }
   .alert { background: #2a1f1c; color: #e8b4a3; }
   .topbar { background: rgba(27, 35, 48, .94); }

@@ -279,6 +279,50 @@ function setDialogError(message) {
   showError(message || '');
 }
 
+// 一个「位置」（存储池 / 外接设备 / 其它挂载点）：标题 + 根路径 + 该根下的一层子目录。
+// 根不存在（外接设备拔了）时 available === false：只提示「未接入」，不报错。
+function dirGroup(location) {
+  const group = element('section', 'dir-group');
+  const head = element('div', 'dir-group-head');
+  head.append(element('span', 'dir-group-label', location.label || '目录'));
+  head.append(element('span', 'dir-group-root', location.root || ''));
+  group.append(head);
+  if (location.available === false) {
+    head.append(element('span', 'chip', '未接入'));
+    group.classList.add('off');
+    group.append(element('p', 'muted', '这个位置当前不可用，插入设备后再刷新'));
+    return group;
+  }
+  const dirs = location.dirs || [];
+  if (!dirs.length) {
+    group.append(element('p', 'muted', '这个位置下没有子目录'));
+    return group;
+  }
+  group.append(...dirs.map((item) => dirRow(item)));
+  return group;
+}
+
+// 手填的绝对路径也算一个已勾选的条目（与勾选项合并提交，服务端照旧做
+// 绝对路径 / 根白名单 / 越界与软链真实路径校验，错误原样显示）。
+function addManualPath() {
+  const input = $('dirPathInput');
+  const value = (input.value || '').trim().replace(/\/+$/, '');
+  if (!value) { toast('请填写目录的绝对路径'); return; }
+  if (!value.startsWith('/')) { toast('要填绝对路径（以 / 开头）'); return; }
+  const boxes = [...document.querySelectorAll('#dirDialog .dir-box')];
+  if (boxes.some((box) => String(box.value).replace(/\/+$/, '') === value)) {
+    toast('这个目录已经在列表里了');
+    input.value = '';
+    return;
+  }
+  const row = dirRow({
+    name: value, path: value, shared: false, shareName: '', display: '', deletable: false,
+  });
+  row.querySelector('.dir-box').checked = true;
+  $('dirList').append(row);
+  input.value = '';
+}
+
 async function openDirDialog() {
   const account = currentAccount();
   if (!account) { toast('没有读到账号'); return; }
@@ -286,16 +330,23 @@ async function openDirDialog() {
   $('dirRoot').textContent = '';
   setDialogError('');
   $('dirList').replaceChildren(element('p', 'muted', '读取中…'));
+  $('dirPathInput').value = '';
   dialog.showModal();
   try {
     const data = await call(`dirs?account=${encodeURIComponent(account)}`);
     const dirs = data.dirs || [];
+    const locations = Array.isArray(data.locations) && data.locations.length
+      ? data.locations : null;
     $('dirRoot').textContent = `数据目录：${data.root || '—'}`;
-    if (!dirs.length) {
+    if (locations) {
+      // 新后端：按「位置」分组（存储池 / 外接设备），外接设备没插上时标成「未接入」
+      $('dirList').replaceChildren(...locations.map((item) => dirGroup(item)));
+    } else if (!dirs.length) {
+      // 老后端（没有 locations）：退回原来的一层列表渲染
       $('dirList').replaceChildren(element('p', 'muted', '这个目录下没有子目录'));
-      return;
+    } else {
+      $('dirList').replaceChildren(...dirs.map((item) => dirRow(item)));
     }
-    $('dirList').replaceChildren(...dirs.map((item) => dirRow(item)));
   } catch (error) {
     $('dirList').replaceChildren();
     $('dirError').textContent = error.message;
@@ -305,7 +356,8 @@ async function openDirDialog() {
 // 「编辑共享」的确定：只按**差异**发请求（先加后删），一次请求处理一类改动。
 async function confirmEditShares() {
   const account = currentAccount();
-  const boxes = [...document.querySelectorAll('#dirList .dir-box')];
+  // 勾选项与手填的路径都在弹窗里（手填的会加成一个已勾选条目），一起提交
+  const boxes = [...document.querySelectorAll('#dirDialog .dir-box')];
   const toAdd = boxes.filter((box) => box.checked && box.dataset.shared === '0');
   const toRemove = boxes.filter(
     (box) => !box.checked && box.dataset.shared === '1' && !box.disabled);
@@ -348,8 +400,11 @@ async function confirmEditShares() {
     } else if (added) {
       // SMB 客户端会缓存共享列表：刚加完立刻双击可能报错，提示一句省得以为是没生效
       toast(`已添加 ${added} 个共享（Windows 里可能要重开资源管理器才看得到）`);
-    } else {
+    } else if (removed) {
       toast(`已移除 ${removed} 个共享（Windows 里可能要重开资源管理器才看得到）`);
+    } else {
+      // 手填的路径没通过校验（绝对路径/白名单/不存在）时走到这里：原因看下面的提示
+      toast('没有共享被添加或移除，请看页面上的提示');
     }
     showError(notes.length ? `已完成，但有提示：${notes.join('；')}` : '');
   } catch (err) {
@@ -382,6 +437,11 @@ $('hostnameInput').addEventListener('keydown', (event) => {
 $('editShare').onclick = openDirDialog;
 $('dirCancel').onclick = () => { $('dirDialog').close(); };
 $('dirConfirm').onclick = confirmEditShares;
+// 手填绝对路径（/nas/mnt 下的目录，如 /nas/mnt/usb）：回车或「添加」都算加一个待共享目录
+$('dirPathAdd').onclick = addManualPath;
+$('dirPathInput').addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') { event.preventDefault(); addManualPath(); }
+});
 // 点遮罩关闭（点 dialog 自身而不是内容区）
 $('dirDialog').addEventListener('click', (event) => {
   if (event.target === $('dirDialog')) $('dirDialog').close();

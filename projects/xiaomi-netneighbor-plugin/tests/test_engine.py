@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 import os
 import posixpath
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -80,10 +83,13 @@ sambaadmin = admin
 NAS_DATA_ROOT = '/home/u3943892/pool0/data'
 NAS_HOME_ROOT = '/home'
 NAS_POOL_ROOT = '/nas'
+NAS_MNT_ROOT = '/nas/mnt'
 PREFIX_TABLE = (
     (NAS_DATA_ROOT, 'home/u3943892/pool0/data'),
     (NAS_HOME_ROOT, 'home'),
     (NAS_POOL_ROOT, 'nas'),
+    # 厂商自己的挂载点在 /mnt/usb-<哈希>（EXTRA_ROOTS 支持 /mnt/usb-* 这种单层通配）
+    ('/mnt', 'mnt'),
 )
 # 前缀必须**从长到短**匹配：/home 比 /home/u3943892/pool0/data 短，
 # 先匹配它会把相对部分退化成 Windows 风格路径（`u3943892\pool0\data`）。
@@ -193,7 +199,7 @@ class Sandbox:
         (self.root / 'etc' / 'config').mkdir(parents=True, exist_ok=True)
         (self.root / 'etc' / 'samba').mkdir(parents=True, exist_ok=True)
         (self.root / 'var' / 'etc').mkdir(parents=True, exist_ok=True)
-        for name in ('home', 'nas'):
+        for name in ('home', 'nas', 'mnt'):
             (self.root / name).mkdir(parents=True, exist_ok=True)
         self.fixtures = {
             'etc/config/sambashare': SAMBASHARE_TEXT,
@@ -635,11 +641,16 @@ class AllowedRootTests(unittest.TestCase):
         self.assertEqual(engine.data_root_for(Path('/'), ''), '')
 
     def test_env_override_wins(self):
-        with patch.dict(os.environ, {'ALLOWED_ROOTS': '/data/a:/data/b'}):
+        # 额外根在这里显式隔离（EXTRA_ROOTS=''）：这条用例只管 ALLOWED_ROOTS 的覆盖语义，
+        # 断言必须与环境无关——真机 NAS 上 `/nas/mnt` 是存在的，不隔离就会多出一项
+        with patch.dict(os.environ, {'ALLOWED_ROOTS': '/data/a:/data/b'}), \
+                patch.object(engine, 'EXTRA_ROOTS', engine.parse_extra_roots('')):
             self.assertEqual(engine.resolve_allowed_roots(None), ['/data/a', '/data/b'])
 
     def test_fallback_when_config_is_empty(self):
-        with patch.dict(os.environ, {'ALLOWED_ROOTS': ''}):
+        # 同上：隔离额外根，避免「跑测试这台机器上有没有 /nas/mnt」影响结果
+        with patch.dict(os.environ, {'ALLOWED_ROOTS': ''}), \
+                patch.object(engine, 'EXTRA_ROOTS', engine.parse_extra_roots('')):
             roots = engine.resolve_allowed_roots({'sambauser': [], 'sambashare': []})
         self.assertIn('/nas/pool0', roots)
         self.assertIn('/home/*/pool0/data', roots)
@@ -660,6 +671,181 @@ class AllowedRootTests(unittest.TestCase):
         self.assertIn('/nas/pool0', roots)
 
 
+class ExtraRootTests(unittest.TestCase):
+    """外接设备（`EXTRA_ROOTS`，默认 `/nas/mnt`）：**追加**来源，且只列当前存在的根。"""
+
+    @staticmethod
+    def extra_roots_from_env(value=None, unset=False):
+        """在**干净环境**的子进程里导入 engine，返回它解析出来的 `EXTRA_ROOTS`。
+
+        这样验的是「环境变量 → 常量」这一步（模块导入时解析），而不是当前进程里
+        被测试改过的状态；`EXTRA_ROOTS` 的当前进程值不受影响。
+        """
+        project = Path(__file__).resolve().parent.parent
+        environment = {key: item for key, item in os.environ.items()
+                       if key != 'EXTRA_ROOTS'}
+        if not unset:
+            environment['EXTRA_ROOTS'] = '' if value is None else value
+        completed = subprocess.run(
+            [sys.executable, '-c', 'import engine; print(":".join(engine.EXTRA_ROOTS))'],
+            cwd=str(project), capture_output=True, text=True, env=environment, timeout=120)
+        if completed.returncode != 0:
+            raise AssertionError(completed.stderr)
+        return completed.stdout.strip()
+
+    def test_default_extra_roots_is_nas_mnt(self):
+        """没设 EXTRA_ROOTS 时默认追加 `/nas/mnt`（真机 usb/pa0/pa1 都在它下面）。"""
+        self.assertEqual(self.extra_roots_from_env(unset=True), '/nas/mnt')
+
+    def test_empty_extra_roots_env_disables_all_extras(self):
+        """显式空串 → 不追加任何额外根（`ALLOWED_ROOTS=` 时它就是严格的最终白名单）。"""
+        self.assertEqual(self.extra_roots_from_env(''), '')
+
+    def test_custom_extra_roots_env_is_split_on_colons(self):
+        self.assertEqual(self.extra_roots_from_env('/nas/mnt:/mnt/usb-*'),
+                         '/nas/mnt:/mnt/usb-*')
+
+    def test_parse_extra_roots_handles_empty_and_blank_items(self):
+        self.assertEqual(engine.parse_extra_roots(''), ())
+        self.assertEqual(engine.parse_extra_roots(None), ())
+        self.assertEqual(engine.parse_extra_roots('  '), ())
+        self.assertEqual(engine.parse_extra_roots('/a::/b:'), ('/a', '/b'))
+        self.assertEqual(engine.parse_extra_roots('/nas/mnt'), ('/nas/mnt',))
+
+    def test_empty_extra_roots_keeps_allowed_roots_strict(self):
+        """`EXTRA_ROOTS=` 时最终白名单**不含** `/nas/mnt`，即使它真的存在。"""
+        with patch.dict(os.environ, {'ALLOWED_ROOTS': '/data/a:/data/b'}), \
+                patch.object(engine, 'EXTRA_ROOTS', engine.parse_extra_roots('')), \
+                patch.object(engine, 'path_isdir', lambda path: True):
+            self.assertEqual(engine.extra_roots(), [])
+            self.assertEqual(engine.resolve_allowed_roots(None), ['/data/a', '/data/b'])
+
+    def test_nas_mnt_is_appended_when_it_exists(self):
+        """`EXTRA_ROOTS` 未设置（默认 `/nas/mnt`）且它存在时，白名单与状态里都含它。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox = Sandbox(tmp)
+            self.addCleanup(sandbox.close)
+            with patch.object(engine, 'EXTRA_ROOTS',
+                              engine.parse_extra_roots('/nas/mnt')):
+                sandbox.makedirs('/nas/mnt/usb')
+                self.assertIn('/nas/mnt', sandbox.engine.allowed_roots())
+                self.assertIn('/nas/mnt', sandbox.engine.status()['allowedRoots'])
+
+    def test_resolve_appends_extra_roots_to_the_derived_list(self):
+        with patch.dict(os.environ, {'ALLOWED_ROOTS': ''}), \
+                patch.object(engine, 'EXTRA_ROOTS', ('/nas/mnt',)), \
+                patch.object(engine, 'path_isdir', lambda path: str(path) == '/nas/mnt'):
+            roots = engine.resolve_allowed_roots({'sambauser': [], 'sambashare': []})
+        self.assertIn('/home/*/pool0/data', roots)          # 兜底 + 按配置派生那份没变
+        self.assertIn('/nas/pool0', roots)
+        self.assertEqual(roots[-1], '/nas/mnt')             # 追加在最后
+        self.assertEqual(roots.count('/nas/mnt'), 1)        # 去重
+
+    def test_allowed_roots_override_still_appends_extra_roots(self):
+        """`ALLOWED_ROOTS` 仍然是显式覆盖（给了就只用它），但 EXTRA_ROOTS 照旧追加。"""
+        with patch.dict(os.environ, {'ALLOWED_ROOTS': '/data/a:/data/b'}), \
+                patch.object(engine, 'EXTRA_ROOTS', ('/nas/mnt',)), \
+                patch.object(engine, 'path_isdir', lambda path: str(path) == '/nas/mnt'):
+            roots = engine.resolve_allowed_roots(None)
+        self.assertEqual(roots, ['/data/a', '/data/b', '/nas/mnt'])
+
+    def test_missing_extra_root_is_not_listed(self):
+        """根不存在（拔盘）时不纳入：不给出一个指向空路径的白名单根。"""
+        with patch.dict(os.environ, {'ALLOWED_ROOTS': ''}), \
+                patch.object(engine, 'EXTRA_ROOTS', ('/nas/mnt', '/nas/mnt/usb')), \
+                patch.object(engine, 'path_isdir', lambda path: False):
+            self.assertEqual(engine.extra_roots(), [])
+            roots = engine.resolve_allowed_roots(None)
+        self.assertNotIn('/nas/mnt', roots)
+
+    def test_engine_cache_follows_plug_and_unplug(self):
+        """允许根缓存要能反映「外接设备在不在」：不 force 也能看出来。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox = Sandbox(tmp)
+            self.addCleanup(sandbox.close)
+            with patch.object(engine, 'EXTRA_ROOTS', ('/nas/mnt',)):
+                self.assertNotIn('/nas/mnt', sandbox.engine.allowed_roots())
+                sandbox.makedirs('/nas/mnt/usb')                    # 插上 U 盘
+                self.assertIn('/nas/mnt', sandbox.engine.allowed_roots())
+                shutil.rmtree(str(sandbox.real('/nas/mnt')))        # 拔掉
+                self.assertNotIn('/nas/mnt', sandbox.engine.allowed_roots())
+
+    def test_custom_extra_roots_support_vendor_wildcards(self):
+        """EXTRA_ROOTS 可自定义，`/mnt/usb-*` 这种厂商挂载点用单层通配收进来。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox = Sandbox(tmp)
+            self.addCleanup(sandbox.close)
+            with patch.object(engine, 'EXTRA_ROOTS', ('/nas/mnt', '/mnt/usb-*')):
+                self.assertEqual(engine.extra_roots(), [])          # 一个都不在
+                sandbox.makedirs('/mnt/usb-1a2b3c')
+                (sandbox.real('/mnt/usb-1a2b3c') / '照片').mkdir()
+                roots = sandbox.engine.allowed_roots()
+                self.assertIn('/mnt/usb-1a2b3c', roots)
+                self.assertNotIn('/nas/mnt', roots)                 # 没插上的不列
+                # 厂商挂载点下的目录同样能通过校验
+                self.assertEqual(
+                    engine.validate_share_path('/mnt/usb-1a2b3c/照片', roots),
+                    '/mnt/usb-1a2b3c/照片')
+                self.assertTrue(engine.within_roots('/mnt/usb-1a2b3c/照片', roots))
+
+    def test_status_allowed_roots_include_the_extra_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox = Sandbox(tmp)
+            self.addCleanup(sandbox.close)
+            with patch.object(engine, 'EXTRA_ROOTS', ('/nas/mnt',)):
+                sandbox.makedirs('/nas/mnt')
+                self.assertIn('/nas/mnt', sandbox.engine.status()['allowedRoots'])
+
+    def test_existing_share_survives_unplugging_the_device(self):
+        """拔盘后共享仍然保留（不报错），弹窗把该位置标成「未接入」。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            sandbox = Sandbox(tmp)
+            self.addCleanup(sandbox.close)
+            successful_manager(sandbox)
+            sandbox.makedirs(NAS_DATA_ROOT)                          # 账号数据根
+            with patch.object(engine, 'EXTRA_ROOTS', ('/nas/mnt',)):
+                target = sandbox.makedirs('/nas/mnt/usb/下载')
+                sandbox.engine.add_share('fw867', target)
+                shutil.rmtree(str(sandbox.real('/nas/mnt')))         # 拔盘：路径整个没了
+
+                snapshot = sandbox.engine.status()                   # 不能报错
+                data = sandbox.engine.browse_account_dirs('fw867')
+
+        self.assertNotIn('/nas/mnt', snapshot['allowedRoots'])
+        paths = [share['path'] for account in snapshot['accounts']
+                 for share in account['shares']]
+        self.assertIn(target, paths)                                 # 共享还在
+        extra = next(item for item in data['locations'] if item['root'] == '/nas/mnt')
+        self.assertFalse(extra['available'])                         # 弹窗显示「未接入」
+        self.assertEqual(extra['dirs'], [])
+
+
+class LocationLabelTests(unittest.TestCase):
+    """弹窗「位置」分组的标签规则（纯函数，见 `engine.location_label`）。"""
+
+    def test_external_devices_are_labelled(self):
+        for path in ('/nas/mnt/usb', '/nas/mnt/usb/下载', '/nas/mnt/usb-1a2b',
+                     '/mnt/usb-1a2b3c', '/mnt/usb-1a2b3c/照片'):
+            with self.subTest(path=path):
+                self.assertEqual(engine.location_label(path), '外接设备')
+
+    def test_other_nas_mnt_paths_use_the_last_segment(self):
+        self.assertEqual(engine.location_label('/nas/mnt'), 'mnt')
+        self.assertEqual(engine.location_label('/nas/mnt/pa0'), 'pa0')
+        self.assertEqual(engine.location_label('/nas/mnt/pa1'), 'pa1')
+
+    def test_pool_paths_are_labelled(self):
+        for path in ('/nas/pool0', '/nas/pool0/公开', NAS_DATA_ROOT,
+                     NAS_DATA_ROOT + '/照片'):
+            with self.subTest(path=path):
+                self.assertEqual(engine.location_label(path), '存储池')
+
+    def test_unknown_root_uses_the_last_segment(self):
+        self.assertEqual(engine.location_label('/data/media'), 'media')
+        self.assertEqual(engine.location_label('/nas/mnt-pa'), 'mnt-pa')
+        self.assertEqual(engine.location_label('/nas/mnt/'), 'mnt')
+
+
 class PathValidationTests(EngineHarness):
     def test_accepts_directory_inside_allowed_root(self):
         self.build()
@@ -678,11 +864,27 @@ class PathValidationTests(EngineHarness):
         self.assertTrue(engine.within_roots('/home/u3943892/pool0/data/照片',
                                             self.engine.allowed_roots()))
 
+    def test_accepts_directories_under_nas_mnt(self):
+        """外接设备在 `/nas/mnt` 下：EXTRA_ROOTS 生效时它和它的子目录都能共享。"""
+        self.build()
+        with patch.object(engine, 'EXTRA_ROOTS', ('/nas/mnt',)):
+            target = self.sandbox.makedirs('/nas/mnt/usb/下载')
+            roots = self.engine.allowed_roots()
+            self.assertIn('/nas/mnt', roots)
+            self.assertEqual(engine.validate_share_path(target, roots), '/nas/mnt/usb/下载')
+            self.assertEqual(engine.validate_share_path('/nas/mnt', roots), '/nas/mnt')
+            # 没有这个追加根时同一条路径必须被挡住（白名单真的在起作用）
+            with patch.object(engine, 'EXTRA_ROOTS', ()):
+                strict = self.engine.allowed_roots(force=True)
+        self.assertNotIn('/nas/mnt', strict)
+        with self.assertRaises(Error) as caught:
+            engine.validate_share_path(target, strict)
+        self.assertIn('不在允许的根目录内', str(caught.exception))
+
     def test_rejects_relative_path(self):
         with self.assertRaises(Error) as caught:
             engine.validate_share_path('home/data', ['/home/*/pool0/data'])
         self.assertIn('绝对路径', str(caught.exception))
-
     def test_rejects_dotdot(self):
         """带 `..` 的越界路径必须被挡住。
 
@@ -1050,6 +1252,25 @@ class AddShareTests(EngineHarness):
         share = next(item for item in self.engine.shares() if item['name'] == 'fw867_nb_1')
         self.assertEqual(share['display'], '新照片')
         self.assertTrue(share['custom'])
+
+    def test_add_share_accepts_a_directory_under_nas_mnt(self):
+        """外接设备（`/nas/mnt` 下）的目录也能共享：EXTRA_ROOTS 是追加的白名单根。"""
+        self.build()
+        self.manager()
+        self.drop_list_dirs()
+        with patch.object(engine, 'EXTRA_ROOTS', ('/nas/mnt',)):
+            target = self.sandbox.makedirs('/nas/mnt/usb/下载')
+            result = self.engine.add_share('fw867', target)
+
+        self.assertEqual(target, '/nas/mnt/usb/下载')
+        self.assertEqual(result['shareName'], 'fw867_nb_1')          # 命名规则没变
+        argv = self.runner.argv_for('add_dir')
+        self.assertEqual(argv[3], 'fw867_nb_1')
+        self.assertEqual(argv[4], target)                            # 共享的是绝对路径
+        self.assertEqual(argv[6], '下载')                             # 显示名 = 目录名
+        self.assertTrue(result['verified'])
+        self.assertIn("option path '/nas/mnt/usb/下载'",
+                      self.sandbox.sambashare.read_text(encoding='utf-8'))
 
     def test_add_share_defaults_share_point_to_the_directory_name(self):
         """没给 share point 时用目录名（真机共享名就是 `照片-3943892` 这种显示名）。
@@ -1986,6 +2207,78 @@ class BrowseAccountDirsTests(EngineHarness):
         # 排序按名字（与列表接口一致）；中文与 ASCII 混排也必须是稳定顺序
         names = [item['name'] for item in self.engine.browse_account_dirs('fw867')['dirs']]
         self.assertEqual(names, sorted(names))
+
+    # ---- 位置分组（存储池 / 外接设备）------------------------------------
+    def test_locations_group_pool_and_nas_mnt(self):
+        """`/nas/mnt` 下的一层子目录也列出来：存储池 + 外接设备两个位置。"""
+        self.build()
+        self.data_dir()
+        photos = self.data_child('照片')
+        with patch.object(engine, 'EXTRA_ROOTS', ('/nas/mnt',)):
+            usb = self.sandbox.makedirs('/nas/mnt/usb')
+            pa0 = self.sandbox.makedirs('/nas/mnt/pa0')
+            self.sandbox.makedirs('/nas/mnt/usb/下载')      # 更深一层不属于「一层子目录」
+            self.sandbox.makedirs('/nas/mnt/.hidden')       # 隐藏目录不列
+            (self.sandbox.real('/nas/mnt') / 'readme.txt').write_text('x', encoding='utf-8')
+            data = self.engine.browse_account_dirs('fw867')
+
+        self.assertEqual([item['root'] for item in data['locations']],
+                         [NAS_DATA_ROOT, NAS_MNT_ROOT])
+        self.assertEqual([item['label'] for item in data['locations']], ['存储池', 'mnt'])
+        self.assertTrue(all(item['available'] for item in data['locations']))
+        self.assertEqual(data['locations'][0]['dirs'], data['dirs'])     # 老结构原样保留
+        self.assertEqual([item['name'] for item in data['dirs']], sorted(['照片']))
+        by_path = {item['path']: item for item in data['locations'][1]['dirs']}
+        self.assertEqual(sorted(by_path), sorted([usb, pa0]))            # 文件/隐藏目录不列
+        self.assertFalse(by_path[usb]['shared'])                         # 未共享 → 可勾选
+        self.assertEqual(by_path[usb]['shareName'], '')
+        self.assertFalse(by_path[usb]['deletable'])
+        self.assertEqual(by_path[usb]['name'], 'usb')
+        self.assertNotIn(photos, by_path)
+
+    def test_locations_mark_a_missing_extra_root_as_unavailable(self):
+        """外接设备没插上（`/nas/mnt` 不存在）：位置标成未接入，但不报错。"""
+        self.build()
+        self.data_dir()
+        self.data_child('照片')
+        with patch.object(engine, 'EXTRA_ROOTS', ('/nas/mnt',)):
+            data = self.engine.browse_account_dirs('fw867')
+
+        pool, extra = data['locations']
+        self.assertTrue(pool['available'])
+        self.assertEqual([item['name'] for item in pool['dirs']], ['照片'])
+        self.assertEqual(extra['root'], NAS_MNT_ROOT)
+        self.assertFalse(extra['available'])
+        self.assertEqual(extra['dirs'], [])
+
+    def test_locations_follow_custom_extra_roots(self):
+        self.build()
+        self.data_dir()
+        with patch.object(engine, 'EXTRA_ROOTS', ('/nas/mnt', '/data/额外')):
+            self.sandbox.makedirs('/data/额外')
+            data = self.engine.browse_account_dirs('fw867')
+
+        self.assertEqual([item['root'] for item in data['locations']],
+                         [NAS_DATA_ROOT, NAS_MNT_ROOT, '/data/额外'])
+        # 自定义根的名字取末段目录名；没插上的那个标成未接入
+        self.assertEqual([item['label'] for item in data['locations']], ['存储池', 'mnt', '额外'])
+        self.assertEqual([item['available'] for item in data['locations']], [True, False, True])
+
+    def test_shared_directory_under_nas_mnt_is_marked(self):
+        self.build()
+        self.manager()
+        self.drop_list_dirs()
+        self.data_dir()
+        with patch.object(engine, 'EXTRA_ROOTS', ('/nas/mnt',)):
+            usb = self.sandbox.makedirs('/nas/mnt/usb')
+            self.engine.add_share('fw867', usb)
+            data = self.engine.browse_account_dirs('fw867')
+
+        item = next(entry for entry in data['locations'][1]['dirs']
+                    if entry['path'] == usb)
+        self.assertTrue(item['shared'])
+        self.assertEqual(item['shareName'], 'fw867_nb_1')
+        self.assertTrue(item['deletable'])          # 插件自建的：勾选框可以取消
 
 
 class AddSharesBatchTests(EngineHarness):

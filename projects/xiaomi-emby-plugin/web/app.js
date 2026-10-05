@@ -22,8 +22,10 @@ const csrf = document.querySelector('meta[name="csrf-token"]').content;
 let current = null;
 let mediaSelection = null;
 let configSelection = '';
-let browsePath = '';
+let browseRoot = 0;       // 当前浏览的「存储位置」序号（state.roots 的下标）
+let browsePath = '';      // 该位置内的相对路径，空串表示位置根部
 let toastTimer = null;
+let polling = false;      // 防止 5 秒轮询叠加请求
 
 function toast(message) {
   const box = $('toast');
@@ -71,18 +73,26 @@ function render(state) {
   // 圆点和文案同源，避免出现「绿点 + 已停止」这种自相矛盾的画面
   const dot = state.busy ? '' : (state.running && state.ready ? 'on' : 'off');
   $('statusDot').className = dot ? 'status-dot ' + dot : 'status-dot';
+  // 忙的时候也保持显示：下面有目录设置与进度提示，不该整块消失
   $('setup').hidden = state.configured;
   $('serviceActions').hidden = !state.configured;
   $('access').hidden = !state.configured;
-  $('directory').textContent = state.configured ? state.directory : '—';
-  $('configDirectory').textContent = state.configured
-      ? (state.configDirectory || '插件私有目录（外部不可见）')
-      : '—';
+  $('directorySettings').hidden = !state.configured;
+  // 状态卡片显示完整绝对路径：存储位置多于一个时，相对路径看不出在哪
+  const mediaAbs = state.media_abs || state.directory || '';
+  const configAbs = state.config_abs || state.configDirectory || '';
+  const configNote = state.configured && state.config_private ? '（插件私有目录，外部不可见）' : '';
+  $('directory').textContent = state.configured ? (mediaAbs || '—') : '—';
+  $('directory').title = state.configured ? mediaAbs : '';
+  $('configDirectory').textContent = state.configured ? (configAbs || '—') + configNote : '—';
+  $('configDirectory').title = state.configured ? configAbs + configNote : '';
   $('address').textContent = state.address || '（请通过小米客户端打开插件以获取地址）';
   $('wizardHint').hidden = state.wizardCompleted !== false;
   $('toggleService').textContent = state.running ? '停止服务' : '启动服务';
   $('toggleService').disabled = state.busy;
   $('setupForm').querySelector('button[type=submit]').disabled = state.busy;
+  $('reconfigure').disabled = state.busy;
+  $('reset').disabled = state.busy;
   const info = [];
   if (state.serverVersion) info.push('Emby ' + state.serverVersion);
   if (state.imageVersion) info.push('镜像 ' + state.imageVersion);
@@ -94,12 +104,16 @@ function render(state) {
 }
 
 async function refresh() {
+  if (polling) return;
+  polling = true;
   try {
     const state = await call('/status');
     current = state;
     render(state);
   } catch (error) {
     showError(error.message);
+  } finally {
+    polling = false;
   }
 }
 
@@ -114,15 +128,86 @@ async function act(path, body, message) {
   }
 }
 
+// 后台操作是异步的（换目录要重建容器、等 Emby 就绪，可能好几分钟）：
+// 轮询状态直到 busy 结束，再刷新状态卡片；失败原因由后端写进 error，原样显示。
+async function waitForOperation() {
+  for (let i = 0; i < 900; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await refresh();
+    if (current && !current.busy) return;
+  }
+}
+
+// 当前「存储位置」（内置存储池 / 外接设备），由 state.roots 提供
+function currentRoot() {
+  const roots = (current && current.roots) || [];
+  return roots[browseRoot] || roots[0] || null;
+}
+
+// 根内相对路径 → 完整绝对路径（位置根部就显示根的绝对路径）
+function absoluteBrowsePath() {
+  const root = currentRoot();
+  const base = root ? String(root.path || '').replace(/\/+$/, '') : '';
+  if (!browsePath) return base;
+  return base ? base + '/' + browsePath : browsePath;
+}
+
+// 绝对路径 →（位置序号，根内相对路径）：与后端一致做最长前缀匹配，
+// 找不到就退回第 0 个位置的根部（用户重新选一个即可）。
+function locateRoot(value) {
+  const roots = (current && current.roots) || [];
+  const text = String(value || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  let index = -1;
+  let length = -1;
+  roots.forEach((root, position) => {
+    const base = String(root.path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    if (base && (text === base || text.startsWith(base + '/')) && base.length > length) {
+      index = position;
+      length = base.length;
+    }
+  });
+  if (index < 0) return { root: 0, path: '' };
+  const base = String(roots[index].path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+  return { root: index, path: text === base ? '' : text.slice(base.length + 1) };
+}
+
+// 「位置」切换按钮：只有一个存储位置时不显示
+function renderRoots() {
+  const roots = (current && current.roots) || [];
+  const box = $('roots');
+  box.hidden = roots.length < 2;
+  box.replaceChildren();
+  if (roots.length < 2) return;
+  roots.forEach((root, position) => {
+    const index = Number.isInteger(root.index) ? root.index : position;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'btn small' + (index === browseRoot ? ' active' : '');
+    button.textContent = (root.label || root.path) + (root.exists ? '' : '（不可用）');
+    button.addEventListener('click', () => {
+      if (index === browseRoot) return;
+      browseRoot = index;
+      browsePath = '';                 // 切换位置后从该位置根部重新浏览
+      renderRoots();
+      loadFolders();
+    });
+    box.append(button);
+  });
+}
+
 async function loadFolders() {
   let data;
   try {
-    data = await call('/browse?path=' + encodeURIComponent(browsePath));
+    data = await call('/browse?root=' + encodeURIComponent(browseRoot)
+      + '&path=' + encodeURIComponent(browsePath));
   } catch (error) {
     showError(error.message);
+    $('folders').replaceChildren();
     return;
   }
-  $('browsePath').textContent = browsePath || '用户存储根目录';
+  const shown = absoluteBrowsePath();
+  $('browsePath').textContent = shown || '用户存储根目录';
+  $('browsePath').title = shown;
   $('up').disabled = !browsePath;
   const list = $('folders');
   list.replaceChildren();
@@ -156,46 +241,52 @@ $('toggleService').addEventListener('click', () => {
   act('/service/' + action, {}, action === 'start' ? '正在启动服务' : '正在停止服务');
 });
 
-// 媒体目录、初始化时的配置目录、以及给已运行实例换配置目录，共用这个选择框。
+// 目录选择弹窗：初始化表单的媒体/配置目录、以及「修改目录」都复用它。
 let browseOnPick = null;
+let pickTarget = '';      // 'media' 时在弹窗底部提示已选的媒体目录
 function openBrowser(title, startPath, onPick) {
   browseOnPick = onPick;
-  browsePath = startPath || '';
+  const located = locateRoot(startPath);
+  browseRoot = located.root;
+  browsePath = located.path;
   $('browseTitle').textContent = title;
+  $('pickHint').hidden = pickTarget !== 'media' || !mediaSelection;
+  $('pickedPaths').textContent = mediaSelection || '';
+  renderRoots();
   $('browse').showModal();
   loadFolders();
 }
 
-async function relocateConfig(path) {
-  const confirmed = confirm(
-    '把 Emby 的配置目录迁到「' + path + '」？\n\n' +
-    '插件会先停容器，把现有配置复制到新目录，核对文件数无误后删除旧目录，再重建容器。' +
-    '过程中 Emby 会短暂中断，媒体文件不受影响。');
-  if (!confirmed) return;
-  await act('/service/relocate', { configPath: path }, '正在迁移配置目录，请稍候');
+// 选中的目录写回初始化表单：表单里显示的始终是完整绝对路径
+function syncSelections() {
+  $('mediaPath').value = mediaSelection || '';
+  $('configPath').value = configSelection || '';
 }
 
-$('choose').addEventListener('click', () => openBrowser('选择媒体目录', mediaSelection, (path) => {
-  mediaSelection = path;
-  $('mediaPath').value = path || '用户存储根目录';
-}));
-
-$('chooseConfig').addEventListener('click', () => openBrowser('选择配置目录', configSelection, (path) => {
-  configSelection = path;
-  $('configPath').value = path;
-}));
-
-$('moveConfig').addEventListener('click', () => openBrowser('选择新的配置目录', '', (path) => {
-  if (!path) {
-    showError('请选择存储里的一个目录（不能是存储根目录本身）');
-    return;
+function chooseInto(target, title) {
+  pickTarget = target;
+  const start = target === 'media' ? mediaSelection : configSelection;
+  try {
+    openBrowser(title, start || '', (path) => {
+      $('pickHint').hidden = true;
+      if (target === 'media') {
+        mediaSelection = path || null;
+      } else {
+        configSelection = path || '';
+      }
+      syncSelections();
+    });
+  } catch (error) {
+    showError(error.message);
   }
-  relocateConfig(path);
-}));
+}
+
+$('choose').addEventListener('click', () => chooseInto('media', '选择媒体目录'));
+$('chooseConfig').addEventListener('click', () => chooseInto('config', '选择配置目录'));
 
 $('clearConfig').addEventListener('click', () => {
   configSelection = '';
-  $('configPath').value = '';
+  syncSelections();
 });
 
 $('up').addEventListener('click', () => {
@@ -204,11 +295,59 @@ $('up').addEventListener('click', () => {
 });
 
 $('selectFolder').addEventListener('click', () => {
-  const picked = browsePath;
+  // 提交绝对路径；服务端两种（绝对 / 根内相对）都接受
+  const picked = absoluteBrowsePath();
   const onPick = browseOnPick;
   browseOnPick = null;
   $('browse').close();
   if (onPick) onPick(picked);
+});
+
+$('reconfigure').addEventListener('click', async () => {
+  // 没重新选就沿用当前值（修改目录只换位置，不迁数据）
+  const media = mediaSelection || (current && current.media_abs) || '';
+  const config = configSelection || (current && current.config_abs) || '';
+  if (!media) {
+    showError('请先选择媒体目录');
+    return;
+  }
+  const confirmed = confirm(
+    '修改 Emby 的目录设置？\n\n' +
+    '媒体目录：' + media + '\n' +
+    '配置目录：' + config + '\n\n' +
+    '只会换位置、不会删除已有文件，但会重建容器（挂载只在创建容器时生效）：旧容器会被停掉并删除，再按新目录创建，Emby 会中断一会儿。\n' +
+    '新位置若没有原 Emby 配置，应用会以全新状态启动，需要重新跑一遍初始化向导。');
+  if (!confirmed) return;
+  try {
+    await call('/service/reconfigure', { path: media, configPath: config });
+    toast('正在换目录并重建容器，请稍候');
+    mediaSelection = null;
+    configSelection = '';
+    syncSelections();
+    await waitForOperation();
+  } catch (error) {
+    showError(error.message);
+  }
+});
+
+$('reset').addEventListener('click', async () => {
+  const confirmed = confirm(
+    '确定要重新初始化 Emby 插件？\n\n' +
+    '· 会停止并移除本插件的容器；\n' +
+    '· 会清空插件配置（原设置文件会备份保留），页面回到初始化表单；\n' +
+    '· 用户数据目录不受影响：媒体目录与配置目录里的文件一个都不会删。\n\n' +
+    '之后需要重新选择目录并初始化。');
+  if (!confirmed) return;
+  try {
+    await call('/service/reset', { confirm: true });
+    toast('已重新初始化，请重新选择目录');
+    mediaSelection = null;
+    configSelection = '';
+    syncSelections();
+    await waitForOperation();
+  } catch (error) {
+    showError(error.message);
+  }
 });
 
 $('copyAddress').addEventListener('click', async () => {

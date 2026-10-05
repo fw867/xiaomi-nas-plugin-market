@@ -25,7 +25,7 @@ const assetUrl = (path) => new URL(path, pluginAssetBase()).href;
   const escape = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const icon = (name) => `<img src="${icons[name]}" alt="">`;
   root.querySelectorAll('[data-icon]').forEach(el => el.src = icons[el.dataset.icon]);
-  let state, items = [], browsePath = '', removeHash, toastTimer, polling = false, generation = 0;
+  let state, items = [], browseRoot = 0, browsePath = '', pickInput = null, removeHash, toastTimer, polling = false, generation = 0;
   const bytes = (n) => { n = Number(n || 0); const u = ['B','KiB','MiB','GiB','TiB']; let i = 0; while (n >= 1024 && i < 4) {n /= 1024;i++;} return n.toFixed(i ? 1 : 0) + ' ' + u[i]; };
   const stopped = item => /stopped|paused|error|missingFiles/i.test(item.state);
   function toast(message) { $('#toast').textContent = message; $('#toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('#toast').hidden = true, 6500); }
@@ -34,7 +34,7 @@ const assetUrl = (path) => new URL(path, pluginAssetBase()).href;
     const response = await fetch(assetUrl('api/' + route), {method:data === undefined ? 'GET':'POST', cache:'no-store', headers:{'X-QB-Session':session,'X-CSRF-Token':csrf,...(data === undefined ? {} : {'Content-Type':'application/json'})}, body:data === undefined ? undefined : JSON.stringify(data)});
     const result = await response.json().catch(() => ({})); if (!response.ok || !result.ok) throw new Error(result.error || '请求失败'); return result;
   }
-  async function busy(button, fn) { button.disabled = true; try {await fn();} catch(e) {toast(e.message);} finally {button.disabled = false;} }
+  async function busy(button, fn) { button.disabled = true; try {await fn();} catch(e) {toast(e.message);showError(e.message);} finally {button.disabled = false;} }
   function stateLabel(current) {
     if (current.busy) return '正在处理，请稍候';
     if (!current.configured) return '未初始化';
@@ -71,7 +71,12 @@ const assetUrl = (path) => new URL(path, pluginAssetBase()).href;
     $('#address').textContent = current.address || '（请从设备所有者的小米客户端打开插件以获取地址）';
     $('#toggleService').disabled = current.busy;
     $('#toggleService').textContent = current.running ? '停止服务' : '启动服务';
-    $('#directory').textContent = current.directory ? '/' + current.directory : '—';
+    // 状态卡片显示完整绝对路径：存储位置多于一个时，相对路径看不出在哪
+    const absolute = current.download_abs || (current.directory ? '/' + current.directory : '');
+    $('#directory').textContent = current.configured ? (absolute || '—') : '—';
+    $('#directory').title = current.configured ? absolute : '';
+    $('#reconfigure').disabled = current.busy;
+    $('#reset').disabled = current.busy;
 
     $('#login').hidden = current.loggedIn || current.busy;
     $('#consoleBody').hidden = !current.loggedIn;
@@ -119,17 +124,59 @@ const assetUrl = (path) => new URL(path, pluginAssetBase()).href;
     } catch(e) { showError(e.message); }
     finally {polling = false;}
   }
+  // 当前「存储位置」（内置存储池 / 外接设备），由状态接口的 roots 提供
+  function currentRoot() {
+    const roots = (state && state.roots) || [];
+    return roots[browseRoot] || roots[0] || null;
+  }
+  // 根内相对路径 → 完整绝对路径（位置根部就显示根的绝对路径）
+  function absoluteBrowsePath() {
+    const root = currentRoot(), base = root ? String(root.path || '').replace(/\/+$/, '') : '';
+    if (!browsePath) return base;
+    return base ? base + '/' + browsePath : browsePath;
+  }
+  // 绝对路径 →（位置序号，根内相对路径）：与后端一致做最长前缀匹配，找不到就退回根部
+  function locateRoot(value) {
+    const roots = (state && state.roots) || [], text = String(value || '').replace(/\/+$/, '');
+    let index = -1, length = -1;
+    roots.forEach((root, position) => {
+      const base = String(root.path || '').replace(/\/+$/, '');
+      if (base && (text === base || text.startsWith(base + '/')) && base.length > length) {index = position;length = base.length;}
+    });
+    if (index < 0) return {root: 0, path: ''};
+    const base = String(roots[index].path || '').replace(/\/+$/, '');
+    return {root: index, path: text === base ? '' : text.slice(base.length + 1)};
+  }
+  // 「位置」切换按钮：只有一个存储位置时不显示
+  function renderRoots() {
+    const roots = (state && state.roots) || [], box = $('#roots');
+    box.hidden = roots.length < 2;
+    box.innerHTML = roots.length < 2 ? '' : roots.map((root, position) => {
+      const index = Number.isInteger(root.index) ? root.index : position;
+      return `<button type="button" class="btn small${index === browseRoot ? ' active' : ''}" data-root="${index}">${escape(root.label || root.path)}${root.exists ? '' : '（不可用）'}</button>`;
+    }).join('');
+  }
   async function browse(path) {
-    browsePath = path; const current = ++generation; $('#browsePath').textContent = path ? '/' + path : '用户存储根目录';
+    browsePath = path; const current = ++generation;
+    const shown = absoluteBrowsePath();
+    $('#browsePath').textContent = shown || '用户存储根目录';
+    $('#browsePath').title = shown;
     $('#folders').textContent = '正在读取'; $('#selectFolder').disabled = true; $('#up').disabled = !path;
-    try { const result = await api('browse?path=' + encodeURIComponent(path)); if(current !== generation) return;
+    try { const result = await api('browse?root=' + encodeURIComponent(browseRoot) + '&path=' + encodeURIComponent(path)); if(current !== generation) return;
       $('#folders').innerHTML = result.items.map(item => `<button type="button" data-folder="${escape(item.path)}">${icon('folder')}${escape(item.name)}</button>`).join('') || '<p class="muted">此目录下没有子文件夹</p>';
       $('#selectFolder').disabled = !path;
     } catch(e) { if(current === generation) $('#folders').textContent = e.message; }
   }
+  // 打开目录选择弹窗：从输入框现有值定位到所属位置，没有就停在该位置根部
+  function openBrowser(input) {
+    const located = locateRoot(input ? input.value : '');
+    pickInput = input; browseRoot = located.root; browsePath = located.path;
+    renderRoots(); $('#browse').showModal(); browse(browsePath);
+  }
   root.addEventListener('click', e => {
     const button = e.target.closest('button'); if (!button) return;
     if (button.dataset.close) {$('#' + button.dataset.close).close();return;}
+    if (button.dataset.root !== undefined) {const index = Number(button.dataset.root);if (index !== browseRoot) {browseRoot = index;renderRoots();browse('');}return;}
     if (button.dataset.folder !== undefined) {browse(button.dataset.folder);return;}
     if (!button.dataset.action) return;
     busy(button, async () => {
@@ -155,10 +202,38 @@ const assetUrl = (path) => new URL(path, pluginAssetBase()).href;
     catch (e) { toast('复制失败，请手动记录：' + text); }
   });
   window.addEventListener('hashchange', () => showConsole(location.hash === '#console'));
-  $('#choose').onclick = () => {$('#browse').showModal();browse($('#downloadPath').value);};
+  $('#choose').onclick = () => openBrowser($('#downloadPath'));
   $('#up').onclick = () => browse(browsePath.split('/').slice(0,-1).join('/'));
-  $('#selectFolder').onclick = () => {$('#downloadPath').value = browsePath; $('#browse').close();};
+  $('#selectFolder').onclick = () => {
+    // 写回输入框的是完整绝对路径：服务端据此反查它属于哪个存储位置
+    if (!browsePath) return;
+    if (pickInput) {pickInput.value = absoluteBrowsePath();pickInput.title = pickInput.value;}
+    $('#browse').close();
+  };
   $('#setupForm').onsubmit = e => {e.preventDefault();const f=e.target;if(!f.elements.path.value){showError('请先选择下载目录');return;}busy(f.querySelector('[type=submit]'),async()=>{await api('service/setup',{path:f.elements.path.value,password:f.elements.password.value}); f.elements.password.value='';await refresh();});};
+  $('#reconfigure').onclick = () => {
+    const form = $('#reconfigureForm'); form.reset();
+    $('#reconfigurePath').value = (state && state.download_abs) || '';
+    $('#currentDirectory').textContent = '当前目录：' + ((state && state.download_abs) || '—');
+    $('#reconfigureDialog').showModal();
+  };
+  $('#chooseNew').onclick = () => openBrowser($('#reconfigurePath'));
+  $('#reconfigureForm').onsubmit = e => {
+    e.preventDefault(); const form = e.target;
+    if (!form.elements.path.value) {showError('请先选择新的下载目录');return;}
+    busy(form.querySelector('[type=submit]'),async()=>{
+      const result = await api('service/reconfigure',{path:form.elements.path.value,password:form.elements.password.value});
+      form.elements.password.value = ''; $('#reconfigureDialog').close();
+      if (result.state) {state = result.state;render(state);}
+      await refresh(); toast('下载目录已更新，容器已按新位置重建');
+    });
+  };
+  $('#reset').onclick = () => $('#resetDialog').showModal();
+  $('#confirmReset').onclick = () => busy($('#confirmReset'),async()=>{
+    await api('service/reset',{confirm:true});
+    $('#resetDialog').close(); await refresh();
+    toast('已重新初始化：插件配置已清空，下载目录里的文件未受影响');
+  });
   $('#loginForm').onsubmit = e => {e.preventDefault();const f=e.target;busy(f.querySelector('[type=submit]'),async()=>{await api('login',{password:f.elements.password.value});f.reset();await refresh();});};
   $('#toggleService').onclick = () => busy($('#toggleService'),async()=>{await api('service/' + (state.running?'stop':'start'),{});await refresh();});
   $('#forwardPort').onclick = () => busy($('#forwardPort'),async()=>{

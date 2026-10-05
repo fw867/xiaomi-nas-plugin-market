@@ -54,12 +54,20 @@
                 <button id="editShare" class="btn primary block" type="button">编辑共享</button>
             </section>
 
-            <!-- 编辑共享弹窗：列出数据根目录下的子目录，勾选=添加、取消勾选=移除 -->
+            <!-- 编辑共享弹窗：列出数据根目录下的子目录，勾选=添加、取消勾选=移除；
+                 也可以直接手填绝对路径（外接设备在 /nas/mnt 下，如 /nas/mnt/usb/下载） -->
             <dialog id="dirDialog" class="dialog">
                 <div class="dialog-body">
                     <h2>编辑共享</h2>
                     <p id="dirRoot" class="dialog-hint"></p>
                     <p class="dialog-hint">勾选添加，取消勾选移除</p>
+                    <div class="path-row">
+                        <input id="dirPathInput" type="text" inputmode="text" autocomplete="off"
+                               spellcheck="false" aria-label="共享目录的绝对路径"
+                               placeholder="绝对路径，如 /nas/mnt/usb">
+                        <button id="dirPathAdd" class="btn" type="button">添加</button>
+                    </div>
+                    <p class="dialog-hint">可填 /nas/mnt 下的目录（如 /nas/mnt/usb）</p>
                     <div id="dirList" class="dir-list"></div>
                     <p id="dirError" class="dialog-error" role="alert"></p>
                     <div class="dialog-actions">

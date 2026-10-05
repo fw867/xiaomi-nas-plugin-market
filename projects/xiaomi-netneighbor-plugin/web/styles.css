@@ -226,6 +226,32 @@ main {
 .dialog-body h2 { margin: 0; font-size: 16px; font-weight: 650; }
 .dialog-hint { margin: 0; color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
 .dialog-error { margin: 0; min-height: 0; color: var(--danger); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* 手填绝对路径（/nas/mnt 下的目录）：与主机名那一行同样的「输入框 + 按钮」布局 */
+.path-row { display: flex; flex-wrap: nowrap; gap: 6px; }
+.path-row input[type="text"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: var(--tap);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px;
+  font-size: 16px;
+  font-family: inherit;
+  background: #fff;
+  color: var(--ink);
+}
+.path-row .btn { flex: 0 0 auto; padding: 10px 14px; font-size: 14px; }
+
+/* 弹窗里的「位置」分组：存储池 / 外接设备（拔盘时标成未接入） */
+.dir-group { display: flex; flex-direction: column; gap: 2px; }
+.dir-group + .dir-group { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
+.dir-group-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; }
+.dir-group-label { font-size: 13.5px; font-weight: 650; }
+.dir-group-root { color: var(--muted); font-size: 11.5px; overflow-wrap: anywhere; }
+.dir-group.off .dir-group-label { color: var(--muted); }
+.dir-group .muted { margin: 4px 0 2px; }
+
 .dir-list {
   display: flex;
   flex-direction: column;
@@ -305,7 +331,7 @@ footer { text-align: center; color: var(--muted); font-size: 12.5px; margin-top:
   body { background: var(--bg); }
   .topbar { background: rgba(27, 35, 48, .94); }
   .icon-button:active { background: #232d3b; }
-  .btn, .host-row input[type="text"] { background: #1b2330; color: var(--ink); border-color: #333f4f; }
+  .btn, .host-row input[type="text"], .path-row input[type="text"] { background: #1b2330; color: var(--ink); border-color: #333f4f; }
   .btn:active { background: #232d3b; }
   .btn.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
   .dir-item:active { background: #232d3b; }

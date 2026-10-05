@@ -292,7 +292,12 @@ class Handler(BaseHTTPRequestHandler):
                 result['loggedIn'] = bool(self.server.qb_session())
                 result['address'] = self.address()
             elif route.path == '/api/browse':
-                result = {'items': self.server.engine.browse(query.get('path', [''])[0])}
+                # ?root=<存储位置序号>&path=<相对路径>：缺省是第 0 个位置的根部
+                try:
+                    position = int(query.get('root', ['0'])[0] or 0)
+                except ValueError:
+                    position = -1
+                result = {'items': self.server.engine.browse(query.get('path', [''])[0], position)}
             elif route.path == '/api/torrents':
                 result = {'items': json.loads(self.call_qb('torrents/info?limit=500&sort=added_on&reverse=true')),
                           'transfer': json.loads(self.call_qb('transfer/info'))}
@@ -327,7 +332,13 @@ class Handler(BaseHTTPRequestHandler):
                 raise Error('请求格式无效')
             action = urlsplit(self.path).path.removeprefix('/api/')
             if action.startswith('service/'):
-                self.server.engine.launch(action.split('/')[1], data)
+                name = action.split('/')[1]
+                # 改目录 / 重新初始化会停删容器并改写配置：同步等结果，成功回最新状态、
+                # 失败回具体原因（页面据此原样提示），不当成「已排队」。
+                if name in ('reconfigure', 'reset'):
+                    state = self.server.engine.launch(name, data, wait=True)
+                    return self.send(200, {'ok': True, 'state': state})
+                self.server.engine.launch(name, data)
                 return self.send(202, {'ok': True})
             if action == 'forward':
                 # 同步跑：SSDP 2.5s + SOAP 4s 量级，页面按钮带进度提示
@@ -394,11 +405,17 @@ def main():
     parser.add_argument('--stop-owned', action='store_true')
     args = parser.parse_args()
     data = os.environ.get('DATA_DIR') or (tempfile.mkdtemp(prefix='qb-preview-') if args.dev else '/data/plugin/qbittorrent/data')
+    # 可选存储位置（存储池、外接设备）按 LOCAL_ROOTS 的顺序排列；只认绝对路径，
+    # 没设置（或写坏了）就退化成单根 LOCAL_ROOT。
+    roots = [item for item in os.environ.get('LOCAL_ROOTS', '').split(':')
+             if item and Path(item).is_absolute()]
     root = os.environ.get('LOCAL_ROOT', data if args.dev else '')
+    if not root and roots:
+        root = roots[0]
     user = os.environ.get('NAS_USER_ID', 'u123456' if args.dev else '')
     if not root or not re.fullmatch(r'u[0-9]+', user):
         raise SystemExit('LOCAL_ROOT and NAS_USER_ID are required')
-    engine = Engine(data, root, args.dev)
+    engine = Engine(data, root, args.dev, roots=roots or None)
     if args.stop_owned:
         engine.stop(remember=False)
         return

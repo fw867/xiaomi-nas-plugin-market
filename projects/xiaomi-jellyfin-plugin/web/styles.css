@@ -146,9 +146,10 @@ code {
 .field-label { display: block; margin-bottom: 6px; font-size: 13.5px; font-weight: 600; }
 
 .field-row { display: flex; align-items: center; gap: 8px; }
-.field-row input { flex: 1; min-width: 0; }
+.field-row input, .field-row textarea { flex: 1; min-width: 0; }
 
-input:not([type=checkbox]):not([type=file]) {
+input:not([type=checkbox]):not([type=file]),
+textarea {
   width: 100%;
   height: 44px;
   padding: 0 12px;
@@ -158,7 +159,17 @@ input:not([type=checkbox]):not([type=file]) {
   color: inherit;
   font: inherit;
 }
-input:focus-visible, button:focus-visible { outline: 2px solid rgba(24, 120, 187, .45); outline-offset: 1px; }
+/* 目录用绝对路径，可能很长：输入框换行显示而不是截断 */
+textarea {
+  height: auto;
+  min-height: 44px;
+  padding: 10px 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  resize: vertical;
+}
+input:focus-visible, textarea:focus-visible, button:focus-visible { outline: 2px solid rgba(24, 120, 187, .45); outline-offset: 1px; }
 
 .btn {
   display: inline-flex;
@@ -180,9 +191,14 @@ input:focus-visible, button:focus-visible { outline: 2px solid rgba(24, 120, 187
 .btn:active { background: #eef2f6; }
 .btn.primary { border-color: var(--blue); background: var(--blue); color: #fff; }
 .btn.primary:active { background: var(--blue-dark); }
+/* 危险操作（重新初始化）：红边框 + 红字，与普通按钮明显区分 */
+.btn.danger { border-color: #d98a7b; background: #fdf4f2; color: #a93b2a; }
+.btn.danger:active { background: #f7e4e0; }
 .btn.small { min-height: 44px; padding: 0 14px; font-size: 13.5px; }
 .btn.block { width: 100%; }
 .btn:disabled { opacity: .5; cursor: default; }
+
+.settings-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
 
 .check {
   display: flex;
@@ -316,7 +332,20 @@ dialog::backdrop { background: rgba(29, 41, 61, .45); }
 
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 
-#browsePath { display: block; flex: 1; min-width: 0; padding: 0; background: transparent; font-size: 12.5px; }
+/* 目录选择弹窗顶部：存储位置切换（存储池 / 外接设备） */
+.root-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.root-row .btn.active { border-color: var(--blue); background: var(--blue); color: #fff; }
+
+#browsePath {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
 
 #folders { min-height: 120px; max-height: 40vh; margin-top: 12px; overflow: auto; }
 #folders button {
@@ -367,9 +396,11 @@ dialog::backdrop { background: rgba(29, 41, 61, .45); }
     --bg: #131a24;
   }
   code { background: #232d3b; }
-  input:not([type=checkbox]) { background: #1b2330; border-color: #333f4f; }
+  input:not([type=checkbox]), textarea { background: #1b2330; border-color: #333f4f; }
   .btn { background: #1b2330; border-color: #333f4f; color: #cfd8e3; }
   .btn:active { background: #232d3b; }
+  .btn.danger { background: #2a1f1c; border-color: #7d4437; color: #e8b4a3; }
+  .btn.danger:active { background: #35251f; }
   .fold { background: #161e29; }
   .alert { background: #2a1f1c; color: #e8b4a3; }
   .topbar { background: rgba(27, 35, 48, .94); }

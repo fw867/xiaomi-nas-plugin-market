@@ -441,6 +441,26 @@ class DirsApiTests(ServerHarness):
         self.assertFalse(by_path[free_dir]['shared'])
         self.assertEqual(by_path[free_dir]['shareName'], '')
 
+    def test_lists_directories_under_nas_mnt_as_checkboxes(self):
+        """`/api/dirs` 额外给出 `/nas/mnt` 下的一层子目录（外接设备），老结构原样保留。"""
+        self.target_dir('照片')
+        with patch.object(engine, 'EXTRA_ROOTS', ('/nas/mnt',)):
+            usb = self.sandbox.makedirs('/nas/mnt/usb')
+            pa0 = self.sandbox.makedirs('/nas/mnt/pa0')
+            status, data = self.json_request('GET', '/api/dirs?account=fw867',
+                                             headers=self.auth())
+        self.assertEqual(status, 200)
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['root'], '/home/u3943892/pool0/data')
+        self.assertEqual([item['name'] for item in data['dirs']], ['照片'])
+        locations = {item['root']: item for item in data['locations']}
+        self.assertEqual(locations['/nas/mnt']['label'], 'mnt')
+        self.assertTrue(locations['/nas/mnt']['available'])
+        by_path = {item['path']: item for item in locations['/nas/mnt']['dirs']}
+        self.assertEqual(sorted(by_path), sorted([usb, pa0]))
+        self.assertFalse(by_path[usb]['shared'])       # 未共享 → 弹窗里可勾选
+        self.assertEqual(by_path[usb]['shareName'], '')
+
     def test_unknown_account_and_missing_query(self):
         status, data = self.json_request('GET', '/api/dirs?account=nobody', headers=self.auth())
         self.assertEqual(status, 400)
@@ -473,6 +493,20 @@ class ShareApiBatchTests(ServerHarness):
         names = [item['name'] for item in data['status']['accounts'][0]['shares']]
         self.assertIn('fw867_nb_1', names)
         self.assertIn('fw867_nb_2', names)
+
+    def test_share_add_accepts_a_path_under_nas_mnt(self):
+        """外接设备（`/nas/mnt/usb/下载`）这类路径能通过接口加共享。"""
+        self.target_dir('照片')
+        with patch.object(engine, 'EXTRA_ROOTS', ('/nas/mnt',)):
+            target = self.sandbox.makedirs('/nas/mnt/usb/下载')
+            status, data = self.json_request(
+                'POST', '/api/share/add', {'account': 'fw867', 'path': target},
+                self.auth(write=True))
+        self.assertEqual(status, 200)
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['result']['shareName'], 'fw867_nb_1')
+        self.assertEqual(self.runner.argv_for('add_dir')[4], target)
+        self.assertIn('/nas/mnt', data['status']['allowedRoots'])
 
     def test_already_shared_path_is_skipped_not_an_error(self):
         target = self.target_dir('照片')

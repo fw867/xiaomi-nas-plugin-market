@@ -147,9 +147,11 @@ code {
   align-items: center;
   gap: 8px;
 }
-.field-row input { flex: 1; min-width: 0; }
+.field-row input,
+.field-row textarea { flex: 1; min-width: 0; }
 
-input:not([type=checkbox]) {
+input:not([type=checkbox]),
+textarea {
   width: 100%;
   height: 44px;
   padding: 0 12px;
@@ -159,7 +161,18 @@ input:not([type=checkbox]) {
   color: inherit;
   font: inherit;
 }
+/* 目录用绝对路径，可能很长：输入框换行显示而不是截断 */
+textarea {
+  height: auto;
+  min-height: 44px;
+  padding: 10px 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  resize: vertical;
+}
 input:focus-visible,
+textarea:focus-visible,
 button:focus-visible { outline: 2px solid rgba(24, 120, 187, .45); outline-offset: 1px; }
 
 .btn {
@@ -246,6 +259,18 @@ button:focus-visible { outline: 2px solid rgba(24, 120, 187, .45); outline-offse
 .service-copy strong { display: block; font-size: 13.5px; font-weight: 600; overflow-wrap: anywhere; }
 .service-buttons { display: flex; flex-direction: column; gap: 8px; flex: 0 0 auto; }
 
+/* ---------- 目录设置（修改目录 / 重新初始化） ---------- */
+
+.directory-card h2 { margin-bottom: 8px; }
+.directory-card .muted { display: block; margin-bottom: 12px; }
+.settings-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+.settings-buttons .btn { flex: 1 1 140px; }
+
+/* 重新初始化是破坏性操作：用危险色区分，并靠确认框说明后果 */
+.btn.danger { border-color: var(--red); color: var(--red); }
+.btn.danger:active { background: #fdecea; }
+.btn.danger:disabled { opacity: .5; }
+
 footer {
   padding: 22px 0 4px;
   color: #97a1b0;
@@ -286,6 +311,24 @@ dialog::backdrop { background: rgba(29, 41, 61, .45); }
   gap: 8px;
   margin-top: 16px;
 }
+
+/* 目录选择弹窗顶部：存储位置切换（存储池 / 外接设备） */
+.root-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.root-row .btn.active { border-color: var(--blue); background: var(--blue); color: #fff; }
+
+#browsePath {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+#pickHint { margin: 8px 0 0; }
+#pickedPaths { overflow-wrap: anywhere; word-break: break-all; }
 
 #folders {
   min-height: 120px;
@@ -345,9 +388,12 @@ dialog::backdrop { background: rgba(29, 41, 61, .45); }
     --bg: #131a24;
   }
   code { background: #232d3b; }
-  input:not([type=checkbox]) { background: #1b2330; border-color: #333f4f; }
+  input:not([type=checkbox]),
+  textarea { background: #1b2330; border-color: #333f4f; }
   .btn { background: #1b2330; border-color: #333f4f; color: #cfd8e3; }
   .btn:active { background: #232d3b; }
+  .btn.danger { border-color: #d9705f; color: #eb9a8b; }
+  .btn.danger:active { background: #2a1f1c; }
   .fold { background: #161e29; }
   .alert { background: #2a1f1c; color: #e8b4a3; }
   .topbar { background: rgba(27, 35, 48, .94); }

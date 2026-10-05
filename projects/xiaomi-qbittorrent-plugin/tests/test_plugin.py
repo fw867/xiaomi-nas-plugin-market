@@ -12,13 +12,41 @@ import threading
 import time
 import types
 import unittest
+from contextlib import contextmanager
 from unittest.mock import patch
 
 import engine  # 按模块打桩，例如 engine.upnp
 import upnp
-from engine import (Engine, Error, IMAGE, NAME, LABEL, PORT, BT_PORT, VERSION, confined, mutation,
-                    password_hash, container_config, installed_version, FORWARD_RETRY_SECONDS)
+from engine import (Engine, Error, IMAGE, NAME, LABEL, PORT, BT_PORT, VERSION, atomic_json, confined,
+                    mutation, password_hash, container_config, installed_version, root_label,
+                    FORWARD_RETRY_SECONDS)
 from server import Server, accepted, AUTO_LOGIN_MAX_FAILURES
+
+
+def docker_stub(method, path, body=None, timeout=30):
+    """Docker API 桩：容器不存在（404），其余视为成功。"""
+    if path.endswith('/json'):
+        return 404, b'{}'
+    return 200, b'{}'
+
+
+@contextmanager
+def nas_owned():
+    """模拟「目录由普通 NAS 用户拥有」的环境。
+
+    Windows 上 os.stat 的 st_uid/st_gid 恒为 0（初始化、改目录都会被直接拒绝），
+    os.chown 也不存在；测试要在开发机上跑通这两条流程，所以临时换成身份号 1000。
+    """
+    real_stat = Path.stat
+
+    def stat(self, *, follow_symlinks=True):
+        item = real_stat(self, follow_symlinks=follow_symlinks)
+        return os.stat_result((item.st_mode, item.st_ino, item.st_dev, item.st_nlink,
+                               1000, 1000, item.st_size, item.st_atime, item.st_mtime,
+                               item.st_ctime))
+
+    with patch.object(Path, 'stat', stat), patch('engine.os.chown', create=True):
+        yield
 
 
 class EngineTests(unittest.TestCase):
@@ -336,6 +364,389 @@ class EngineTests(unittest.TestCase):
         with patch('engine.covering_mount', return_value=(None, '')), \
                 patch('engine.atomic_json'), self.assertRaises(Error):
             self.engine.check_directory()
+
+
+class MultiRootTests(unittest.TestCase):
+    """多个「存储位置」：内置存储池（LOCAL_ROOT/LOCAL_ROOTS 的第 0 个）+ 外接设备（U 盘）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name)
+        self.pool = self.base / 'pool'
+        self.usb = self.base / 'usb'
+        (self.pool / '下载').mkdir(parents=True)
+        (self.pool / '仅池内').mkdir()
+        (self.usb / '照片').mkdir(parents=True)
+        (self.usb / '照片' / '2024').mkdir()
+        self.engine = Engine(self.base / 'private', self.pool, roots=[self.pool, self.usb])
+
+    def test_roots_deduplicated_and_first_is_default(self):
+        engine_ = Engine(self.base / 'data2', self.pool,
+                         roots=[self.pool, self.usb, str(self.pool), self.usb])
+        self.assertEqual(engine_.roots, [self.pool, self.usb])       # 去重且保序
+        self.assertEqual(engine_.root, self.pool)                    # 第 0 个仍是 self.root
+        single = Engine(self.base / 'data3', self.usb)               # 未给 roots 时退化为单根
+        self.assertEqual(single.roots, [self.usb])
+        self.assertEqual(single.root, self.usb)
+
+    def test_locations_report_index_label_path_and_exists(self):
+        items = self.engine.roots_snapshot()
+        self.assertEqual([item['index'] for item in items], [0, 1])
+        self.assertEqual([item['path'] for item in items], [str(self.pool), str(self.usb)])
+        self.assertEqual([item['label'] for item in items], ['pool', 'usb'])
+        self.assertTrue(all(item['exists'] for item in items))
+        missing = Engine(self.base / 'data4', self.pool, roots=[self.pool, self.base / '未挂载'])
+        self.assertEqual([item['exists'] for item in missing.roots_snapshot()], [True, False])
+
+    def test_root_label_rules(self):
+        cases = [
+            ('/nas/pool0/u3943892/data', '存储池'),
+            ('/nas/pool0', '存储池'),
+            ('/nas/mnt/usb', '外接设备'),
+            ('/nas/mnt/usb/下载/MT', '外接设备'),
+            ('/mnt/usb-1a2b3c', '外接设备'),
+            ('/mnt/usb-1a2b3c/DCIM', '外接设备'),
+            ('/data/plugin/qbittorrent/media', 'media'),
+        ]
+        for path, expected in cases:
+            with self.subTest(path=path):
+                self.assertEqual(root_label(path), expected)
+
+    def test_snapshot_carries_absolute_path_and_locations(self):
+        state = self.engine.snapshot()
+        self.assertEqual([item['path'] for item in state['roots']], [str(self.pool), str(self.usb)])
+        self.assertEqual(state['directory'], '')                     # 未初始化时没有目录
+        self.assertEqual(state['download_abs'], '')
+
+    def test_browse_uses_selected_root(self):
+        self.assertEqual([item['name'] for item in self.engine.browse('')],
+                         sorted(['下载', '仅池内']))
+        self.assertEqual([item['name'] for item in self.engine.browse('', 1)], ['照片'])
+        self.assertEqual([item['path'] for item in self.engine.browse('照片', 1)], ['照片/2024'])
+        with self.assertRaises(Error):
+            self.engine.browse('', 2)                                # 位置序号越界
+        with self.assertRaises(Error):
+            self.engine.browse('', 'root')                           # 位置序号非法
+
+    def test_locate_absolute_and_longest_prefix(self):
+        nested = Engine(self.base / 'data5', self.pool, roots=[self.pool, self.usb / '照片'])
+        # 绝对路径按最长前缀反查：嵌套的挂载点优先于外层根
+        self.assertEqual(nested.match_root(str(self.usb / '照片' / '2024')),
+                         (self.usb / '照片', '2024'))
+        self.assertEqual(nested.match_root(str(self.usb / '照片')), (self.usb / '照片', ''))
+        self.assertEqual(nested.match_root(str(self.pool / '下载')), (self.pool, '下载'))
+        # 相对路径保持旧语义：用第 0 个位置，也可显式指定序号
+        self.assertEqual(nested._locate('下载'), (self.pool, '下载'))
+        self.assertEqual(nested._locate('照片', 1), (self.usb / '照片', '照片'))
+        with self.assertRaises(Error) as caught:
+            nested._locate(str(self.base / 'outside'))
+        self.assertIn('所选目录必须位于已挂载的存储位置内', str(caught.exception))
+        self.assertIsNone(nested.match_root(str(self.usb)))           # 只是根的上层目录，不算命中
+        self.assertIsNone(nested.match_root(str(self.pool) + 'x'))    # 名字前缀相同但不是同一个目录
+
+    def test_setup_with_absolute_path_records_root_and_identity(self):
+        folder = self.usb / '照片'
+        with nas_owned(), patch('engine.docker_api', side_effect=docker_stub):
+            self.engine.setup(str(folder), 'Example123')
+            state = self.engine.snapshot()
+        config = json.loads(self.engine.cfgfile.read_text(encoding='utf-8'))
+        self.assertEqual(config['download_root'], str(self.usb))
+        self.assertEqual(config['relative'], '照片')
+        self.assertEqual(config['download'], str(folder))
+        self.assertEqual(state['download_abs'], str(folder))
+        self.assertEqual([item['path'] for item in state['roots']],
+                         [str(self.pool), str(self.usb)])
+
+    def test_setup_accepts_relative_path_on_the_first_root(self):
+        """相对路径提交仍可用：按第 0 个位置解释（旧前端与旧脚本的行为）。"""
+        with nas_owned(), patch('engine.docker_api', side_effect=docker_stub):
+            self.engine.setup('下载', 'Example123')
+        config = json.loads(self.engine.cfgfile.read_text(encoding='utf-8'))
+        self.assertEqual(config['download_root'], str(self.pool))
+        self.assertEqual(config['relative'], '下载')
+        self.assertEqual(config['download'], str(self.pool / '下载'))
+
+    def test_setup_rejects_path_outside_roots(self):
+        outside = self.base / 'outside'
+        outside.mkdir()
+        with nas_owned(), patch('engine.docker_api', side_effect=docker_stub):
+            with self.assertRaises(Error) as caught:
+                self.engine.setup(str(outside), 'Example123')
+        self.assertIn('所选目录必须位于已挂载的存储位置内', str(caught.exception))
+        self.assertFalse(self.engine.cfgfile.exists())
+
+    def _legacy_config(self, folder, **extra):
+        """升级前的配置：没有 download_root 这个键。"""
+        stat = folder.stat()
+        config = {'owner': 'owner-token', 'relative': folder.name, 'download': str(folder),
+                  'uid': 1000, 'gid': 1000, 'device': stat.st_dev, 'inode': stat.st_ino,
+                  'enabled': True}
+        config.update(extra)
+        return config
+
+    def test_legacy_config_without_root_field_still_passes(self):
+        """旧配置没有 download_root：按绝对路径前缀反查所属位置（回归保证）。
+
+        '照片' 只存在于第 1 个位置（U 盘）下，所以这条用例同时证明校验没有退回第 0 个
+        根——否则会报「目录不存在」。
+        """
+        self.engine.config = self._legacy_config(self.usb / '照片')
+        self.engine.check_directory()
+        self.assertNotIn('download_root', self.engine.config)
+
+    def test_legacy_config_fuse_identity_refresh_still_works(self):
+        folder = self.usb / '照片'
+        stat = folder.stat()
+        self.engine.config = self._legacy_config(folder, device=stat.st_dev + 7,
+                                                 inode=stat.st_ino + 7)
+        with patch('engine.covering_mount', return_value=('/nas/mnt/usb', 'fuse.cfs')), \
+                patch('engine.atomic_json') as saved:
+            self.engine.check_directory()
+        self.assertEqual(self.engine.config['device'], stat.st_dev)
+        self.assertEqual(self.engine.config['inode'], stat.st_ino)
+        self.assertTrue(saved.called)                                # 新身份号要写回配置
+
+    def test_recorded_root_wins_over_the_current_root_list(self):
+        """配置里记着根时按它校验：LOCAL_ROOTS 变了也不该无谓拒绝启动。"""
+        watched = Engine(self.base / 'data7', self.pool, roots=[self.pool])
+        watched.config = self._legacy_config(self.usb / '照片', download_root=str(self.usb))
+        watched.check_directory()
+        self.assertEqual(watched.config['download_root'], str(self.usb))
+
+
+class DirectoryHelpers:
+    """「修改目录 / 重新初始化」用例共用的脚手架（本身不是测试用例）。"""
+
+    owner = 'owner-token'
+
+    def setUpStorage(self, dev=False):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name)
+        self.pool = self.base / 'pool'
+        self.usb = self.base / 'usb'
+        (self.pool / '下载').mkdir(parents=True)
+        (self.usb / '照片').mkdir(parents=True)
+        self.engine = Engine(self.base / 'private', self.pool, dev=dev,
+                             roots=[self.pool, self.usb])
+        # 单测绝不碰真实网络：UPnP/NAT-PMP 一律打桩
+        self.addCleanup(patch.object(engine.upnp, 'lan_address',
+                                     return_value='192.168.1.8').stop)
+        self.addCleanup(patch.object(engine.upnp, 'forward_ports', return_value={
+            'ok': False, 'method': '', 'detail': '测试环境跳过', 'at': 1}).stop)
+        self.addCleanup(patch.object(engine.upnp, 'remove_forward',
+                                     return_value={'ok': True, 'detail': '测试环境已移除'}).stop)
+
+    def configure(self, folder, **extra):
+        """把引擎置成「已初始化到该目录」的状态，并写出配置文件。"""
+        stat = folder.stat()
+        config = {'owner': self.owner, 'relative': folder.name, 'download': str(folder),
+                  'download_root': str(folder.parent), 'uid': 1000, 'gid': 1000,
+                  'device': stat.st_dev, 'inode': stat.st_ino, 'enabled': True}
+        config.update(extra)
+        self.engine.config = dict(config)
+        atomic_json(self.engine.cfgfile, config)
+        return config
+
+    def qb_conf(self, text):
+        """铺一份容器用的 qBittorrent.conf（改密码就是改它）。"""
+        confdir = self.engine.data / 'config' / 'qBittorrent'
+        confdir.mkdir(parents=True, exist_ok=True)
+        confpath = confdir / 'qBittorrent.conf'
+        confpath.write_text(text, encoding='utf-8')
+        return confpath
+
+    def docker(self, calls, container, refuse=None):
+        """Docker API 桩：容器一开始存在且在跑，DELETE 之后就不存在了。
+
+        容器里的 /downloads 挂载源等于 refuse 时返回 500，用来模拟重建失败。
+        """
+        def fake_api(method, path, body=None, timeout=30):
+            calls.append((method, path, body))
+            if path == '/containers/' + NAME + '/json':
+                if not container['exists']:
+                    return 404, b'{"message":"No such container"}'
+                return 200, json.dumps({
+                    'Config': {'Labels': {LABEL: self.owner}},
+                    'State': {'Running': container['running']}}).encode()
+            if path.startswith('/containers/' + NAME + '/stop'):
+                container['running'] = False
+                return 204, b''
+            if path.startswith('/containers/' + NAME + '?'):
+                container['exists'] = False
+                return 204, b''
+            if path.startswith('/containers/create'):
+                source = body['HostConfig']['Mounts'][1]['Source']
+                if refuse and source == refuse:
+                    return 500, b'{"message":"invalid mount config for /downloads"}'
+                container['exists'], container['running'] = True, False
+                return 201, b'{"Id":"rebuilt"}'
+            if path.startswith('/containers/' + NAME + '/start'):
+                container['running'] = True
+                return 204, b''
+            return 200, b'{}'
+        return fake_api
+
+    def starts_and_deletes(self, calls):
+        stopped = any(method == 'POST' and path == '/containers/' + NAME + '/stop?t=15'
+                      for method, path, _ in calls)
+        deleted = any(method == 'DELETE' and path == '/containers/' + NAME + '?v=1'
+                      for method, path, _ in calls)
+        return stopped, deleted
+
+    def created_mounts(self, calls):
+        return [body['HostConfig']['Mounts'][1]['Source'] for method, path, body in calls
+                if path.startswith('/containers/create')]
+
+
+class DirectoryChangeTests(DirectoryHelpers, unittest.TestCase):
+    """「修改目录」与「重新初始化」：会停删容器、改写配置，绝不能碰用户的下载目录。"""
+
+    def setUp(self):
+        self.setUpStorage()
+
+    def test_reconfigure_moves_to_another_location_and_rebuilds_the_container(self):
+        folder = self.pool / '下载'
+        self.configure(folder)
+        calls, container = [], {'exists': True, 'running': True}
+        with nas_owned(), patch('engine.docker_api', side_effect=self.docker(calls, container)), \
+                patch('engine.qb_request', return_value=(200, b'5.2.3', '')):
+            state = self.engine.reconfigure(str(self.usb / '照片'))
+        # 旧容器必须显式停掉再删除：只 restart 的话它还挂着旧目录
+        self.assertEqual(self.starts_and_deletes(calls), (True, True))
+        self.assertEqual(self.created_mounts(calls), [str(self.usb / '照片')])
+        self.assertEqual(self.engine.config['download'], str(self.usb / '照片'))
+        self.assertEqual(self.engine.config['download_root'], str(self.usb))
+        self.assertEqual(self.engine.config['relative'], '照片')
+        self.assertEqual(state['download_abs'], str(self.usb / '照片'))
+        # 原配置另存了一份备份
+        self.assertTrue(list(self.engine.data.glob('settings.json.bak-*')))
+        # 应用新目录后，启动校验按记录的根走
+        self.engine.check_directory()
+
+    def test_reconfigure_rolls_back_when_the_rebuild_fails(self):
+        folder = self.pool / '下载'
+        self.configure(folder)
+        calls, container = [], {'exists': True, 'running': True}
+        with nas_owned(), \
+                patch('engine.docker_api',
+                      side_effect=self.docker(calls, container, refuse=str(self.usb / '照片'))), \
+                patch('engine.qb_request', return_value=(200, b'5.2.3', '')):
+            with self.assertRaises(Error) as caught:
+                self.engine.reconfigure(str(self.usb / '照片'))
+        self.assertIn('已恢复原来的下载目录设置', str(caught.exception))
+        self.assertIn('容器已按原设置启动', str(caught.exception))
+        self.assertEqual(self.engine.config['download'], str(folder))
+        self.assertEqual(self.engine.config['relative'], '下载')
+        self.assertEqual(json.loads(self.engine.cfgfile.read_text(encoding='utf-8'))['download'],
+                         str(folder))
+        # 先按新目录创建失败，回滚后又把原容器建了回来
+        self.assertEqual(self.created_mounts(calls), [str(self.usb / '照片'), str(folder)])
+        self.assertTrue(container['exists'])
+
+    def test_reconfigure_can_change_the_webui_password(self):
+        self.configure(self.pool / '下载')
+        confpath = self.qb_conf('[Preferences]\nWebUI\\Username=admin\n'
+                                'WebUI\\Password_PBKDF2="@ByteArray(old)"\nWebUI\\Port=18123\n')
+        self.engine.save_credential('OldPass123')
+        calls, container = [], {'exists': True, 'running': True}
+        with nas_owned(), patch('engine.docker_api', side_effect=self.docker(calls, container)), \
+                patch('engine.qb_request', return_value=(200, b'5.2.3', '')):
+            self.engine.reconfigure(str(self.usb / '照片'), 'NewPass123')
+        text = confpath.read_text(encoding='utf-8')
+        self.assertNotIn('"@ByteArray(old)"', text)
+        self.assertEqual(text.count('WebUI\\Password_PBKDF2='), 1)   # 只替换那一行
+        self.assertIn('WebUI\\Username=admin', text)
+        self.assertIn('WebUI\\Port=18123', text)
+        self.assertNotIn('NewPass123', text)                         # 只写哈希，不写明文
+        self.assertEqual(self.engine.saved_credential(), 'NewPass123')
+
+    def test_failed_reconfigure_restores_the_previous_password(self):
+        self.configure(self.pool / '下载')
+        original = '[Preferences]\nWebUI\\Password_PBKDF2="@ByteArray(old)"\n'
+        confpath = self.qb_conf(original)
+        self.engine.save_credential('OldPass123')
+        calls, container = [], {'exists': True, 'running': True}
+        with nas_owned(), \
+                patch('engine.docker_api',
+                      side_effect=self.docker(calls, container, refuse=str(self.usb / '照片'))), \
+                patch('engine.qb_request', return_value=(200, b'5.2.3', '')):
+            with self.assertRaises(Error):
+                self.engine.reconfigure(str(self.usb / '照片'), 'NewPass123')
+        self.assertEqual(confpath.read_text(encoding='utf-8'), original)
+        self.assertEqual(self.engine.saved_credential(), 'OldPass123')
+
+    def test_reconfigure_keeps_the_new_directory_when_the_web_api_is_slow(self):
+        """容器已按新目录重建、只是 Web API 还没就绪：不能把用户刚选的目录回滚掉。"""
+        self.configure(self.pool / '下载')
+        calls, container = [], {'exists': True, 'running': True}
+        with nas_owned(), patch('engine.docker_api', side_effect=self.docker(calls, container)), \
+                patch('engine.qb_request', side_effect=Error('qBittorrent 未运行或尚未就绪')), \
+                patch('engine.time.sleep'):
+            state = self.engine.reconfigure(str(self.usb / '照片'))
+        self.assertEqual(self.engine.config['download'], str(self.usb / '照片'))
+        self.assertEqual(state['download_abs'], str(self.usb / '照片'))
+        self.assertEqual(self.created_mounts(calls), [str(self.usb / '照片')])
+
+    def test_reconfigure_is_refused_while_another_operation_runs(self):
+        self.configure(self.pool / '下载')
+        self.engine.busy = True
+        with self.assertRaises(Error) as caught:
+            self.engine.launch('reconfigure', {'path': str(self.usb / '照片')})
+        self.assertIn('当前有操作正在进行，请稍后再试', str(caught.exception))
+        self.assertEqual(self.engine.config['download'], str(self.pool / '下载'))
+
+    def test_reset_needs_explicit_confirmation(self):
+        self.configure(self.pool / '下载')
+        with self.assertRaises(Error) as caught:
+            self.engine.launch('reset', {}, wait=True)
+        self.assertIn('确认', str(caught.exception))
+        self.assertTrue(self.engine.config)                          # 什么都没动
+        self.assertTrue(self.engine.cfgfile.exists())
+
+    def test_reset_clears_the_config_and_never_touches_the_downloads(self):
+        folder = self.pool / '下载'
+        keep = folder / '已下载的文件.txt'
+        keep.write_text('重要数据', encoding='utf-8')
+        self.configure(folder)
+        self.qb_conf('[Preferences]\nWebUI\\Password_PBKDF2="@ByteArray(old)"\n')
+        self.engine.save_credential('OldPass123')
+        calls, container = [], {'exists': True, 'running': True}
+        with patch('engine.docker_api', side_effect=self.docker(calls, container)):
+            state = self.engine.reset(confirm=True)
+        self.assertFalse(state['configured'])
+        self.assertFalse(state['running'])
+        self.assertIsNone(self.engine.config)
+        # 容器被停掉并移除
+        self.assertEqual(self.starts_and_deletes(calls), (True, True))
+        # 插件配置挪成备份：页面回到初始化表单
+        self.assertFalse(self.engine.cfgfile.exists())
+        self.assertTrue(list(self.engine.data.glob('settings.json.bak-*')))
+        self.assertFalse((self.engine.data / 'config').exists())
+        self.assertTrue(list(self.engine.data.glob('config.bak-*')))
+        self.assertFalse(self.engine.credentialfile.exists())
+        # 用户的下载目录一个文件都没被动过
+        self.assertEqual(keep.read_text(encoding='utf-8'), '重要数据')
+        self.assertEqual([item.name for item in folder.iterdir()], ['已下载的文件.txt'])
+        self.assertTrue(folder.is_dir())
+
+    def test_reset_can_be_followed_by_a_fresh_setup(self):
+        """重新初始化之后必须还能再初始化一次（插件自己的 qB 配置不能挡住）。"""
+        self.configure(self.pool / '下载')
+        self.qb_conf('[Preferences]\nWebUI\\Password_PBKDF2="@ByteArray(old)"\n')
+        calls, container = [], {'exists': True, 'running': True}
+        with patch('engine.docker_api', side_effect=self.docker(calls, container)):
+            self.engine.reset(confirm=True)
+        folder = self.usb / '照片'
+        with nas_owned(), patch('engine.docker_api', side_effect=docker_stub), \
+                patch('engine.qb_request', return_value=(200, b'5.2.3', '')):
+            state = self.engine.launch('setup', {'path': str(folder), 'password': 'Example123'},
+                                       wait=True)
+        config = json.loads(self.engine.cfgfile.read_text(encoding='utf-8'))
+        self.assertEqual(config['download_root'], str(self.usb))
+        self.assertEqual(config['relative'], '照片')
+        self.assertEqual(state['download_abs'], str(folder))
 
 
 class PackagingTests(unittest.TestCase):
@@ -900,6 +1311,113 @@ class HTTPTests(unittest.TestCase):
         self.assertIn('qB 下载 · ' + installed_version(), text)
 
 
+class DirectoryHTTPTests(DirectoryHelpers, unittest.TestCase):
+    """接口层：/api/browse?root=、/api/service/reconfigure、/api/service/reset。"""
+
+    def setUp(self):
+        self.setUpStorage(dev=True)          # Server 的 dev 只影响鉴权，engine.dev 单独控制
+        self.server = Server(('127.0.0.1', 0), self.engine, 'u123456', dev=True)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+        def close():
+            self.server.shutdown()
+            self.server.server_close()
+            self.thread.join()
+
+        self.addCleanup(close)
+        _, html = self.request('GET', '/')
+        self.token = re.search(r'name="qb-session" content="([^"]+)"', html.decode())[1]
+        self.csrf = re.search(r'name="csrf-token" content="([^"]+)"', html.decode())[1]
+
+    def request(self, method, route, data=None, headers=None):
+        conn = http.client.HTTPConnection('127.0.0.1', self.server.server_port)
+        try:
+            conn.request(method, route, json.dumps(data) if data is not None else None,
+                         headers or {})
+            response = conn.getresponse()
+            return response.status, response.read()
+        finally:
+            conn.close()
+
+    def auth(self):
+        return {'X-QB-Session': self.token, 'X-CSRF-Token': self.csrf,
+                'Content-Type': 'application/json'}
+
+    def test_status_lists_storage_locations(self):
+        code, body = self.request('GET', '/api/status', headers=self.auth())
+        self.assertEqual(code, 200)
+        roots = json.loads(body)['roots']
+        self.assertEqual([item['index'] for item in roots], [0, 1])
+        self.assertEqual(roots[1]['path'], str(self.usb))
+
+    def test_browse_accepts_root_parameter(self):
+        code, body = self.request('GET', '/api/browse?root=1&path=', headers=self.auth())
+        self.assertEqual(code, 200)
+        self.assertEqual([item['name'] for item in json.loads(body)['items']], ['照片'])
+        code, body = self.request('GET', '/api/browse', headers=self.auth())     # 缺省 root=0
+        self.assertEqual(code, 200)
+        self.assertEqual([item['name'] for item in json.loads(body)['items']], ['下载'])
+
+    def test_browse_rejects_unknown_root(self):
+        code, body = self.request('GET', '/api/browse?root=9', headers=self.auth())
+        self.assertEqual(code, 400)
+        self.assertIn('存储位置无效', json.loads(body)['error'])
+
+    def test_reconfigure_returns_the_updated_snapshot(self):
+        self.engine.dev = False                       # 让 launch 真的跑起来（Docker 仍打桩）
+        self.configure(self.pool / '下载')
+        calls, container = [], {'exists': True, 'running': True}
+        with nas_owned(), patch('engine.docker_api', side_effect=self.docker(calls, container)), \
+                patch('engine.qb_request', return_value=(200, b'5.2.3', '')):
+            code, body = self.request('POST', '/api/service/reconfigure',
+                                      {'path': str(self.usb / '照片'), 'password': ''}, self.auth())
+        self.assertEqual(code, 200)
+        data = json.loads(body)
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['state']['download_abs'], str(self.usb / '照片'))
+        self.assertEqual(self.engine.config['download_root'], str(self.usb))
+        self.assertEqual(self.created_mounts(calls), [str(self.usb / '照片')])
+
+    def test_reconfigure_failure_reports_the_reason(self):
+        self.engine.dev = False
+        self.configure(self.pool / '下载')
+        calls, container = [], {'exists': True, 'running': True}
+        with nas_owned(), \
+                patch('engine.docker_api',
+                      side_effect=self.docker(calls, container, refuse=str(self.usb / '照片'))), \
+                patch('engine.qb_request', return_value=(200, b'5.2.3', '')):
+            code, body = self.request('POST', '/api/service/reconfigure',
+                                      {'path': str(self.usb / '照片')}, self.auth())
+        self.assertEqual(code, 400)
+        self.assertIn('已恢复原来的下载目录设置', json.loads(body)['error'])
+        self.assertEqual(self.engine.config['download'], str(self.pool / '下载'))
+
+    def test_reset_requires_confirmation_over_http(self):
+        self.engine.dev = False
+        self.configure(self.pool / '下载')
+        code, body = self.request('POST', '/api/service/reset', {}, self.auth())
+        self.assertEqual(code, 400)
+        self.assertIn('确认', json.loads(body)['error'])
+        self.assertTrue(self.engine.cfgfile.exists())
+
+    def test_reset_over_http_reports_unconfigured(self):
+        self.engine.dev = False
+        folder = self.pool / '下载'
+        keep = folder / 'a.txt'
+        keep.write_text('x', encoding='utf-8')
+        self.configure(folder)
+        calls, container = [], {'exists': True, 'running': True}
+        with patch('engine.docker_api', side_effect=self.docker(calls, container)):
+            code, body = self.request('POST', '/api/service/reset', {'confirm': True}, self.auth())
+        self.assertEqual(code, 200)
+        data = json.loads(body)
+        self.assertFalse(data['state']['configured'])
+        self.assertFalse(data['state']['running'])
+        self.assertFalse(self.engine.cfgfile.exists())
+        self.assertTrue(keep.is_file())               # 下载目录不受影响
+
+
 class UiTests(unittest.TestCase):
     """插件页是随包下发的静态文件，用静态检查补上浏览器之外的回归。"""
 
@@ -959,6 +1477,44 @@ class UiTests(unittest.TestCase):
                  for p in sorted((self.web / 'assets').glob('*.png'))}
         self.assertEqual((self.web / 'app.bundle.js').read_text(encoding='utf-8'),
                          script.replace('__ICON_ASSETS__', json.dumps(icons)))
+
+    def test_ui_has_storage_location_switcher(self):
+        """目录选择弹窗要能切换「存储位置」（存储池 / 外接设备）。"""
+        html = (self.web / 'index.html').read_text(encoding='utf-8')
+        self.assertIn('id="roots"', html)
+        for name in ('app.js', 'app.bundle.js'):
+            with self.subTest(name=name):
+                script = (self.web / name).read_text(encoding='utf-8')
+                self.assertIn('state.roots', script)              # 位置列表来自状态接口
+                self.assertIn("api('browse?root='", script)       # 浏览接口带位置序号
+                self.assertIn('data-root=', script)               # 切换位置后回到该位置根部
+
+    def test_ui_selection_writes_and_shows_absolute_paths(self):
+        """选中的目录写回绝对路径，弹窗顶部也显示完整绝对路径。"""
+        for name in ('app.js', 'app.bundle.js'):
+            with self.subTest(name=name):
+                script = (self.web / name).read_text(encoding='utf-8')
+                self.assertIn('absoluteBrowsePath()', script)
+                self.assertIn('pickInput.value = absoluteBrowsePath()', script)
+                self.assertIn("current.download_abs", script)     # 状态卡片显示绝对路径
+                self.assertIn("$('#directory').title", script)    # 长路径悬停可看全
+
+    def test_ui_has_directory_settings_with_confirmation(self):
+        """「修改目录」与「重新初始化」两个入口，都要有确认与后果说明。"""
+        html = (self.web / 'index.html').read_text(encoding='utf-8')
+        for name in ('reconfigure', 'reset', 'reconfigureDialog', 'resetDialog',
+                     'reconfigureForm', 'reconfigurePath', 'confirmReset'):
+            with self.subTest(name=name):
+                self.assertIn('id="%s"' % name, html)
+        # 后果必须写清楚：只是换位置 + 重建容器、原数据不删；重新初始化不动下载目录
+        self.assertIn('原下载目录里的文件不会被删除或移动', html)
+        self.assertIn('下载目录不受影响', html)
+        for name in ('app.js', 'app.bundle.js'):
+            with self.subTest(name=name):
+                script = (self.web / name).read_text(encoding='utf-8')
+                self.assertIn("api('service/reconfigure'", script)
+                self.assertIn("api('service/reset'", script)
+                self.assertIn('confirm:true', script)
 
 
 if __name__ == '__main__':

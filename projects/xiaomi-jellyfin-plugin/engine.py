@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import http.client
 import json
 import os
@@ -141,6 +142,81 @@ def confined(root, relative):
     return current
 
 
+def unique_paths(values):
+    """去重保序地转成 Path 列表（跳过空值）。
+
+    去重按规范化后的字符串比较，顺序即「存储位置」在前端出现的顺序。
+    """
+    paths, seen = [], set()
+    for value in values or ():
+        if not value:
+            continue
+        path = Path(value)
+        key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        paths.append(path)
+    return paths
+
+
+def parse_roots(value):
+    """解析 LOCAL_ROOTS（冒号分隔的绝对路径，顺序即位置顺序）。
+
+    只保留绝对路径：相对路径的含义随工作目录变化，不能当根用。
+    调用方（server.py）在未设置该变量时退化成单个 LOCAL_ROOT。
+    """
+    parts = []
+    for part in (value or '').split(':'):
+        # Windows 盘符（C:\...）里的冒号不是分隔符；插件跑在 NAS（Linux）上，
+        # 这里只是让同一份代码在开发机上也能按原样解析。
+        if parts and os.name == 'nt' and len(parts[-1]) == 1 and parts[-1].isalpha():
+            parts[-1] += ':' + part
+        else:
+            parts.append(part)
+    items = [part.strip() for part in parts]
+    return [str(path) for path in unique_paths(item for item in items
+                                               if item and Path(item).is_absolute())]
+
+
+def root_label(path):
+    """存储位置的显示名。
+
+    小米 NAS 上有两类位置：内置存储池（/nas/pool0 之下，是 FUSE）和外接设备
+    （U 盘：稳定 bind 路径 /nas/mnt/usb，或内核挂载点 /mnt/usb-xxxx）；
+    其它位置就用最后一段目录名。
+    """
+    text = str(path).replace('\\', '/').rstrip('/') or '/'
+    if text == '/nas/pool0' or text.startswith('/nas/pool0/'):
+        return '存储池'
+    if text.startswith('/nas/mnt/usb') or text.startswith('/mnt/usb-'):
+        return '外接设备'
+    return text.rsplit('/', 1)[-1] or text
+
+
+def root_index_of(roots, path):
+    """绝对路径反查它属于哪个根（最长前缀匹配）；不属于任何根返回 -1。
+
+    按路径分量比较，所以 /nas/pool0x 不会被当成 /nas/pool0 之下；
+    嵌套挂载点（如 /nas/mnt/usb 挂在某个池目录里）取最长的那个根。
+    """
+    target = Path(path)
+    best, best_length = -1, -1
+    for index, root in enumerate(roots):
+        try:
+            target.relative_to(root)
+        except ValueError:
+            continue
+        if len(str(root)) > best_length:
+            best, best_length = index, len(str(root))
+    return best
+
+
+def relative_in_root(root, path):
+    """根内相对路径（正斜杠分隔，browse 接口与 confined 都用这种形式）；根自身返回空串。"""
+    return '/'.join(Path(path).relative_to(Path(root)).parts)
+
+
 def atomic_json(path, value):
     tmp = path.with_suffix('.tmp')
     with tmp.open('w', encoding='utf-8') as stream:
@@ -211,8 +287,12 @@ def container_config(config):
 
 
 class Engine:
-    def __init__(self, data, root, dev=False):
-        self.data, self.root, self.dev = Path(data), Path(root), dev
+    def __init__(self, data, root, dev=False, roots=None):
+        self.data, self.dev = Path(data), dev
+        # 多个「存储位置」：内置存储池 / 外接设备。roots 顺序即前端位置顺序，
+        # 未给出时退化为单个 root；self.root 始终是第一个（旧调用与旧配置照旧）。
+        self.roots = unique_paths(roots or [root]) or [Path(root)]
+        self.root = self.roots[0]
         self.data.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.data, 0o700)
         self.lock = threading.Lock()
@@ -320,8 +400,38 @@ class Engine:
         print('jellyfin: 重建容器（%s）' % '、'.join(reasons), flush=True)
         return True
 
-    def browse(self, relative):
-        folder = confined(self.root, relative)
+    def _root_index(self, index):
+        """规范化请求里的位置序号；越界或非法即报错。"""
+        try:
+            index = int(index)
+        except (TypeError, ValueError):
+            raise Error('存储位置无效') from None
+        if not 0 <= index < len(self.roots):
+            raise Error('存储位置无效')
+        return index
+
+    def locations(self):
+        """给前端的「存储位置」列表（切换浏览根用）。"""
+        # exists 与 confined() 的判据一致：符号链接的根不算可用
+        return [{'index': index, 'label': root_label(root), 'path': str(root),
+                 'exists': root.is_dir() and not root.is_symlink()}
+                for index, root in enumerate(self.roots)]
+
+    def locate(self, choice, root_index=None):
+        """把用户提交的目录选择解析成（位置序号，根内相对路径）。
+
+        绝对路径一律按最长前缀反查它属于哪个存储位置（前端提交的就是绝对路径）；
+        相对路径保持旧语义，用调用方指定的根（root_index 缺省为第 0 个）。
+        """
+        if Path(choice).is_absolute():
+            index = root_index_of(self.roots, choice)
+            if index < 0:
+                raise Error('所选目录必须位于已挂载的存储位置内')
+            return index, relative_in_root(self.roots[index], choice)
+        return self._root_index(0 if root_index is None else root_index), choice
+
+    def browse(self, relative, root_index=0):
+        folder = confined(self.roots[self._root_index(root_index)], relative)
         return sorted([{'name': p.name, 'path': (relative + '/' if relative else '') + p.name}
                        for p in folder.iterdir()
                        if not p.name.startswith('.') and p.is_dir() and not p.is_symlink()],
@@ -356,36 +466,52 @@ class Engine:
             'port': PORT,
             'directory': self.config['media_relative'] if self.config else '',
             'configDirectory': self.config.get('config_relative', '') if self.config else '',
+            # 状态卡片显示完整绝对路径：相对路径在「存储位置」多于一个时看不出在哪
+            'media_abs': self.config.get('media', '') if self.config else '',
+            'config_abs': self.config.get('config', '') if self.config else '',
+            # 配置目录留在插件私有目录（不属于任何存储位置）时为真，前端据此加一句说明
+            'config_private': bool(self.config) and not (
+                self.config.get('config_root') or self.config.get('config_relative')),
+            'roots': self.locations(),
             'serverVersion': server_version,
             'wizardCompleted': wizard,
             'imageVersion': IMAGE_VERSION,
             'healthcheckOff': bool(self.config and self.config.get('healthcheck_off')),
         }
 
-    def setup(self, media_relative, config_relative=''):
-        if self.config:
-            raise Error('已完成初始化；现有媒体目录和 Jellyfin 配置不会被覆盖')
-        if not isinstance(media_relative, str) or not media_relative or len(media_relative) > 1024:
+    def _resolve_dirs(self, media, config_relative, media_root=None, config_root=None):
+        """按插件既有规则校验并解析媒体/配置目录（setup 与 reconfigure 共用）。
+
+        返回 {media_index, media_relative, media, uid, gid, config, config_relative,
+        config_root}：目录选择可以是绝对路径（前端提交）或根内相对路径（旧语义），
+        配置目录留空时用插件私有目录（此时 config_root 为空串）。
+        """
+        if not isinstance(media, str) or not media or len(media) > 1024:
             raise Error('请选择媒体目录')
-        media = confined(self.root, media_relative)
-        if ',' in str(media):
+        media_index, media_relative = self.locate(media, media_root)
+        folder = confined(self.roots[media_index], media_relative)
+        if ',' in str(folder):
             raise Error('Docker 挂载目录不能包含逗号')
-        media_stat = media.stat()
+        media_stat = folder.stat()
         if not media_stat.st_uid or not media_stat.st_gid:
             raise Error('所选目录须由非 root 的 NAS 用户拥有')
         uid, gid = media_stat.st_uid, media_stat.st_gid
 
+        # 选了外部配置目录才记录它的根；留空时配置在插件私有目录（不属于任何根）。
+        chosen_config_root = ''
         if config_relative:
             if not isinstance(config_relative, str) or len(config_relative) > 1024:
                 raise Error('配置目录无效')
-            cfgdir = confined(self.root, config_relative)
+            config_index, config_relative = self.locate(config_relative, config_root)
+            cfgdir = confined(self.roots[config_index], config_relative)
             if ',' in str(cfgdir):
                 raise Error('Docker 挂载目录不能包含逗号')
-            if cfgdir == media or cfgdir in media.parents or media in cfgdir.parents:
+            if cfgdir == folder or cfgdir in folder.parents or folder in cfgdir.parents:
                 raise Error('配置目录与媒体目录不能相同或互相包含')
             cfg_stat = cfgdir.stat()
             if not cfg_stat.st_uid or not cfg_stat.st_gid:
                 raise Error('配置目录须由非 root 的 NAS 用户拥有')
+            chosen_config_root = str(self.roots[config_index])
         else:
             cfgdir = self.data / 'config'
             cfgdir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -394,8 +520,19 @@ class Engine:
             except OSError:
                 pass
             os.chmod(cfgdir, 0o700)
+        return {
+            'media_index': media_index,
+            'media_relative': media_relative,
+            'media': folder,
+            'uid': uid,
+            'gid': gid,
+            'config': cfgdir,
+            'config_relative': config_relative or '',
+            'config_root': chosen_config_root,
+        }
 
-        # 缓存始终落在插件私有目录，避免占用用户可见存储，也保证重建容器后可丢弃。
+    def _ensure_cache(self, uid, gid):
+        """缓存始终落在插件私有目录（挂载为 /cache），不跟着媒体目录走。"""
         cachedir = self.data / 'cache'
         cachedir.mkdir(parents=True, exist_ok=True, mode=0o700)
         try:
@@ -403,22 +540,34 @@ class Engine:
         except OSError:
             pass
         os.chmod(cachedir, 0o700)
+        return cachedir
+
+    def setup(self, media, config_relative='', media_root=None, config_root=None):
+        """初始化：目录选择可以是绝对路径（前端提交）或根内相对路径（旧语义）。"""
+        if self.config:
+            raise Error('已完成初始化；现有媒体目录和 Jellyfin 配置不会被覆盖')
+        chosen = self._resolve_dirs(media, config_relative, media_root, config_root)
+        folder, cfgdir = chosen['media'], chosen['config']
+        cachedir = self._ensure_cache(chosen['uid'], chosen['gid'])
 
         self._call('GET', '/info')
         if self.inspect() is not None:
             raise Error('同名容器已存在，拒绝覆盖')
 
-        mstat, cstat, kstat = media.stat(), cfgdir.stat(), cachedir.stat()
+        mstat, cstat, kstat = folder.stat(), cfgdir.stat(), cachedir.stat()
         self.config = {
             'owner': secrets.token_hex(24),
-            'uid': uid,
-            'gid': gid,
-            'media_relative': media_relative,
-            'media': str(media),
+            'uid': chosen['uid'],
+            'gid': chosen['gid'],
+            # *_root 记下这个选择落在哪个存储位置，启动校验时据此回到同一个根
+            'media_root': str(self.roots[chosen['media_index']]),
+            'media_relative': chosen['media_relative'],
+            'media': str(folder),
             'media_device': mstat.st_dev,
             'media_inode': mstat.st_ino,
+            'config_root': chosen['config_root'],
             'config': str(cfgdir),
-            'config_relative': config_relative or '',
+            'config_relative': chosen['config_relative'],
             'config_device': cstat.st_dev,
             'config_inode': cstat.st_ino,
             'cache': str(cachedir),
@@ -427,6 +576,175 @@ class Engine:
             'enabled': True,
         }
         atomic_json(self.cfgfile, self.config)
+
+    @contextlib.contextmanager
+    def _operation(self):
+        """同步入口（修改目录 / 重新初始化）的操作位：已有操作在进行时直接拒绝。"""
+        if self.busy or not self.lock.acquire(False):
+            raise Error('当前有操作正在进行，请稍后再试')
+        self.busy, self.error = True, ''
+        try:
+            yield
+        finally:
+            self.busy = False
+            self.lock.release()
+
+    def reconfigure(self, media, config_relative=None, media_root=None, config_root=None):
+        """修改媒体/配置目录：保留数据，按新宿主路径重建容器。
+
+        config_relative 传 None 表示「配置目录不动」（只改媒体目录的请求）；
+        传空串表示改回插件私有目录。成功返回最新状态，失败抛出原因（已回滚）。
+        """
+        with self._operation():
+            self._do_reconfigure(media, config_relative, media_root, config_root)
+        return self.snapshot()
+
+    def _current_config_choice(self):
+        """当前配置目录对应的「选择值」：插件私有目录返回空串，用户目录返回绝对路径。"""
+        absolute = (self.config or {}).get('config', '')
+        if not absolute:
+            return ''
+        try:
+            Path(absolute).relative_to(self.data)
+        except ValueError:
+            return absolute              # 用户可见目录：按绝对路径重新解析（含所属根）
+        return ''                        # 插件私有目录：继续留空
+
+    def reset(self, confirm=False):
+        """重新初始化：移除容器并把配置挪成带时间戳的备份；用户目录里的文件一个都不动。"""
+        with self._operation():
+            self._do_reset(confirm)
+        return self.snapshot()
+
+    def _backup_path(self):
+        """带时间戳的备份文件名（同一秒内连续操作也不覆盖已有的）。"""
+        stamp = time.strftime('%Y%m%d-%H%M%S')
+        target = self.data / ('settings.json.bak-' + stamp)
+        index = 1
+        while target.exists():
+            index += 1
+            target = self.data / ('settings.json.bak-%s-%d' % (stamp, index))
+        return target
+
+    def _backup_config(self):
+        """把当前 settings.json 另存为备份，返回备份路径（原文件不动）。"""
+        target = self._backup_path()
+        tmp = self.data / (target.name + '.tmp')
+        tmp.write_bytes(self.cfgfile.read_bytes())
+        os.chmod(tmp, 0o600)
+        tmp.replace(target)
+        return target
+
+    def _do_reconfigure(self, media, config_relative=None, media_root=None, config_root=None):
+        """换目录但保留数据：备份配置 → 按新 bind 重建容器 → 失败回滚配置与原容器。"""
+        if not self.config:
+            raise Error('请先初始化')
+        if config_relative is None:
+            # 只提交了媒体目录：配置目录沿用当前设置，别默默换成插件私有目录
+            config_relative = self._current_config_choice()
+        chosen = self._resolve_dirs(media, config_relative, media_root, config_root)
+        self._ensure_cache(chosen['uid'], chosen['gid'])          # 缓存挂在 /data 上，位置不动
+        old_config = dict(self.config)
+        mstat, cstat = chosen['media'].stat(), chosen['config'].stat()
+        new_config = dict(old_config)
+        new_config.update({
+            'uid': chosen['uid'],
+            'gid': chosen['gid'],
+            'media_root': str(self.roots[chosen['media_index']]),
+            'media_relative': chosen['media_relative'],
+            'media': str(chosen['media']),
+            'media_device': mstat.st_dev,
+            'media_inode': mstat.st_ino,
+            'config_root': chosen['config_root'],
+            'config': str(chosen['config']),
+            'config_relative': chosen['config_relative'],
+            'config_device': cstat.st_dev,
+            'config_inode': cstat.st_ino,
+            'healthcheck_off': True,                              # 新建的容器一律不带健康检查
+            'enabled': True,
+        })
+        backup = self._backup_config()
+        self.config = new_config
+        try:
+            atomic_json(self.cfgfile, self.config)
+        except OSError as exc:
+            # 配置还没写下去，容器也没动过：把内存改回去就够了
+            self.config = old_config
+            raise Error('配置写入失败（%s），未改动容器' % exc) from exc
+        try:
+            self._rebuild_container()
+        except Exception as exc:
+            problems = self._rollback_reconfigure(old_config)
+            message = str(exc) if isinstance(exc, Error) else '更换目录失败（%s）' % exc
+            if problems:
+                message += '；回滚时也遇到问题：' + '、'.join(problems)
+            raise Error(message) from exc
+        print('jellyfin: 已更换目录（备份 %s），容器已按新挂载重建' % backup.name, flush=True)
+
+    def _rebuild_container(self):
+        """按当前 self.config 重建容器：停 → 删 → 建 → 启。
+
+        只 restart 不行：bind 挂载在创建容器时固定，旧容器会一直指向旧目录。
+        """
+        item = self.owned()
+        if item is not None:
+            if item.get('State', {}).get('Running'):
+                self._call('POST', '/containers/' + NAME + '/stop?t=30', timeout=90)
+            self._call('DELETE', '/containers/' + NAME, ok=(200, 204, 404))
+        self.create_container()
+
+    def _restore_old_container(self, old_config):
+        """尽力按旧配置把容器恢复回来；问题收集起来一起上报，不盖掉最初的原因。"""
+        problems = []
+        try:
+            item = self.inspect()
+            if item is not None:
+                # 可能是刚建到一半的新容器：先清掉，再按旧配置重建，保证挂载回到旧目录
+                if item.get('State', {}).get('Running'):
+                    self._call('POST', '/containers/' + NAME + '/stop?t=30', timeout=90)
+                self._call('DELETE', '/containers/' + NAME, ok=(200, 204, 404))
+            self.config = old_config
+            self.create_container()
+        except (Error, OSError) as exc:
+            problems.append('按原目录重建容器失败（%s）' % exc)
+        return problems
+
+    def _rollback_reconfigure(self, old_config):
+        """把配置与容器尽量恢复到改目录之前；返回恢复过程中的问题。"""
+        self.config = old_config
+        problems = []
+        try:
+            atomic_json(self.cfgfile, old_config)
+        except OSError as exc:
+            problems.append('配置写回失败（%s）' % exc)
+        problems.extend(self._restore_old_container(old_config))
+        return problems
+
+    def _do_reset(self, confirm=False):
+        """重新初始化：停容器 → 删容器 → 配置挪成备份。
+
+        用户数据（媒体目录、配置目录）里的文件一个都不删、不移、不改；
+        本插件没有路由器端口映射之类的副作用，容器就是唯一的系统改动。
+        """
+        if confirm is not True:
+            raise Error('请确认重新初始化')
+        item = self.owned()                     # 归属校验：同名容器不属于本插件就拒绝
+        if item is not None:
+            if item.get('State', {}).get('Running'):
+                self._call('POST', '/containers/' + NAME + '/stop?t=30', timeout=90)
+            self._call('DELETE', '/containers/' + NAME, ok=(200, 204, 404))
+        backup = ''
+        if self.config:
+            backup = self._backup_config().name
+            try:
+                self.cfgfile.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                raise Error('配置已备份为 %s，但删除失败（%s）' % (backup, exc)) from exc
+            self.config = None                  # 文件真的删掉了才清内存，两者保持一致
+        print('jellyfin: 已重新初始化（容器与插件配置已清理，备份 %s；用户目录未改动）'
+              % (backup or '无'), flush=True)
 
     def _identity_ok(self, folder, stat, dev_key, ino_key, label):
         """目录身份是否可信。
@@ -445,13 +763,31 @@ class Engine:
               % (label, fstype, point), flush=True)
         return True
 
+    def _config_root(self, path_key):
+        """启动校验该用哪个根（存储位置）。
+
+        配置里记下的 *_root 优先（即使 LOCAL_ROOTS 变了也回到同一个根）；
+        旧配置没有这个字段，就按绝对路径前缀反查；再不行退化为第一个根。
+        """
+        recorded = self.config.get(path_key + '_root')
+        if isinstance(recorded, str) and recorded:
+            return Path(recorded)
+        absolute = self.config.get(path_key)
+        if isinstance(absolute, str) and absolute:
+            index = root_index_of(self.roots, absolute)
+            if index >= 0:
+                return self.roots[index]
+        return self.root
+
     def check_directories(self):
         targets = [('media', 'media_device', 'media_inode', '媒体目录')]
-        if self.config.get('config_relative'):
+        # 选了外部配置目录才有目录身份要校验；旧配置没有 config_root，仍看 config_relative。
+        if self.config.get('config_root') or self.config.get('config_relative'):
             targets.append(('config', 'config_device', 'config_inode', '配置目录'))
         refreshed = False
         for path_key, dev_key, ino_key, label in targets:
-            folder = confined(self.root, self.config[path_key + '_relative'])
+            root = self._config_root(path_key)
+            folder = confined(root, self.config[path_key + '_relative'])
             try:
                 stat = folder.stat()
             except OSError as exc:
@@ -509,20 +845,28 @@ class Engine:
             self.config['enabled'] = False
             atomic_json(self.cfgfile, self.config)
 
-    def launch(self, action, data):
+    def launch(self, action, data, wait=0):
         if self.dev:
             raise Error('预览模式不会启动服务或修改 NAS')
-        if action not in ('setup', 'start', 'stop'):
+        if action not in ('setup', 'start', 'stop', 'reconfigure', 'reset'):
             raise Error('未知服务操作')
-        if not self.lock.acquire(False):
-            raise Error('服务操作正在进行，请稍候')
+        if self.busy or not self.lock.acquire(False):
+            raise Error('当前有操作正在进行，请稍后再试')
         self.busy, self.error = True, ''
 
         def work():
             try:
                 if action == 'setup':
-                    self.setup(data.get('path', ''), data.get('configPath', ''))
-                if action in ('setup', 'start'):
+                    self.setup(data.get('path', ''), data.get('configPath', ''),
+                               data.get('pathRoot'), data.get('configRoot'))
+                    self.start()
+                elif action == 'reconfigure':
+                    # configPath 缺失（None）＝保持当前配置目录；传空串才是改成插件私有目录
+                    self._do_reconfigure(data.get('path', ''), data.get('configPath'),
+                                         data.get('pathRoot'), data.get('configRoot'))
+                elif action == 'reset':
+                    self._do_reset(data.get('confirm'))
+                elif action == 'start':
                     self.start()
                 else:
                     self.stop()
@@ -536,3 +880,6 @@ class Engine:
 
         self.worker = threading.Thread(target=work, daemon=False)
         self.worker.start()
+        if wait:
+            # 同步入口（修改目录 / 重新初始化）：跑得快就当场给结果，慢则让页面继续轮询
+            self.worker.join(wait)

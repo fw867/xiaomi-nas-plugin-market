@@ -29,8 +29,12 @@
   const escape = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const icon = (name) => `<img src="${icons[name]}" alt="">`;
   root.querySelectorAll('[data-icon]').forEach(el => el.src = icons[el.dataset.icon]);
-  let state, items = [], browsePath = '', browseTarget = '', toastTimer, polling = false, generation = 0, consoleOpen = false;
-  const fieldIds = { download: '#downloadPath', config: '#configPath', watch: '#watchPath' };
+  let state, items = [], browsePath = '', browseRoot = 0, browseTarget = '', toastTimer, polling = false, generation = 0, consoleOpen = false;
+  // 目录选择弹窗写回的目标：初始化表单与「修改目录」弹窗共用同一个选择器
+  const fieldIds = {
+    download: '#downloadPath', config: '#configPath', watch: '#watchPath',
+    reDownload: '#reDownloadPath', reConfig: '#reConfigPath', reWatch: '#reWatchPath',
+  };
   const bytes = (n) => {
     n = Number(n || 0);
     const u = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
@@ -103,6 +107,13 @@
     if (!current.running) return '已停止';
     return current.ready ? '服务运行中' : '容器已启动，等待 Transmission 就绪';
   }
+  // 状态卡片里的目录：显示后端给的绝对路径，长路径靠 CSS 换行 + title 悬停查看
+  function setPathText(selector, value) {
+    const node = $(selector);
+    if (!node) return;
+    node.textContent = value || '—';
+    node.title = value || '';
+  }
   function render(current) {
     $('#serviceState').textContent = stateLabel(current);
     const dot = current.busy ? '' : (current.running && current.ready ? 'on' : 'off');
@@ -123,9 +134,10 @@
     $('#address').textContent = current.address || '（请从设备所有者的小米客户端打开插件以获取地址）';
     $('#toggleService').disabled = current.busy;
     $('#toggleService').textContent = current.running ? '停止服务' : '启动服务';
-    $('#downloadDir').textContent = current.download ? '/' + current.download : '—';
-    $('#configDir').textContent = current.config ? '/' + current.config : '—';
-    $('#watchDir').textContent = current.watch ? '/' + current.watch : '—';
+    // 三个目录显示完整绝对路径（后端给的 *_abs），长路径悬停看 title
+    setPathText('#downloadDir', current.download_abs || (current.download ? '/' + current.download : ''));
+    setPathText('#configDir', current.config_abs || (current.config ? '/' + current.config : ''));
+    setPathText('#watchDir', current.watch_abs || (current.watch ? '/' + current.watch : ''));
     $('#username').textContent = current.username || '—';
     $('#settingsFile').textContent = current.settingsFile || '—';
     const legacy = $('#legacyHint');
@@ -138,7 +150,20 @@
     renderForward(current);
     renderStats(current);
     renderSchedule(current);
+    renderRoots();
+    renderCredentialWarning(current);
     if (!current.busy) showError(current.error);
+  }
+  // 配置还在、凭据文件却丢了：明确告诉用户去哪个入口重设密码，别让人卡在
+  // 「容器起不来、又因为配置已存在没法重新初始化」的状态里
+  function renderCredentialWarning(current) {
+    const box = $('#credentialWarning');
+    if (!box) return;
+    box.hidden = !current.credentialMissing;
+    if (current.credentialMissing) {
+      box.textContent = 'WebUI 凭据文件缺失（数据目录里的 credential.json 不在了）：'
+        + '点「修改目录」填写新的 WebUI 密码即可恢复，或点「重新初始化」重新设置目录与账号密码。';
+    }
   }
   function renderStats(current) {
     const box = $('#statusStats');
@@ -296,15 +321,64 @@
       </div></article>`;
     }).join('');
   }
+  // 存储位置（存储池 / 外接设备）：state.roots 由后端按 LOCAL_ROOTS 顺序给出
+  function rootEntry(index) {
+    const roots = (state || {}).roots || [];
+    return roots.find((entry) => Number(entry.index) === Number(index)) || null;
+  }
+  // 弹窗顶部与表单里都用完整绝对路径，一眼能看出目录落在哪块盘上
+  function absolutePath(path) {
+    const entry = rootEntry(browseRoot);
+    const base = entry ? String(entry.path || '').replace(/\/+$/, '') : '';
+    if (!path) return base || '存储位置根目录';
+    if (!base) return '/' + path;
+    return base + '/' + path;
+  }
+  // 只有一个存储位置时不显示切换，避免多一行无用按钮
+  function renderRoots() {
+    const box = $('#browseRoots');
+    if (!box) return;
+    const roots = (state || {}).roots || [];
+    if (roots.length < 2) {
+      box.hidden = true;
+      box.innerHTML = '';
+      return;
+    }
+    box.hidden = false;
+    box.innerHTML = roots.map((entry) => {
+      const index = Number(entry.index) || 0;
+      const active = index === browseRoot ? ' active' : '';
+      const disabled = entry.exists ? '' : ' disabled';
+      return `<button type="button" class="root-chip${active}" data-root="${index}"${disabled}>${escape(entry.label || entry.path)}</button>`;
+    }).join('');
+  }
+  // 表单里存的是绝对路径：反查它属于哪个存储位置，供再次打开弹窗时定位
+  function locateValue(value) {
+    const text = String(value || '');
+    const roots = (state || {}).roots || [];
+    let found = null;
+    for (const entry of roots) {
+      const base = String(entry.path || '').replace(/\/+$/, '');
+      if (!base) continue;
+      if (text === base) return { root: Number(entry.index) || 0, relative: '' };
+      if (text.startsWith(base + '/') && (!found || base.length > found.base.length)) {
+        found = { base, root: Number(entry.index) || 0, relative: text.slice(base.length + 1) };
+      }
+    }
+    if (found) return { root: found.root, relative: found.relative };
+    // 认不出来（旧值，或后端没给位置列表）时按第 0 个位置、原样当相对路径处理
+    return { root: 0, relative: text.startsWith('/') ? '' : text };
+  }
   async function browse(path) {
     browsePath = path;
     const current = ++generation;
-    $('#browsePath').textContent = path ? '/' + path : '用户存储根目录';
+    renderRoots();
+    $('#browsePath').textContent = absolutePath(path);
     $('#folders').textContent = '正在读取';
     $('#selectFolder').disabled = true;
     $('#up').disabled = !path;
     try {
-      const result = await api('browse?path=' + encodeURIComponent(path));
+      const result = await api('browse?root=' + browseRoot + '&path=' + encodeURIComponent(path));
       if (current !== generation) return;
       $('#folders').innerHTML = result.items.map(item =>
         `<button type="button" data-folder="${escape(item.path)}">${icon('folder')}${escape(item.name)}</button>`
@@ -354,11 +428,19 @@
     const button = e.target.closest('button');
     if (!button) return;
     if (button.dataset.close) { $('#' + button.dataset.close).close(); return; }
+    if (button.dataset.root !== undefined) {
+      // 切换存储位置：浏览路径回到该位置的根部
+      browseRoot = Number(button.dataset.root) || 0;
+      browse('');
+      return;
+    }
     if (button.dataset.folder !== undefined) { browse(button.dataset.folder); return; }
     if (button.classList.contains('choose')) {
       browseTarget = button.dataset.target;
+      const located = locateValue($(fieldIds[browseTarget]).value);
+      browseRoot = located.root;
       $('#browse').showModal();
-      browse($(fieldIds[browseTarget]).value);
+      browse(located.relative);
       return;
     }
     if (button.dataset.action && button.dataset.id) {
@@ -371,7 +453,8 @@
   $('#refresh').onclick = () => busy($('#refresh'), refresh);
   $('#up').onclick = () => browse(browsePath.split('/').slice(0, -1).join('/'));
   $('#selectFolder').onclick = () => {
-    if (browseTarget && fieldIds[browseTarget]) $(fieldIds[browseTarget]).value = browsePath;
+    // 表单里写完整绝对路径：服务端两种写法都接受，绝对路径更不容易选错盘
+    if (browseTarget && fieldIds[browseTarget]) $(fieldIds[browseTarget]).value = absolutePath(browsePath);
     $('#browse').close();
   };
   $('#copyAddress').onclick = () => busy($('#copyAddress'), async () => {
@@ -439,6 +522,63 @@
   $('#toggleService').onclick = () => busy($('#toggleService'), async () => {
     await api('service/' + (state && state.running ? 'stop' : 'start'), {});
     await refresh();
+  });
+  // 「修改目录」：只换位置，不动用户目录里的文件；容器会按新宿主路径重建
+  const reconfigureBtn = $('#reconfigure');
+  if (reconfigureBtn) reconfigureBtn.onclick = () => {
+    const form = $('#reconfigureForm');
+    form.reset();
+    for (const [target, key] of [['reDownload', 'download_abs'], ['reConfig', 'config_abs'],
+      ['reWatch', 'watch_abs']]) {
+      const box = $(fieldIds[target]);
+      box.value = (state || {})[key] || '';
+      box.title = box.value;
+    }
+    const current = ['download_abs', 'config_abs', 'watch_abs']
+      .map((key) => (state || {})[key]).filter(Boolean);
+    $('#currentDirectories').textContent = current.length ? '当前目录：' + current.join(' · ') : '';
+    const password = form.elements.password;
+    if (password) {
+      // 凭据文件丢了时必须设新密码：否则重建容器时没有密码可用，用户会被卡住
+      const missing = !!(state || {}).credentialMissing;
+      password.required = missing;
+      password.placeholder = missing ? '凭据缺失，必须设置新的 WebUI 密码' : '留空表示不修改';
+    }
+    $('#reconfigureDialog').showModal();
+  };
+  const reconfigureForm = $('#reconfigureForm');
+  if (reconfigureForm) reconfigureForm.onsubmit = e => {
+    e.preventDefault();
+    const form = e.target;
+    const payload = {
+      download: form.elements.download.value,
+      config: form.elements.config.value,
+      watch: form.elements.watch.value,
+      password: form.elements.password.value,
+    };
+    if (!payload.download || !payload.config || !payload.watch) {
+      showError('请分别选择下载目录、配置文件夹目录和监控目录');
+      return;
+    }
+    busy(form.querySelector('[type=submit]'), async () => {
+      const result = await api('service/reconfigure', payload);
+      form.elements.password.value = '';
+      $('#reconfigureDialog').close();
+      if (result.state) { state = result.state; render(state); }
+      await refresh();
+      toast('目录已更新，容器已按新位置重建；原目录里的文件不会被删除');
+    });
+  };
+  // 「重新初始化」：清空插件配置并移除容器，用户目录里的文件不受影响
+  const resetBtn = $('#reset');
+  if (resetBtn) resetBtn.onclick = () => $('#resetDialog').showModal();
+  const confirmResetBtn = $('#confirmReset');
+  if (confirmResetBtn) confirmResetBtn.onclick = () => busy(confirmResetBtn, async () => {
+    const result = await api('service/reset', { confirm: true });
+    $('#resetDialog').close();
+    if (result.state) { state = result.state; render(state); }
+    await refresh();
+    toast('已重新初始化：插件配置已清空，下载、配置、监控目录里的文件未受影响');
   });
   const openBtn = $('#openConsole');
   if (openBtn) openBtn.onclick = () => { showConsole(true); busy(openBtn, refresh); };

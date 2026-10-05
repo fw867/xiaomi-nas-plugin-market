@@ -38,14 +38,14 @@
                     <div class="field">
                         <span class="field-label">媒体目录</span>
                         <div class="field-row">
-                            <input name="path" id="mediaPath" readonly placeholder="选择媒体目录">
+                            <textarea name="path" id="mediaPath" rows="2" readonly placeholder="选择媒体目录"></textarea>
                             <button type="button" id="choose">选择</button>
                         </div>
                     </div>
                     <div class="field">
                         <span class="field-label">配置目录（可选）</span>
                         <div class="field-row">
-                            <input name="configPath" id="configPath" readonly placeholder="留空则保存在插件私有目录">
+                            <textarea name="configPath" id="configPath" rows="2" readonly placeholder="留空则保存在插件私有目录"></textarea>
                             <button type="button" id="chooseConfig">选择</button>
                             <button type="button" id="clearConfig">清除</button>
                         </div>
@@ -84,9 +84,22 @@
                     <strong id="configDirectory">—</strong>
                 </div>
                 <div class="service-buttons">
-                    <button id="moveConfig" class="btn small">更改配置目录</button>
                     <button id="toggleService" class="btn">启动服务</button>
                 </div>
+            </section>
+
+            <section class="card directory-card" id="directorySettings" hidden>
+                <h2>目录设置</h2>
+                <p class="muted">修改目录只换位置，<strong>不会删除任何已有文件</strong>，但会重建容器；重新初始化只清空插件配置与容器。</p>
+                <div class="settings-buttons">
+                    <button id="reconfigure" class="btn" type="button">修改目录</button>
+                    <button id="reset" class="btn danger" type="button">重新初始化</button>
+                </div>
+                <details class="fold">
+                    <summary>这两个按钮分别会做什么</summary>
+                    <p><strong>修改目录：</strong>重新选择媒体目录与配置目录。插件会<strong>重建容器</strong>（挂载只在创建容器时生效），并先备份当前设置；媒体目录里的原数据不会被删除，新位置若没有原 Emby 配置，应用会以全新状态启动（需要重新跑一遍初始化向导）。</p>
+                    <p><strong>重新初始化：</strong>停止并移除本插件的容器，清空插件配置（原配置会备份在插件数据目录），页面回到初始化表单。<strong>用户数据目录不受影响</strong>——媒体目录与配置目录里的文件一个都不会删。</p>
+                </details>
             </section>
 
             <details class="card fold fold-card" id="notes">
@@ -108,13 +121,15 @@
                 <h2 id="browseTitle">选择媒体目录</h2>
                 <button data-close="browse" aria-label="关闭">关闭</button>
             </div>
+            <div id="roots" class="root-row" hidden></div>
             <div class="field-row">
-                <button id="up" aria-label="上一级" title="上一级">上一级</button>
+                <button id="up" class="btn small" type="button" aria-label="上一级" title="上一级">上一级</button>
                 <code id="browsePath">用户存储根目录</code>
             </div>
+            <p class="muted" id="pickHint" hidden>已选媒体目录：<span id="pickedPaths"></span></p>
             <div id="folders"></div>
             <div class="dialog-actions">
-                <button id="selectFolder" class="btn primary">选择此目录</button>
+                <button id="selectFolder" class="btn primary" type="button">选择此目录</button>
             </div>
         </dialog>
 

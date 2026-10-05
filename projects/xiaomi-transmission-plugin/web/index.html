@@ -60,21 +60,21 @@
                     <div class="field">
                         <span class="field-label">下载目录</span>
                         <div class="field-row">
-                            <input name="download" id="downloadPath" readonly required placeholder="选择目录">
+                            <textarea name="download" id="downloadPath" rows="2" readonly required placeholder="选择目录"></textarea>
                             <button type="button" class="btn choose" data-target="download">选择</button>
                         </div>
                     </div>
                     <div class="field">
                         <span class="field-label">配置文件夹目录</span>
                         <div class="field-row">
-                            <input name="config" id="configPath" readonly required placeholder="选择目录">
+                            <textarea name="config" id="configPath" rows="2" readonly required placeholder="选择目录"></textarea>
                             <button type="button" class="btn choose" data-target="config">选择</button>
                         </div>
                     </div>
                     <div class="field">
                         <span class="field-label">监控目录</span>
                         <div class="field-row">
-                            <input name="watch" id="watchPath" readonly required placeholder="选择目录">
+                            <textarea name="watch" id="watchPath" rows="2" readonly required placeholder="选择目录"></textarea>
                             <button type="button" class="btn choose" data-target="watch">选择</button>
                         </div>
                     </div>
@@ -116,6 +116,14 @@
                     </div>
                     <small class="muted" id="scheduleHint" hidden></small>
                 </div>
+                <div class="setting-row">
+                    <span class="muted">目录设置</span>
+                    <div class="setting-actions">
+                        <button id="reconfigure" type="button" class="btn small">修改目录</button>
+                        <button id="reset" type="button" class="btn small danger">重新初始化</button>
+                    </div>
+                </div>
+                <p class="port-warning" id="credentialWarning" hidden></p>
             </section>
 
             <section class="card" id="access" hidden>
@@ -187,13 +195,68 @@
                 <h2>选择目录</h2>
                 <button class="dialog-close" data-close="browse" aria-label="关闭"><img data-icon="close" alt=""></button>
             </div>
+            <div id="browseRoots" class="roots" hidden></div>
             <div class="field-row">
                 <button class="btn small" id="up" type="button" aria-label="上一级" title="上一级">上一级</button>
-                <code id="browsePath">用户存储根目录</code>
+                <code id="browsePath">存储位置根目录</code>
             </div>
             <div id="folders"></div>
             <div class="dialog-actions">
                 <button id="selectFolder" class="btn primary" type="button">选择此目录</button>
+            </div>
+        </dialog>
+
+        <dialog id="reconfigureDialog">
+            <div class="dialog-head">
+                <h2>修改目录</h2>
+                <button class="dialog-close" data-close="reconfigureDialog" aria-label="关闭"><img data-icon="close" alt=""></button>
+            </div>
+            <p class="muted">只更换下载、配置与监控目录的位置：插件会停止并删除当前容器，再用新目录重建（旧容器的挂载不会保留），
+                WebUI 账号与定时设置都保留。<strong>原目录里的文件不会被删除或移动</strong>；
+                新位置如果本来没有内容，Transmission 就以全新状态启动（配置目录里没有 <code>settings.json</code> 时会写入默认配置）。</p>
+            <form id="reconfigureForm" autocomplete="off">
+                <div class="field">
+                    <span class="field-label">下载目录</span>
+                    <div class="field-row">
+                        <textarea name="download" id="reDownloadPath" rows="2" readonly required placeholder="选择目录"></textarea>
+                        <button type="button" class="btn choose" data-target="reDownload">选择</button>
+                    </div>
+                </div>
+                <div class="field">
+                    <span class="field-label">配置文件夹目录</span>
+                    <div class="field-row">
+                        <textarea name="config" id="reConfigPath" rows="2" readonly required placeholder="选择目录"></textarea>
+                        <button type="button" class="btn choose" data-target="reConfig">选择</button>
+                    </div>
+                </div>
+                <div class="field">
+                    <span class="field-label">监控目录</span>
+                    <div class="field-row">
+                        <textarea name="watch" id="reWatchPath" rows="2" readonly required placeholder="选择目录"></textarea>
+                        <button type="button" class="btn choose" data-target="reWatch">选择</button>
+                    </div>
+                </div>
+                <div class="field">
+                    <span class="field-label">新的 WebUI 密码</span>
+                    <input name="password" type="password" minlength="8" maxlength="200" autocomplete="new-password" placeholder="留空表示不修改">
+                </div>
+                <p class="muted" id="currentDirectories"></p>
+                <div class="dialog-actions">
+                    <button type="button" class="btn" data-close="reconfigureDialog">取消</button>
+                    <button type="submit" class="btn primary">确认修改</button>
+                </div>
+            </form>
+        </dialog>
+
+        <dialog id="resetDialog">
+            <h2>重新初始化？</h2>
+            <p>这会清空本插件的配置、停止并移除 Transmission 容器（daemon 的 <code>settings.json</code> 只另存一份备份，
+                原文件保留；插件的 <code>credential.json</code> 会归档成 <code>credential.json.bak-&lt;时间戳&gt;</code>，不会删除），
+                并撤掉路由器上的端口映射，页面回到初始化表单，之后需要重新初始化才能再次启动服务。</p>
+            <p><strong>下载、配置、监控目录里的文件不受影响</strong>：不会被删除、移动或改写（种子与 resume 数据都留在配置目录里），请放心。</p>
+            <div class="dialog-actions">
+                <button type="button" class="btn" data-close="resetDialog">取消</button>
+                <button type="button" id="confirmReset" class="btn danger">清空并重新初始化</button>
             </div>
         </dialog>
 

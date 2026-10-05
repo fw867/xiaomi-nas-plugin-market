@@ -118,6 +118,37 @@ FALLBACK_ROOTS = tuple(
 CONFIG_DERIVED_ROOTS = os.environ.get('CONFIG_DERIVED_ROOTS', '1') != '0'
 SYMLINK_ROOT = '/home'
 
+def parse_extra_roots(value) -> tuple:
+    """`EXTRA_ROOTS` 的解析：冒号分隔、丢掉空白项。
+
+    **空串 → 空元组**（一个额外根都不追加），这是「运维锁死可共享范围」的开关：
+    `ALLOWED_ROOTS=/a:/b EXTRA_ROOTS=` 时 `/a:/b` 就是严格的最终白名单。
+    放在常量前面是因为模块导入时就要用它解析环境变量。
+    """
+    return tuple(item.strip() for item in str(value or '').split(':') if item.strip())
+
+
+# **追加**的允许共享根（外接设备 / U 盘 / 其它挂载点，默认 `/nas/mnt`）：
+# 真机上 NAS 有个服务把 `/nas/mnt/usb` bind 到厂商自己的挂载点 `/mnt/usb-<哈希>` 上，
+# 拔盘时 `/nas/mnt/usb` 这个路径就不存在了。`/nas/mnt` 下面是 usb、pa0、pa1 这些
+# 挂载点，所以把整个 `/nas/mnt` 作为根，它下面的子目录就都能校验、共享。
+# 与 `ALLOWED_ROOTS` 的「显式覆盖」语义不同，`EXTRA_ROOTS` 是往最终列表里**追加**：
+#   最终根 = （ALLOWED_ROOTS 有则单独用它，否则 FALLBACK_ROOTS + 按配置派生）+ EXTRA_ROOTS
+# 三种取值（见 parse_extra_roots()）：
+#   * 未设置       → 默认 `/nas/mnt`，开箱即可共享外接设备里的目录；
+#   * 显式设成空串 → **一个都不追加**：这时 `ALLOWED_ROOTS` 就是严格的最终白名单
+#                    （`ALLOWED_ROOTS=/a:/b EXTRA_ROOTS=` 能锁死可共享范围）；
+#   * 设了值       → 冒号分隔追加，支持单层通配（如 `/nas/mnt:/mnt/usb-*`）。
+# 而且只列**当前真实存在**的根（拔盘后不留一个指向空路径的根，见 extra_roots()）。
+EXTRA_ROOTS = parse_extra_roots(os.environ.get('EXTRA_ROOTS', '/nas/mnt'))
+
+# 弹窗里「位置」分组的标签规则（纯字符串匹配，见 location_label()）：
+#   /nas/pool0 或 /home/<NAS用户>/pool0 之下 → 存储池；
+#   /nas/mnt/usb* 或 /mnt/usb-* 之下 → 外接设备；
+#   其余（如 /nas/mnt、/nas/mnt/pa0）取末段目录名。
+POOL_ROOT_PATTERNS = ('/nas/pool0', '/home/*/pool0')
+EXTRA_ROOT_PATTERNS = ('/nas/mnt/usb', '/nas/mnt/usb*', '/mnt/usb-*')
+
 # 插件自建共享的命名空间：<账号>_nb_<序号>
 SHARE_PREFIX = '_nb_'
 # 段 id（共享标识）仍然是纯 ASCII；显示名（option name）可以是中文（真机：'照片-3943892'），
@@ -552,8 +583,77 @@ def root_match(path: str, root: str) -> bool:
     return path == root or path.startswith(root.rstrip('/') + '/')
 
 
+def dedupe(values) -> list:
+    """去重保序：白名单/位置列表的顺序对页面展示有意义，不要用 set 打乱。"""
+    unique: list = []
+    for item in values:
+        if item not in unique:
+            unique.append(item)
+    return unique
+
+
+def under_pattern(path: str, pattern: str) -> bool:
+    """`path` 是 `pattern` 本身或落在它之下；`pattern` 支持单层 `*`（如 `/home/*/pool0`）。"""
+    regex = '^' + re.escape(str(pattern)).replace(r'\*', '[^/]+') + r'(?:/.*)?$'
+    return re.match(regex, str(path)) is not None
+
+
+def location_label(path) -> str:
+    """弹窗里「位置」分组用的标签（纯函数，便于单测）。
+
+    - `/nas/pool0` 或 `/home/<NAS用户>/pool0` 之下 → 「存储池」（内置存储池）；
+    - `/nas/mnt/usb*` 或 `/mnt/usb-*` 之下 → 「外接设备」（U 盘，含厂商自己的挂载点）；
+    - 其它取末段目录名（用户自定义 `EXTRA_ROOTS` 时也得有个能看懂的标题）。
+    """
+    text = posixpath.normpath(str(path or '').strip() or '/')
+    for pattern in POOL_ROOT_PATTERNS:
+        if under_pattern(text, pattern):
+            return '存储池'
+    for pattern in EXTRA_ROOT_PATTERNS:
+        if under_pattern(text, pattern):
+            return '外接设备'
+    return posixpath.basename(text.rstrip('/')) or text
+
+
 def within_roots(path: str, roots) -> bool:
     return any(root_match(path, root) for root in normalize_roots(roots))
+
+
+def extra_roots() -> list:
+    """`EXTRA_ROOTS` 里**当前真实存在**的追加根（外接设备）；`EXTRA_ROOTS=` 时为空。
+
+    只保留存在的：拔盘时 `/nas/mnt/usb` 不存在，就不该出现在白名单里（否则页面/校验
+    会给出一个指向空路径的根）。`*` 只吃一层（`/mnt/usb-*`）：列父目录，把匹配到的
+    真实目录逐个收进来。这是路径探测唯一的地方，测试通过可注入钩子
+    （`path_isdir` / `path_listdir`）在沙箱里造 U 盘。
+    """
+    found: list = []
+    for root in normalize_roots(EXTRA_ROOTS):
+        if '*' in root:
+            parent = posixpath.dirname(root)
+            if not parent or not path_isdir(parent):
+                continue
+            try:
+                names = path_listdir(parent)
+            except OSError:
+                continue
+            for name in sorted(names, key=lambda item: str(item)):
+                candidate = posixpath.join(parent, str(name))
+                if root_match(candidate, root) and path_isdir(candidate):
+                    found.append(candidate)
+            continue
+        if path_isdir(root):
+            found.append(root)
+    return dedupe(found)
+
+
+def configured_extra_roots() -> list:
+    """`EXTRA_ROOTS` 的配置值（**不**判断存在性）；`EXTRA_ROOTS=` 时为空列表。
+
+    弹窗要拿它把「配置了但当前没插上」的位置也显示出来（标成未接入），
+    白名单那边则用 `extra_roots()`（只留存在的）。
+    """
+    return dedupe(normalize_roots(EXTRA_ROOTS))
 
 
 def data_root_for(root: Path, user_id: str) -> str:
@@ -594,21 +694,28 @@ def derive_allowed_roots(sections, root: Path = None) -> list:
     return normalize_roots(values)
 
 
-def resolve_allowed_roots(sections=None, root: Path = None) -> list:
-    """白名单最终值：环境变量显式覆盖 > 按配置推导 > 兜底默认值。"""
+def resolve_allowed_roots(sections=None, root: Path = None, extra=None) -> list:
+    """白名单最终值：环境变量显式覆盖 > 按配置推导 > 兜底默认值，**再追加** EXTRA_ROOTS。
+
+    `ALLOWED_ROOTS` 仍然是**显式覆盖**（给了就只用它，现有测试依赖这一点）；
+    `EXTRA_ROOTS`（外接设备 / U 盘）是**追加**来源，两种情况下都并进最终列表里。
+    把 `EXTRA_ROOTS` **显式设成空串**就不追加任何额外根，此时 `ALLOWED_ROOTS`
+    就是严格的最终白名单（运维可用它锁死可共享范围，见 parse_extra_roots()）。
+    `extra` 默认取 `extra_roots()`：只包含当前真实存在的追加根，拔盘后不会留下空根。
+    """
+    if extra is None:
+        extra = extra_roots()
     override = os.environ.get('ALLOWED_ROOTS', '').strip()
     if override:
-        return normalize_roots(override.split(':'))
-    values = normalize_roots(FALLBACK_ROOTS)
-    if CONFIG_DERIVED_ROOTS and sections:
-        values.extend(derive_allowed_roots(sections, root))
-    if not values:
+        values = normalize_roots(override.split(':'))
+    else:
         values = normalize_roots(FALLBACK_ROOTS)
-    unique = []
-    for item in values:
-        if item not in unique:
-            unique.append(item)
-    return unique
+        if CONFIG_DERIVED_ROOTS and sections:
+            values.extend(derive_allowed_roots(sections, root))
+        if not values:
+            values = normalize_roots(FALLBACK_ROOTS)
+    values.extend(normalize_roots(extra))
+    return dedupe(values)
 
 
 def validate_share_path(path, roots, label: str = '目录') -> str:
@@ -765,7 +872,8 @@ class Engine:
         self.discovery['enabled'] = bool(self.settings.get('discoveryEnabled', True))
         self.account_cache: tuple = (0.0, None)
         self.share_cache: tuple = (0.0, None)
-        self.root_cache: tuple = (0.0, None)
+        # 白名单缓存：(时间戳, 值, 当时的追加根列表)——外接设备可插拔，见 allowed_roots()
+        self.root_cache: tuple = (0.0, None, ())
         self.on_log = on_log or (lambda message: None)
         self.responder = None
         if start_responder:
@@ -908,18 +1016,25 @@ class Engine:
         return shares
 
     def allowed_roots(self, force: bool = False) -> list:
-        """白名单：用户在配置里本来就共享到的目录的父目录 + 用户数据根 + /nas/pool0。"""
+        """白名单：用户在配置里本来就共享到的目录的父目录 + 用户数据根 + /nas/pool0，
+        再追加外接设备（`EXTRA_ROOTS`，U 盘）。
+
+        外接设备是可插拔的，所以缓存把「当前的追加根列表」也算进有效期判断：插上/拔掉
+        U 盘后下一次调用就能反映出来（既不用等 30 秒过期，也不用调用方传 force=True）。
+        """
         now = time.time()
-        stamp, cached = self.root_cache
-        if not force and cached is not None and now - stamp < 30:
+        stamp, cached, cached_extra = self.root_cache
+        extra = extra_roots()
+        if (not force and cached is not None and now - stamp < 30
+                and list(cached_extra or ()) == extra):
             return cached
         try:
             sections = {'sambauser': self.config_sections('sambauser'),
                         'sambashare': self.config_sections('sambashare')}
         except Error:
             sections = None
-        values = resolve_allowed_roots(sections)
-        self.root_cache = (now, values)
+        values = resolve_allowed_roots(sections, extra=extra)
+        self.root_cache = (now, values, extra)
         return values
 
     def accounts(self, force: bool = False) -> list:
@@ -1355,17 +1470,12 @@ class Engine:
                 return root
         return ''
 
-    def browse_account_dirs(self, account: str) -> dict:
-        """账号数据根目录下的**子目录**列表（只列目录，跳过隐藏目录与符号链接）。"""
-        account = str(account or '').strip()
-        root = self.account_data_root(account)
-        if not root:
-            raise Error('没有找到账号 %s 的数据目录（/etc/config/sambauser 里没有可用的用户号）'
-                        % account)
-        if not path_exists(root):
-            raise Error('数据目录不存在：%s' % root)
-        if not path_isdir(root):
-            raise Error('数据目录不是一个目录：%s' % root)
+    def _browse_dirs(self, root: str, account: str) -> list:
+        """某个根目录下的**一层**子目录（只列目录，跳过隐藏目录与符号链接），标注已共享。
+
+        `browse_account_dirs` 的「存储池」与「外接设备」两个位置共用这一份逻辑，
+        两边的 `shared`/`shareName`/`display`/`deletable` 字段才会完全一致。
+        """
         entries = []
         for name in sorted(path_listdir(root), key=lambda item: str(item)):
             text = str(name)
@@ -1400,7 +1510,62 @@ class Engine:
                 # 与未共享的目录都是 False。
                 'deletable': bool((share or {}).get('deletable')),
             })
-        return {'ok': True, 'account': account, 'root': root, 'dirs': dirs}
+        return dirs
+
+    def browse_account_dirs(self, account: str) -> dict:
+        """账号数据根目录下的**子目录**列表（只列目录，跳过隐藏目录与符号链接）。
+
+        `dirs` 保持旧结构（老前端/老测试直接用），另外给 `locations`：弹窗按「位置」
+        分组渲染——内置存储池（账号数据根）+ 外接设备（`EXTRA_ROOTS`，默认 `/nas/mnt`）。
+        外接设备拔掉时 `available` 为 False、`dirs` 为空，弹窗显示「未接入」；
+        这不是错误（已共享的 U 盘目录暂时不可用属于正常情况）。
+        """
+        account = str(account or '').strip()
+        root = self.account_data_root(account)
+        if not root:
+            raise Error('没有找到账号 %s 的数据目录（/etc/config/sambauser 里没有可用的用户号）'
+                        % account)
+        if not path_exists(root):
+            raise Error('数据目录不存在：%s' % root)
+        if not path_isdir(root):
+            raise Error('数据目录不是一个目录：%s' % root)
+        dirs = self._browse_dirs(root, account)
+        locations = [{'label': location_label(root), 'root': root,
+                      'available': True, 'dirs': dirs}]
+        present = extra_roots()
+        # 按配置顺序给位置：配置了但当前不存在的也要给出来（弹窗标成「未接入」）；
+        # 通配模式本身不是目录，把它展开出来的真实挂载点补在同一个位置顺序上。
+        candidates: list = []
+        for item in configured_extra_roots():
+            if '*' in item:
+                for entry in present:
+                    if entry not in candidates and root_match(entry, item):
+                        candidates.append(entry)
+                continue
+            if item != root and item not in candidates:
+                candidates.append(item)
+        for item in present:                    # 兜底：present 里其它来源的根也别漏
+            if item not in candidates:
+                candidates.append(item)
+        for extra in candidates:
+            available = extra in present
+            extra_dirs: list = []
+            if available:
+                try:
+                    extra_dirs = self._browse_dirs(extra, account)
+                except OSError as error:
+                    # 挂载点掉了/没权限：不能把整个弹窗拖垮（存储池那份照旧要给出来），
+                    # 位置标成不可用，用户还能手填别的路径。
+                    self.log('读取 %s 失败：%s' % (extra, error))
+                    available = False
+            locations.append({
+                'label': location_label(extra),
+                'root': extra,
+                'available': available,
+                'dirs': extra_dirs,
+            })
+        return {'ok': True, 'account': account, 'root': root, 'dirs': dirs,
+                'locations': locations}
 
     # ---- 共享目录：删除 -------------------------------------------------
     def _deletable_share(self, share_name) -> dict:

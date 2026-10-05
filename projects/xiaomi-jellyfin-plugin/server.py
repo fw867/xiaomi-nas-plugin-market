@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-from engine import Engine, Error, PORT, installed_version
+from engine import Engine, Error, PORT, installed_version, parse_roots
 
 WEB = Path(__file__).resolve().parent / 'web'
 TTL = 86400
@@ -153,7 +153,10 @@ class Handler(BaseHTTPRequestHandler):
                 result = self.server.engine.snapshot()
                 result['address'] = self.address()
             elif route.path == '/api/browse':
-                result = {'items': self.server.engine.browse(parse_qs(route.query).get('path', [''])[0])}
+                # ?root=<位置序号>&path=<根内相对路径>；缺省 root=0、path='' 保持旧行为。
+                query = parse_qs(route.query)
+                result = {'items': self.server.engine.browse(query.get('path', [''])[0],
+                                                             query.get('root', ['0'])[0])}
             else:
                 return self.send(404, {'ok': False, 'error': 'not found'})
             self.send(200, {'ok': True, **result})
@@ -183,10 +186,26 @@ class Handler(BaseHTTPRequestHandler):
                     raise Error('目录路径无效')
                 if not isinstance(config, str) or len(config) > 1024:
                     raise Error('配置目录路径无效')
-                self.server.engine.launch('setup', {'path': media, 'configPath': config})
+                self.server.engine.launch('setup', {'path': media, 'configPath': config,
+                                                    'pathRoot': data.get('pathRoot'),
+                                                    'configRoot': data.get('configRoot')})
                 return self.send(202, {'ok': True})
             if action.startswith('service/'):
-                self.server.engine.launch(action.split('/')[1], data)
+                name = action.split('/')[1]
+                if name == 'reset' and data.get('confirm') is not True:
+                    raise Error('请确认重新初始化')
+                if name in ('reconfigure', 'reset'):
+                    # 这两个动作要当场反映到页面上：等它跑完（最多 15 秒）直接回最新状态；
+                    # 超时仍未结束就照 setup/start/stop 的老规矩回 202，让页面轮询。
+                    self.server.engine.launch(name, data, wait=15)
+                    result = self.server.engine.snapshot()
+                    if result['busy']:
+                        # 还没跑完（例如要等容器停止）：回 202，页面继续轮询
+                        return self.send(202, {'ok': True, 'busy': True})
+                    if result['error']:
+                        return self.send(400, {'ok': False, 'error': result['error']})
+                    return self.send(200, {'ok': True, **result})
+                self.server.engine.launch(name, data)
                 return self.send(202, {'ok': True})
             raise Error('不支持此操作')
         except (Error, ValueError, OSError) as exc:
@@ -202,11 +221,14 @@ def main():
     args = parser.parse_args()
     data = os.environ.get('DATA_DIR') or (
         tempfile.mkdtemp(prefix='jellyfin-preview-') if args.dev else '/data/plugin/jellyfin/data')
+    # 存储位置：LOCAL_ROOTS 是冒号分隔的绝对路径列表（存储池 + 外接设备），
+    # 未设置时退化为单个 LOCAL_ROOT，与旧部署方式完全兼容。
     root = os.environ.get('LOCAL_ROOT', data if args.dev else '')
+    roots = parse_roots(os.environ.get('LOCAL_ROOTS', '')) or ([root] if root else [])
     user = os.environ.get('NAS_USER_ID', 'u123456' if args.dev else '')
-    if not root or not re.fullmatch(r'u[0-9]+', user):
-        raise SystemExit('LOCAL_ROOT and NAS_USER_ID are required')
-    engine = Engine(data, root, args.dev)
+    if not roots or not re.fullmatch(r'u[0-9]+', user):
+        raise SystemExit('LOCAL_ROOT/LOCAL_ROOTS and NAS_USER_ID are required')
+    engine = Engine(data, roots[0], args.dev, roots=roots)
     if args.stop_owned:
         engine.stop(remember=False)
         return

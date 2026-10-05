@@ -109,19 +109,50 @@ $ net view \\192.168.1.8          # 同一账号下出现两个共享
 插件自建的共享用独立命名空间 `<账号>_nb_<序号>`（`SHARE_PREFIX = '_nb_'`），只允许增删
 自己建的：app 生成的 `<账号>_<id>` 与 `public` 等受保护共享不会被插件碰。
 
+### 外接设备：`/nas/mnt` 下的目录也能共享
+
+`/nas/mnt` 下面是各种挂载点（`usb` 是外接设备 U 盘的稳定路径，NAS 上的服务把它 bind 到
+厂商自己的 `/mnt/usb-<哈希>`；还有 `pa0`/`pa1` 之类）。插件默认把 `/nas/mnt` 作为
+**追加**的允许根（环境变量 `EXTRA_ROOTS`，冒号分隔多个、支持单层通配如
+`/mnt/usb-*`），所以 `/nas/mnt/usb` 及其下面的任意子目录都能通过校验并被共享：
+
+```
+最终允许根 = （ALLOWED_ROOTS 有则单独用它，否则 FALLBACK_ROOTS + 按配置派生）+ EXTRA_ROOTS
+```
+
+两点约定：
+
+- `ALLOWED_ROOTS` 仍然是**显式覆盖**语义（给了就只用它），`EXTRA_ROOTS` 只是追加；
+- 追加根**只列当前真实存在的**：拔盘后 `/nas/mnt/usb` 不存在，就不会出现在白名单里；
+  `allowed_roots()` 的缓存把「当前的追加根列表」也算进有效期，插上/拔掉 U 盘下一次调用
+  就能反映出来（不必等缓存过期）。已共享的 U 盘目录在拔盘后仍然保留在配置里（不报错），
+  只是弹窗里那个位置显示「未接入」。
+
+`EXTRA_ROOTS` 的三种取值：
+
+| 取值 | 行为 |
+| --- | --- |
+| 未设置 | 默认 `/nas/mnt`（开箱即可共享外接设备里的目录） |
+| **显式空串**（`EXTRA_ROOTS=`） | **一个都不追加**：`ALLOWED_ROOTS` 就是严格的最终白名单，运维可用它锁死可共享范围 |
+| 设了值 | 冒号分隔追加，支持单层通配（如 `EXTRA_ROOTS=/nas/mnt:/mnt/usb-*`） |
+
+弹窗里除了勾选，还可以直接**手填绝对路径**（如 `/nas/mnt/usb/下载`），与勾选项一起提交；
+服务端照旧校验绝对路径、根白名单、`..` 与符号链接的真实路径。
+
 ## 四、接口与页面
 
 插件服务监听 `127.0.0.1:18190`，页面经 nginx 走 `/plugin/<用户>/netneighbor/`。
 
 页面只有三块：**网络发现开关 + 主机名**、**共享目录列表（只读）**、**「编辑共享」弹窗**。
-共享的增删都在弹窗里用勾选完成：**勾选＝添加、取消勾选＝移除**（官方 app 建的那条锁死不可取消）。
+共享的增删都在弹窗里用勾选完成：**勾选＝添加、取消勾选＝移除**（官方 app 建的那条锁死不可取消）；
+弹窗里还能**手填绝对路径**（`/nas/mnt` 下的目录，如 `/nas/mnt/usb`），与勾选项一起提交。
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/healthz` | `{"ok": true, "version": "0.1.0"}` |
 | GET | `/api/status` | 设置（开关/主机名）、发现服务状态、账号与共享列表；工作组、XAddrs、官方 wsdd 状态、最近取元数据时间仍在返回里（便于排查），页面不显示 |
 | GET | `/api/log` | 最近日志 |
-| GET | `/api/dirs?account=fw867` | 账号数据根目录下的子目录；每项带 `shared`（是否已共享）、`shareName`/`display` 与 `deletable`（只有插件自建的才为 true），弹窗用它决定锁定哪一项 |
+| GET | `/api/dirs?account=fw867` | 账号数据根目录下的子目录；每项带 `shared`（是否已共享）、`shareName`/`display` 与 `deletable`（只有插件自建的才为 true），弹窗用它决定锁定哪一项。另有 `locations`：按「位置」分组（存储池 = 账号数据根；外接设备 = `EXTRA_ROOTS`），每项是 `{label, root, available, dirs}`，拔盘时 `available` 为 false（弹窗显示「未接入」） |
 | POST | `/api/discovery` | `{"enabled": true\|false}`：开 = 接管官方 wsdd + 起回应器；关 = 发 Bye + 还原官方 wsdd（幂等） |
 | POST | `/api/hostname` | `{"hostname": "..."}`：校验 → 落盘 → 重建回应器并重发 Hello；`{"reset": true}` 为**恢复默认**（清掉落盘值，回到 `/etc/config/samba` 的 `option name`，页面上是「恢复默认」按钮） |
 | POST | `/api/share/add` | `{"account","path","sharePoint"}`（单个，兼容旧版）或 `{"account","paths":[...]}`（多选；所有 `add_dir` 之后只跑一次 `init_config` + reload） |
