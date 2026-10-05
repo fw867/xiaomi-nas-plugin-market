@@ -1,5 +1,6 @@
 /* 网络邻居 · 移动端优先（极简版）
-   页面只有三块：网络发现开关 + 主机名、共享目录列表、添加共享弹窗。
+   页面只有三块：网络发现开关 + 主机名、共享目录（上部「添加共享」按钮 + 下部已共享目录
+   列表）、目录浏览器弹窗（位置切换 + 逐层进入 + 选择此目录）。
    触摸目标不小于 44px，输入框 16px（避免 iOS 聚焦时自动放大），
    顶部/底部留出刘海与 home 指示条的安全区。 */
 
@@ -194,8 +195,9 @@ main {
 .btn.primary:active { background: #2a76dd; }
 .btn.block { display: block; width: 100%; margin-top: 12px; }
 
-/* 共享目录列表：每行「目录名 + 共享名」（只读，增删都在弹窗里勾选） */
-.accounts { display: flex; flex-direction: column; margin-top: 4px; }
+/* 共享目录：下半部「已共享的目录」列表，每行 = 显示名 + 共享名 + 完整路径 + 行尾 `-` */
+.shares { display: flex; flex-direction: column; margin-top: 4px; }
+.share-heading { margin: 14px 0 2px; font-size: 13.5px; font-weight: 650; color: var(--muted); }
 .share-row {
   display: flex;
   align-items: center;
@@ -208,8 +210,25 @@ main {
 .share-info { flex: 1 1 auto; min-width: 0; }
 .share-name { font-size: 14.5px; font-weight: 600; overflow-wrap: anywhere; }
 .share-sub { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+/* 行尾的删除按钮就是一个 `-`：触摸目标 44px，禁用时置灰（官方 App 建的共享删不了） */
+.share-remove {
+  flex: 0 0 auto;
+  width: var(--tap);
+  height: var(--tap);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  color: var(--danger);
+  font-size: 22px;
+  line-height: 1;
+  font-family: inherit;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+.share-remove:active { background: #fdecea; }
+.share-remove:disabled { color: var(--muted); opacity: .45; cursor: default; background: transparent; }
 
-/* 编辑共享弹窗 */
+/* 目录浏览器弹窗（与 transmission 插件同形：位置切换 + 当前绝对路径 + 逐层进入） */
 .dialog {
   width: min(480px, calc(100vw - 32px));
   max-height: 80vh;
@@ -226,6 +245,70 @@ main {
 .dialog-body h2 { margin: 0; font-size: 16px; font-weight: 650; }
 .dialog-hint { margin: 0; color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
 .dialog-error { margin: 0; min-height: 0; color: var(--danger); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.btn.small { min-height: 36px; padding: 8px 14px; font-size: 13.5px; }
+
+/* 位置切换（存储池 / 外接存储）：只有一个位置时不显示，未接入的置灰 */
+.roots { display: flex; flex-wrap: wrap; gap: 6px; }
+.roots button {
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid #ccd5df;
+  border-radius: 999px;
+  background: #fff;
+  color: #34465a;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.roots button:active { background: #eef2f6; }
+.roots button.active { border-color: var(--blue); background: var(--blue); color: #fff; }
+.roots button:disabled { opacity: .5; cursor: default; }
+
+/* 当前完整绝对路径 + 「上一级」 */
+.browse-path-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.browse-path-row code {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+/* 一层子目录：整行可点，进入下一层 */
+.browse-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  margin: 4px 0;
+  min-height: 100px;
+  max-height: 44vh;
+}
+.folder-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: var(--tap);
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  font-size: 14.5px;
+  text-align: left;
+  white-space: normal;
+  cursor: pointer;
+}
+.folder-row:active { background: #eef3fa; }
+.folder-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.folder-go { flex: 0 0 auto; color: var(--muted); font-size: 18px; line-height: 1; }
+.browse-list p { margin: 0; }
 
 /* 手填绝对路径（/nas/mnt 下的目录）：与主机名那一行同样的「输入框 + 按钮」布局 */
 .path-row { display: flex; flex-wrap: nowrap; gap: 6px; }
@@ -243,38 +326,6 @@ main {
 }
 .path-row .btn { flex: 0 0 auto; padding: 10px 14px; font-size: 14px; }
 
-/* 弹窗里的「位置」分组：存储池 / 外接设备（拔盘时标成未接入） */
-.dir-group { display: flex; flex-direction: column; gap: 2px; }
-.dir-group + .dir-group { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 8px; }
-.dir-group-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; }
-.dir-group-label { font-size: 13.5px; font-weight: 650; }
-.dir-group-root { color: var(--muted); font-size: 11.5px; overflow-wrap: anywhere; }
-.dir-group.off .dir-group-label { color: var(--muted); }
-.dir-group .muted { margin: 4px 0 2px; }
-
-.dir-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  overflow: auto;
-  -webkit-overflow-scrolling: touch;
-  margin: 4px 0;
-  min-height: 60px;
-  max-height: 52vh;
-}
-.dir-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-height: var(--tap);
-  padding: 4px 6px;
-  border-radius: 10px;
-  font-size: 14.5px;
-  cursor: pointer;
-}
-.dir-item:active { background: #eef3fa; }
-.dir-box { width: 20px; height: 20px; flex: 0 0 auto; }
-.dir-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
 .chip {
   flex: 0 0 auto;
   padding: 1px 8px;
@@ -334,7 +385,11 @@ footer { text-align: center; color: var(--muted); font-size: 12.5px; margin-top:
   .btn, .host-row input[type="text"], .path-row input[type="text"] { background: #1b2330; color: var(--ink); border-color: #333f4f; }
   .btn:active { background: #232d3b; }
   .btn.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
-  .dir-item:active { background: #232d3b; }
+  .folder-row:active { background: #232d3b; }
+  .roots button { background: #1b2330; border-color: #333f4f; color: #cfd8e3; }
+  .roots button:active { background: #232d3b; }
+  .share-remove { background: #1b2330; border-color: #333f4f; }
+  .share-remove:active { background: #3a2222; }
   .chip { background: #232d3b; }
   .alert { background: #2a1f1c; color: #e8b4a3; }
   .status-dot.off { background: #55616f; box-shadow: 0 0 0 4px rgba(85, 97, 111, .22); }

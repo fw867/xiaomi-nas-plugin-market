@@ -8,6 +8,7 @@ import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import quote
 
 import engine
 import server
@@ -468,6 +469,112 @@ class DirsApiTests(ServerHarness):
         status, data = self.json_request('GET', '/api/dirs', headers=self.auth())
         self.assertEqual(status, 400)
         self.assertIn('请选择账号', data['error'])
+
+
+class BrowseApiTests(ServerHarness):
+    """`GET /api/browse`：目录浏览器（位置列表 + 逐层浏览），与 transmission 插件同形。"""
+
+    def browse(self, root=0, path='', account='fw867'):
+        # 中文目录名要按 UTF-8 百分号编码（http.client 的请求行只能是 ASCII，
+        # 浏览器里 app.js 用的是 encodeURIComponent，等价）
+        route = '/api/browse?account=%s&root=%s&path=%s' % (
+            quote(account), root, quote(path))
+        return self.json_request('GET', route, headers=self.auth())
+
+    def test_requires_a_session(self):
+        status, _data = self.json_request('GET', '/api/browse?account=fw867')
+        self.assertEqual(status, 401)
+
+    def test_lists_locations_and_one_level_of_directories(self):
+        photos = self.target_dir('照片')
+        self.target_dir('视频')
+        self.sandbox.root.joinpath(
+            'home', 'u3943892', 'pool0', 'data', 'readme.txt').write_text('x', encoding='utf-8')
+        with patch.object(engine, 'EXTRA_ROOTS', ('/nas/mnt',)):
+            self.sandbox.makedirs('/nas/mnt/usb')
+            status, data = self.browse()
+
+        self.assertEqual(status, 200)
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['root'], 0)
+        self.assertEqual(data['path'], '')
+        self.assertEqual(data['absolute'], '/home/u3943892/pool0/data')
+        self.assertEqual([item['label'] for item in data['locations']],
+                         ['存储池', '外接存储'])
+        self.assertEqual([item['path'] for item in data['locations']],
+                         ['/home/u3943892/pool0/data', '/nas/mnt'])
+        self.assertTrue(all(item['exists'] for item in data['locations']))
+        by_name = {item['name']: item for item in data['items']}
+        self.assertEqual(sorted(by_name), sorted(['照片', '视频']))
+        self.assertEqual(by_name['照片']['absolute'], photos)
+        self.assertEqual(by_name['照片']['path'], '照片')
+        self.assertNotIn('readme.txt', by_name)
+
+    def test_enters_subdirectories_layer_by_layer(self):
+        photos = self.target_dir('照片')
+        (self.sandbox.real(photos) / '2024').mkdir()
+        status, data = self.browse(0, '照片')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['absolute'], photos)
+        self.assertEqual([item['name'] for item in data['items']], ['2024'])
+        self.assertEqual(data['items'][0]['absolute'], photos + '/2024')
+
+    def test_browses_the_external_storage_location(self):
+        self.target_dir('照片')
+        with patch.object(engine, 'EXTRA_ROOTS', ('/nas/mnt',)):
+            usb = self.sandbox.makedirs('/nas/mnt/usb')
+            self.sandbox.makedirs('/nas/mnt/usb/下载')
+            status, data = self.browse(1, 'usb')
+        self.assertEqual(status, 200)
+        self.assertEqual(data['absolute'], usb)
+        self.assertEqual([item['name'] for item in data['items']], ['下载'])
+        self.assertEqual(data['items'][0]['absolute'], '/nas/mnt/usb/下载')
+        self.assertEqual(data['locations'][1]['label'], '外接存储')
+
+    def test_rejects_bad_paths_and_locations_in_chinese(self):
+        self.target_dir('照片')
+        status, data = self.browse(0, '..')
+        self.assertEqual(status, 400)
+        self.assertIn('..', data['error'])
+        status, data = self.browse(0, '/etc')
+        self.assertEqual(status, 400)
+        self.assertIn('相对路径', data['error'])
+        status, data = self.browse(0, '不存在')
+        self.assertEqual(status, 400)
+        self.assertIn('目录不存在', data['error'])
+        status, data = self.browse(9)
+        self.assertEqual(status, 400)
+        self.assertIn('位置无效', data['error'])
+        status, data = self.browse(0, '', 'nobody')
+        self.assertEqual(status, 400)
+        self.assertIn('没有这个账号', data['error'])
+
+    def test_add_and_delete_a_share_picked_in_the_browser(self):
+        """弹窗流程：浏览拿到绝对路径 → 添加共享 → 出现在列表里 → 用 `-` 删除。"""
+        self.target_dir('照片')
+        photos = '/home/u3943892/pool0/data/照片'
+        (self.sandbox.real(photos) / '2024').mkdir()
+        status, data = self.browse(0, '照片')
+        self.assertEqual(status, 200)
+        picked = data['items'][0]['absolute']
+        self.assertEqual(picked, photos + '/2024')
+
+        status, data = self.json_request(
+            'POST', '/api/share/add', {'account': 'fw867', 'path': picked},
+            self.auth(write=True))
+        self.assertEqual(status, 200)
+        added = data['result']
+        share_name = added['shareName']
+        self.assertEqual(added['path'], picked)
+        listing = data['status']['accounts'][0]['shares']
+        self.assertIn(picked, [item['path'] for item in listing])
+
+        status, data = self.json_request(
+            'POST', '/api/share/delete', {'shareName': share_name}, self.auth(write=True))
+        self.assertEqual(status, 200)
+        self.assertTrue(data['result']['verified'])
+        listing = data['status']['accounts'][0]['shares']
+        self.assertNotIn(picked, [item['path'] for item in listing])
 
 
 class ShareApiBatchTests(ServerHarness):

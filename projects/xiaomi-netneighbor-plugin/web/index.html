@@ -46,33 +46,38 @@
                 </div>
             </section>
 
-            <!-- 卡片二：共享目录 -->
+            <!-- 卡片二：共享目录（上部「添加共享」按钮，下部已共享目录列表，行尾 `-` 删除） -->
             <section class="card">
                 <h2>共享目录</h2>
                 <p id="accountLine" class="muted"></p>
-                <div id="accounts" class="accounts"></div>
-                <button id="editShare" class="btn primary block" type="button">编辑共享</button>
+                <button id="addShare" class="btn primary block" type="button">添加共享</button>
+                <h3 class="share-heading">已共享的目录</h3>
+                <div id="shares" class="shares"></div>
             </section>
 
-            <!-- 编辑共享弹窗：列出数据根目录下的子目录，勾选=添加、取消勾选=移除；
-                 也可以直接手填绝对路径（外接设备在 /nas/mnt 下，如 /nas/mnt/usb/下载） -->
-            <dialog id="dirDialog" class="dialog">
+            <!-- 目录浏览器：位置切换（存储池 / 外接存储）+ 当前完整绝对路径 + 逐层进入 +
+                 「上一级」+「选择此目录」；也可以直接手填绝对路径（如 /nas/mnt/usb/下载） -->
+            <dialog id="browseDialog" class="dialog">
                 <div class="dialog-body">
-                    <h2>编辑共享</h2>
-                    <p id="dirRoot" class="dialog-hint"></p>
-                    <p class="dialog-hint">勾选添加，取消勾选移除</p>
+                    <h2>选择目录</h2>
+                    <div id="browseRoots" class="roots" hidden></div>
+                    <div class="browse-path-row">
+                        <button id="browseUp" class="btn small" type="button"
+                                title="上一级" aria-label="上一级">上一级</button>
+                        <code id="browsePath">—</code>
+                    </div>
+                    <div id="browseList" class="browse-list"></div>
                     <div class="path-row">
-                        <input id="dirPathInput" type="text" inputmode="text" autocomplete="off"
+                        <input id="manualPath" type="text" inputmode="text" autocomplete="off"
                                spellcheck="false" aria-label="共享目录的绝对路径"
                                placeholder="绝对路径，如 /nas/mnt/usb">
-                        <button id="dirPathAdd" class="btn" type="button">添加</button>
+                        <button id="manualAdd" class="btn" type="button">直接添加</button>
                     </div>
                     <p class="dialog-hint">可填 /nas/mnt 下的目录（如 /nas/mnt/usb）</p>
-                    <div id="dirList" class="dir-list"></div>
-                    <p id="dirError" class="dialog-error" role="alert"></p>
+                    <p id="browseError" class="dialog-error" role="alert"></p>
                     <div class="dialog-actions">
-                        <button id="dirCancel" class="btn" type="button">取消</button>
-                        <button id="dirConfirm" class="btn primary" type="button">确定</button>
+                        <button id="browseCancel" class="btn" type="button">取消</button>
+                        <button id="selectFolder" class="btn primary" type="button">选择此目录</button>
                     </div>
                 </div>
             </dialog>

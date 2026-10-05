@@ -2281,6 +2281,166 @@ class BrowseAccountDirsTests(EngineHarness):
         self.assertTrue(item['deletable'])          # 插件自建的：勾选框可以取消
 
 
+class ShareLocationsTests(EngineHarness):
+    """「添加共享」弹窗的位置列表：存储池 + 外接存储（默认 `/nas/mnt`）。"""
+
+    def test_lists_pool_and_external_storage(self):
+        self.build()
+        self.data_dir()
+        with patch.object(engine, 'EXTRA_ROOTS', ('/nas/mnt',)):
+            self.sandbox.makedirs('/nas/mnt/usb')
+            locations = self.engine.share_locations('fw867')
+
+        self.assertEqual([item['index'] for item in locations], [0, 1])
+        self.assertEqual(locations[0]['label'], '存储池')
+        self.assertEqual(locations[0]['path'], NAS_DATA_ROOT)
+        self.assertTrue(locations[0]['exists'])
+        # 弹窗里 /nas/mnt 显示成「外接存储」（比末段名 mnt 易懂）
+        self.assertEqual(locations[1]['label'], '外接存储')
+        self.assertEqual(locations[1]['path'], NAS_MNT_ROOT)
+        self.assertTrue(locations[1]['exists'])
+
+    def test_marks_a_missing_external_root_as_not_present(self):
+        self.build()
+        self.data_dir()
+        with patch.object(engine, 'EXTRA_ROOTS', ('/nas/mnt',)):
+            locations = self.engine.share_locations('fw867')
+        self.assertEqual(locations[1]['path'], NAS_MNT_ROOT)
+        self.assertFalse(locations[1]['exists'])
+        self.assertEqual(self.engine.extra_location_paths(), [NAS_MNT_ROOT])  # 未接入也要列出
+
+    def test_unknown_account_is_rejected(self):
+        self.build()
+        self.data_dir()
+        with self.assertRaises(Error) as caught:
+            self.engine.share_locations('nobody')
+        self.assertIn('没有这个账号', str(caught.exception))
+
+    def test_browse_label_override_only_for_nas_mnt(self):
+        self.assertEqual(engine.browse_location_label('/nas/mnt'), '外接存储')
+        self.assertEqual(engine.browse_location_label('/nas/mnt/usb'), '外接设备')
+        self.assertEqual(engine.browse_location_label('/nas/mnt/pa0'), 'pa0')
+        self.assertEqual(engine.browse_location_label(NAS_DATA_ROOT), '存储池')
+
+
+class BrowseShareDirsTests(EngineHarness):
+    """逐层浏览（`browse_share_dirs`）：一层子目录、跳过隐藏/软链、越界与不存在报错。"""
+
+    def test_lists_one_level_of_directories(self):
+        self.build()
+        self.data_dir()
+        photos = self.data_child('照片')
+        self.data_child('视频')
+        self.data_file('readme.txt')                     # 文件不列
+        self.data_child('.hidden')                       # 隐藏目录不列
+
+        data = self.engine.browse_share_dirs('fw867')
+
+        self.assertTrue(data['ok'])
+        self.assertEqual(data['root'], 0)
+        self.assertEqual(data['path'], '')
+        self.assertEqual(data['absolute'], NAS_DATA_ROOT)
+        self.assertTrue(data['exists'])
+        self.assertEqual([item['name'] for item in data['items']], sorted(['照片', '视频']))
+        by_name = {item['name']: item for item in data['items']}
+        self.assertEqual(by_name['照片']['path'], '照片')                  # 相对路径
+        self.assertEqual(by_name['照片']['absolute'], photos)              # 绝对路径
+        self.assertFalse(by_name['照片']['shared'])
+        self.assertEqual([item['label'] for item in data['locations']][0], '存储池')
+        self.assertNotIn('readme.txt', by_name)
+        self.assertNotIn('.hidden', by_name)
+
+    def test_enters_a_subdirectory_with_a_relative_path(self):
+        self.build()
+        self.data_dir()
+        nested = self.data_child('照片')
+        (self.sandbox.real(nested) / '2024').mkdir()
+        data = self.engine.browse_share_dirs('fw867', 0, '照片')
+        self.assertEqual(data['path'], '照片')
+        self.assertEqual(data['absolute'], nested)
+        self.assertEqual([item['name'] for item in data['items']], ['2024'])
+        self.assertEqual(data['items'][0]['path'], '照片/2024')
+        self.assertEqual(data['items'][0]['absolute'], nested + '/2024')
+
+    def test_marks_already_shared_directories(self):
+        self.build()
+        self.manager()
+        self.drop_list_dirs()
+        target = self.data_child('照片')
+        self.engine.add_share('fw867', target)
+        data = self.engine.browse_share_dirs('fw867')
+        item = next(entry for entry in data['items'] if entry['name'] == '照片')
+        self.assertTrue(item['shared'])
+
+    def test_symlinked_directory_is_skipped(self):
+        self.build()
+        self.data_dir()
+        real = self.data_child('真实目录')
+        made = self.sandbox.symlink(real, NAS_DATA_ROOT + '/软链接')
+        if not made:
+            self.skipTest('当前平台不支持创建符号链接')
+        names = [item['name'] for item in self.engine.browse_share_dirs('fw867')['items']]
+        self.assertIn('真实目录', names)
+        self.assertNotIn('软链接', names)
+
+    def test_rejects_traversal_and_absolute_paths(self):
+        self.build()
+        self.data_dir()
+        self.data_child('照片')
+        for bad in ('..', '../..', '照片/../..', '/etc'):
+            with self.subTest(path=bad), self.assertRaises(Error):
+                self.engine.browse_share_dirs('fw867', 0, bad)
+
+    def test_rejects_missing_and_non_directory_paths(self):
+        self.build()
+        self.data_dir()
+        self.data_child('照片')
+        self.data_file('readme.txt')
+        with self.assertRaises(Error) as caught:
+            self.engine.browse_share_dirs('fw867', 0, '不存在')
+        self.assertIn('目录不存在', str(caught.exception))
+        with self.assertRaises(Error) as caught:
+            self.engine.browse_share_dirs('fw867', 0, 'readme.txt')
+        self.assertIn('不是一个目录', str(caught.exception))
+
+    def test_rejects_an_invalid_location_index(self):
+        self.build()
+        self.data_dir()
+        for bad in ('9', '-1', 'x'):
+            with self.subTest(root=bad), self.assertRaises(Error) as caught:
+                self.engine.browse_share_dirs('fw867', bad)
+            self.assertIn('位置无效', str(caught.exception))
+
+    def test_browses_the_external_storage_location(self):
+        self.build()
+        self.data_dir()
+        with patch.object(engine, 'EXTRA_ROOTS', ('/nas/mnt',)):
+            usb = self.sandbox.makedirs('/nas/mnt/usb')
+            self.sandbox.makedirs('/nas/mnt/usb/下载')
+            (self.sandbox.real('/nas/mnt/usb') / 'readme.txt').write_text(
+                'x', encoding='utf-8')
+            data = self.engine.browse_share_dirs('fw867', 1, 'usb')
+
+        self.assertEqual(data['root'], 1)
+        self.assertEqual(data['absolute'], usb)
+        self.assertEqual([item['name'] for item in data['items']], ['下载'])
+        self.assertEqual(data['items'][0]['absolute'], '/nas/mnt/usb/下载')
+        self.assertEqual(data['locations'][1]['label'], '外接存储')
+
+    def test_browsing_a_missing_location_reports_not_available(self):
+        self.build()
+        self.data_dir()
+        with patch.object(engine, 'EXTRA_ROOTS', ('/nas/mnt',)):
+            with self.assertRaises(Error) as caught:
+                self.engine.browse_share_dirs('fw867', 1, 'usb')
+        self.assertIn('未接入', str(caught.exception))
+        # 位置根本身也不存在：同样给中文原因（不抛未处理的异常）
+        with patch.object(engine, 'EXTRA_ROOTS', ('/nas/mnt',)):
+            with self.assertRaises(Error) as caught:
+                self.engine.browse_share_dirs('fw867', 1)
+        self.assertIn('目录不存在', str(caught.exception))
+
+
 class AddSharesBatchTests(EngineHarness):
     """多目录一次提交：只跑一次 init_config + reload，失败的如实报出来。"""
 

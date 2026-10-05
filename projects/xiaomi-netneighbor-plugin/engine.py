@@ -148,6 +148,8 @@ EXTRA_ROOTS = parse_extra_roots(os.environ.get('EXTRA_ROOTS', '/nas/mnt'))
 #   其余（如 /nas/mnt、/nas/mnt/pa0）取末段目录名。
 POOL_ROOT_PATTERNS = ('/nas/pool0', '/home/*/pool0')
 EXTRA_ROOT_PATTERNS = ('/nas/mnt/usb', '/nas/mnt/usb*', '/mnt/usb-*')
+# 目录浏览器里位置按钮的标题覆盖：`/nas/mnt` → 「外接存储」（末段名 mnt 对用户没意义）
+BROWSE_LABEL_OVERRIDES = {'/nas/mnt': '外接存储'}
 
 # 插件自建共享的命名空间：<账号>_nb_<序号>
 SHARE_PREFIX = '_nb_'
@@ -613,6 +615,36 @@ def location_label(path) -> str:
         if under_pattern(text, pattern):
             return '外接设备'
     return posixpath.basename(text.rstrip('/')) or text
+
+
+def browse_location_label(path) -> str:
+    """目录浏览器里「位置」按钮的文字：`/nas/mnt` 显示成「外接存储」。
+
+    末段名 `mnt` 对用户没意义，所以浏览弹窗里单独覆盖一下；其它路径（含
+    `/nas/mnt/usb` 这类子目录、`/nas/mnt/pa0`）仍然按 `location_label()` 的规则来。
+    """
+    text = posixpath.normpath(str(path or '').strip() or '/')
+    return BROWSE_LABEL_OVERRIDES.get(text) or location_label(text)
+
+
+def relative_pieces(relative) -> list:
+    """把浏览接口的**相对路径**拆成一段段（空段与 `.` 丢掉）。
+
+    `..` 与绝对路径直接拒绝：受管路径是 POSIX 语义，不能用 `Path` 拼
+    （Windows 上会变成反斜杠，白名单比对与子目录名都会错）。
+    """
+    text = str(relative or '').strip()
+    if text.startswith('/'):
+        raise Error('浏览路径要填相对路径（不要以 / 开头）')
+    pieces = []
+    for piece in text.split('/'):
+        piece = piece.strip()
+        if not piece or piece == '.':
+            continue
+        if piece == '..':
+            raise Error('浏览路径里不允许出现 ..')
+        pieces.append(piece)
+    return pieces
 
 
 def within_roots(path: str, roots) -> bool:
@@ -1533,21 +1565,9 @@ class Engine:
         locations = [{'label': location_label(root), 'root': root,
                       'available': True, 'dirs': dirs}]
         present = extra_roots()
-        # 按配置顺序给位置：配置了但当前不存在的也要给出来（弹窗标成「未接入」）；
-        # 通配模式本身不是目录，把它展开出来的真实挂载点补在同一个位置顺序上。
-        candidates: list = []
-        for item in configured_extra_roots():
-            if '*' in item:
-                for entry in present:
-                    if entry not in candidates and root_match(entry, item):
-                        candidates.append(entry)
+        for extra in self.extra_location_paths():
+            if extra == root:                       # 极端配置下与存储池重复的根不重复列
                 continue
-            if item != root and item not in candidates:
-                candidates.append(item)
-        for item in present:                    # 兜底：present 里其它来源的根也别漏
-            if item not in candidates:
-                candidates.append(item)
-        for extra in candidates:
             available = extra in present
             extra_dirs: list = []
             if available:
@@ -1566,6 +1586,106 @@ class Engine:
             })
         return {'ok': True, 'account': account, 'root': root, 'dirs': dirs,
                 'locations': locations}
+
+    # ---- 目录浏览（「添加共享」弹窗，交互与 transmission 插件一致）--------
+    def extra_location_paths(self) -> list:
+        """追加根（外接存储）的展示/浏览顺序。
+
+        通配（`/mnt/usb-*`）展开成当前存在的真实挂载点，位置就在配置顺序上；
+        配置了但当前不存在的（非通配）也保留，弹窗把它标成「未接入」。
+        """
+        present = extra_roots()
+        values: list = []
+        for item in configured_extra_roots():
+            if '*' in item:
+                for entry in present:
+                    if entry not in values and root_match(entry, item):
+                        values.append(entry)
+                continue
+            if item not in values:
+                values.append(item)
+        for entry in present:                   # 兜底：present 里其它来源的根也别漏
+            if entry not in values:
+                values.append(entry)
+        return values
+
+    def share_locations(self, account: str) -> list:
+        """弹窗里的「位置」列表：存储池（账号数据根）+ `EXTRA_ROOTS`（默认外接存储）。
+
+        形如 `{'index': 0, 'label': '存储池', 'path': '/home/u3943892/pool0/data',
+        'exists': True}`；`/nas/mnt` 的标题是「外接存储」（见 browse_location_label），
+        拔盘/不存在时 `exists` 为 False（弹窗标「未接入」并禁用进入）。
+        """
+        account = str(account or '').strip()
+        root = self.account_data_root(account)          # 账号不对时这里抛中文 Error
+        locations = [{'index': 0, 'label': location_label(root), 'path': root,
+                      'exists': bool(path_isdir(root))}]
+        for item in self.extra_location_paths():
+            if item == root:                            # 极端配置下的重复根不重复列
+                continue
+            locations.append({'index': len(locations), 'label': browse_location_label(item),
+                              'path': item, 'exists': bool(path_isdir(item))})
+        return locations
+
+    def browse_share_dirs(self, account: str, root_index=0, relative: str = '') -> dict:
+        """逐层浏览某个「位置」下的子目录（「添加共享」弹窗的后端）。
+
+        - `root_index`：位置序号（见 `share_locations()`），默认 0 = 存储池；
+        - `relative`：相对该位置的路径，空串 = 位置根目录本身；
+        - 只列**一层**子目录，跳过隐藏目录与符号链接；越界（`..`/绝对路径）、
+          位置不存在、目录不存在都抛中文 Error（HTTP 层回 400）。
+
+        返回里同时带上 `locations`，弹窗一次请求就能画出位置切换与当前位置；
+        `path` 是规范化后的相对路径（给「上一级」用），`absolute` 是完整绝对路径。
+        """
+        account = str(account or '').strip()
+        locations = self.share_locations(account)
+        try:
+            index = int(root_index)
+        except (TypeError, ValueError) as error:
+            raise Error('位置无效：%s' % (root_index,)) from error
+        if not 0 <= index < len(locations):
+            raise Error('位置无效：%s' % index)
+        entry = locations[index]
+        base = entry['path']
+        pieces = relative_pieces(relative)
+        clean = '/'.join(pieces)
+        target = posixpath.join(base, *pieces) if pieces else base
+        # 相对路径已经拒绝 `..` 与绝对路径，这里再确认一次结果确实落在这个位置里
+        if not within_roots(target, [base]):
+            raise Error('目录不在这个位置里：%s' % target)
+        if pieces and not entry['exists']:
+            raise Error('这个位置当前不可用（未接入）：%s' % base)
+        if not path_exists(target):
+            raise Error('目录不存在：%s' % target)
+        if not path_isdir(target):
+            raise Error('不是一个目录：%s' % target)
+        known: dict = {}
+        for share in self.account_dir_entries(account):
+            if share.get('missing'):
+                continue
+            path = str(share.get('path', '')).rstrip('/')
+            if path:
+                known.setdefault(path, share)
+        items = []
+        for name in sorted(path_listdir(target), key=lambda item: str(item)):
+            text = str(name)
+            if not text or text.startswith('.'):
+                continue
+            child = posixpath.join(target, text)
+            if path_islink(child):
+                continue                        # 符号链接一律不列（可能是越界的软链）
+            if not path_isdir(child):
+                continue
+            items.append({
+                'name': text,
+                'path': '/'.join([clean, text]) if clean else text,   # 相对路径
+                'absolute': child,                                     # 完整绝对路径
+                'shared': child.rstrip('/') in known,                  # 已经共享过了
+            })
+        return {'ok': True, 'account': account, 'root': index, 'path': clean,
+                'absolute': target, 'exists': bool(entry['exists']),
+                'items': items, 'locations': locations}
 
     # ---- 共享目录：删除 -------------------------------------------------
     def _deletable_share(self, share_name) -> dict:

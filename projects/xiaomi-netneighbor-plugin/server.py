@@ -217,9 +217,19 @@ class Handler(BaseHTTPRequestHandler):
                 self.json_out(200, {'ok': True, 'lines': self.server.engine.recent_log(80)})
                 return
             if path == '/api/dirs':
-                # 弹窗里选目录用：账号数据根目录下的子目录（含是否已共享）
+                # 老接口（保留行为与返回结构）：账号数据根目录下的子目录（含是否已共享）
                 account = (parse_qs(route.query).get('account') or [''])[0]
                 self.json_out(200, self.server.engine.browse_account_dirs(account))
+                return
+            if path == '/api/browse':
+                # 「添加共享」弹窗的目录浏览器（与 transmission 插件同形）：
+                # ?account=<账号>&root=<位置序号>&path=<相对该位置的路径>
+                query = parse_qs(route.query)
+                account = (query.get('account') or [''])[0]
+                root_index = (query.get('root') or ['0'])[0] or '0'
+                relative = (query.get('path') or [''])[0]
+                self.json_out(200, self.server.engine.browse_share_dirs(
+                    account, root_index, relative))
                 return
         except Error as error:
             return self.fail(400, str(error))

@@ -136,27 +136,33 @@ $ net view \\192.168.1.8          # 同一账号下出现两个共享
 | **显式空串**（`EXTRA_ROOTS=`） | **一个都不追加**：`ALLOWED_ROOTS` 就是严格的最终白名单，运维可用它锁死可共享范围 |
 | 设了值 | 冒号分隔追加，支持单层通配（如 `EXTRA_ROOTS=/nas/mnt:/mnt/usb-*`） |
 
-弹窗里除了勾选，还可以直接**手填绝对路径**（如 `/nas/mnt/usb/下载`），与勾选项一起提交；
-服务端照旧校验绝对路径、根白名单、`..` 与符号链接的真实路径。
+「添加共享」弹窗里可以逐层浏览（位置：存储池 / 外接存储），也可以直接**手填绝对路径**
+（如 `/nas/mnt/usb/下载`）；服务端照旧校验绝对路径、根白名单、`..` 与符号链接的真实路径。
 
 ## 四、接口与页面
 
 插件服务监听 `127.0.0.1:18190`，页面经 nginx 走 `/plugin/<用户>/netneighbor/`。
 
-页面只有三块：**网络发现开关 + 主机名**、**共享目录列表（只读）**、**「编辑共享」弹窗**。
-共享的增删都在弹窗里用勾选完成：**勾选＝添加、取消勾选＝移除**（官方 app 建的那条锁死不可取消）；
-弹窗里还能**手填绝对路径**（`/nas/mnt` 下的目录，如 `/nas/mnt/usb`），与勾选项一起提交。
+页面只有三块：**网络发现开关 + 主机名**、**共享目录**、**目录浏览器弹窗**。
+共享目录分上下两块：上部是「添加共享」按钮（打开目录浏览器选目录），下部是**已共享的目录**
+列表（每行：显示名 + 共享名 `<账号>_nb_<序号>` + 完整路径 + 行尾 `-` 删除按钮，删前二次确认；
+官方 app 建的共享照旧显示，但 `-` 置灰并说明原因）。
+
+目录浏览器与 transmission 插件同形：顶部**位置切换**（存储池 / 外接存储）、当前**完整绝对路径**、
+逐层进入子目录、「上一级」、「选择此目录」；也可以直接手填绝对路径（`/nas/mnt` 下的目录，
+如 `/nas/mnt/usb`）。拔盘时该位置显示「未接入」并禁止进入。
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/healthz` | `{"ok": true, "version": "0.1.0"}` |
 | GET | `/api/status` | 设置（开关/主机名）、发现服务状态、账号与共享列表；工作组、XAddrs、官方 wsdd 状态、最近取元数据时间仍在返回里（便于排查），页面不显示 |
 | GET | `/api/log` | 最近日志 |
-| GET | `/api/dirs?account=fw867` | 账号数据根目录下的子目录；每项带 `shared`（是否已共享）、`shareName`/`display` 与 `deletable`（只有插件自建的才为 true），弹窗用它决定锁定哪一项。另有 `locations`：按「位置」分组（存储池 = 账号数据根；外接设备 = `EXTRA_ROOTS`），每项是 `{label, root, available, dirs}`，拔盘时 `available` 为 false（弹窗显示「未接入」） |
+| GET | `/api/browse?account=fw867&root=0&path=照片` | 目录浏览器：`root` 是位置序号（0 = 存储池 = 账号数据根，其余 = `EXTRA_ROOTS`，默认 `/nas/mnt` 显示为「外接存储」），`path` 是**相对该位置**的路径（空 = 位置根目录）。返回 `locations`（`{index,label,path,exists}`）、`path`/`absolute`（当前目录）与 `items`（一层子目录：`{name,path,absolute,shared}`，跳过隐藏目录与符号链接）。越界（`..`/绝对路径）、位置无效、目录不存在都返回 400 + 中文原因 |
+| GET | `/api/dirs?account=fw867` | 老接口（保留行为与结构）：账号数据根目录下的子目录；每项带 `shared`、`shareName`/`display` 与 `deletable`，另有 `locations` 分组（`{label, root, available, dirs}`） |
 | POST | `/api/discovery` | `{"enabled": true\|false}`：开 = 接管官方 wsdd + 起回应器；关 = 发 Bye + 还原官方 wsdd（幂等） |
 | POST | `/api/hostname` | `{"hostname": "..."}`：校验 → 落盘 → 重建回应器并重发 Hello；`{"reset": true}` 为**恢复默认**（清掉落盘值，回到 `/etc/config/samba` 的 `option name`，页面上是「恢复默认」按钮） |
-| POST | `/api/share/add` | `{"account","path","sharePoint"}`（单个，兼容旧版）或 `{"account","paths":[...]}`（多选；所有 `add_dir` 之后只跑一次 `init_config` + reload） |
-| POST | `/api/share/delete` | 删除插件自建的共享：`{"shareName": "<账号>_nb_<序号>"}`（单个，返回结构同旧版）或 `{"shareNames": [...]}`（批量；所有 `del_dir` 之后只跑一次 `init_config` + reload，返回 `removed/verified/errors/initReturncode/reloadReturncode`）。**含受保护共享（`public` 等）时整批拒绝、一条命令都不跑** |
+| POST | `/api/share/add` | `{"account","path","sharePoint"}`（单个，目录浏览器提交的就是**绝对路径**；兼容旧版）或 `{"account","paths":[...]}`（多选；所有 `add_dir` 之后只跑一次 `init_config` + reload） |
+| POST | `/api/share/delete` | 删除插件自建的共享：`{"shareName": "<账号>_nb_<序号>"}`（单个，返回结构同旧版；页面上行尾 `-` 用的就是它）或 `{"shareNames": [...]}`（批量；所有 `del_dir` 之后只跑一次 `init_config` + reload，返回 `removed/verified/errors/initReturncode/reloadReturncode`）。**含受保护共享（`public` 等）时整批拒绝、一条命令都不跑** |
 | POST | `/api/detect/restart` | 重启回应器并重发 Hello（排查用，页面上没有按钮） |
 
 写操作需要会话令牌 + `X-CSRF-Token`（与仓库其它插件一致）。页面由**插件服务**发出
@@ -164,11 +170,14 @@ $ net view \\192.168.1.8          # 同一账号下出现两个共享
 `__CSRF_TOKEN__` / `__PLUGIN_VERSION__` 占位符只有服务端会替换，改成 alias 会让页面拿到
 空令牌、所有接口 401。
 
-前端不写自动化测试，但 `web/app.js` 里引用的每个 id 都要在 `web/index.html` 里存在，
-用脚本核对：
+前端不写浏览器自动化测试，但有两条静态兜底：`web/app.js` 里引用的每个 id 都要在
+`web/index.html` 里存在（`scripts/check_web_ids.py`），关键元素/交互钩子由
+`tests/test_web.py` 断言：
 
 ```bash
 python3 scripts/check_web_ids.py
+node --check web/app.js
+python3 -m unittest tests.test_web -v
 ```
 
 ### 主机名：改的是 Windows「网络」里显示的名字
