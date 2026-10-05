@@ -37,6 +37,13 @@
 
       <section id="aboutView" class="view">
         <div class="about-card">
+          <div class="source-band">
+            <div class="source-icon" aria-hidden="true">K</div>
+            <div class="source-copy"><strong>Kingwell Community</strong><small>内置可信源 · ECDSA P-256</small></div>
+            <span class="source-state">已启用</span>
+          </div>
+        </div>
+        <div class="about-card">
           <div class="about-row">
             <span class="about-label">当前版本</span>
             <span class="about-value" id="localVersion">读取中…</span>
@@ -58,16 +65,6 @@
         </div>
         <div class="about-card">
           <div class="about-row">
-            <span class="about-label">仓库</span>
-            <span class="about-value"><a id="repoLink" href="https://github.com/fw867/xiaomi-nas-plugin-market" target="_blank" rel="noopener">fw867/xiaomi-nas-plugin-market</a></span>
-          </div>
-          <div class="about-row">
-            <span class="about-label">声明</span>
-            <span class="about-value">非小米官方产品</span>
-          </div>
-        </div>
-        <div class="about-card">
-          <div class="about-row">
             <span class="about-label">旧版本</span>
             <span class="about-value">每个插件保留当前与上一版本</span>
           </div>
@@ -77,13 +74,14 @@
           <p class="about-note" id="pruneNote">清理只删本商店安装留下的旧版本目录，不动插件数据。</p>
         </div>
         <div class="about-card">
-          <div class="source-band">
-            <div class="source-icon" aria-hidden="true">K</div>
-            <div class="source-copy"><strong>Kingwell Community</strong><small>内置可信源 · ECDSA P-256</small></div>
-            <span class="source-state">已启用</span>
+          <div class="about-row">
+            <span class="about-label">仓库</span>
+            <span class="about-value"><a id="repoLink" href="https://github.com/fw867/xiaomi-nas-plugin-market" target="_blank" rel="noopener">fw867/xiaomi-nas-plugin-market</a></span>
           </div>
-          <button class="add-source" disabled><span aria-hidden="true">＋</span>添加签名源</button>
-          <p class="source-note">自定义源会在公钥指纹确认流程完成后开放。</p>
+          <div class="about-row">
+            <span class="about-label">声明</span>
+            <span class="about-value">非小米官方产品</span>
+          </div>
         </div>
       </section>
     </main>
@@ -91,7 +89,7 @@
     <nav class="tabbar" aria-label="插件视图">
       <button class="tab active" data-view="featured"><span class="tab-icon" aria-hidden="true">▦</span><span class="tab-label">精选</span></button>
       <button class="tab" data-view="installed"><span class="tab-icon" aria-hidden="true">✓</span><span class="tab-label">已安装</span></button>
-      <button class="tab" data-view="rollback"><span class="tab-icon" aria-hidden="true">↩</span><span class="tab-label">回滚</span></button>
+      <button class="tab" data-view="rollback"><span class="tab-icon" aria-hidden="true">⟲</span><span class="tab-label">回滚</span></button>
       <button class="tab" data-view="about"><span class="tab-icon" aria-hidden="true">ⓘ</span><span class="tab-label">关于</span></button>
     </nav>
 

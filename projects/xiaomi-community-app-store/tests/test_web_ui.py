@@ -35,7 +35,9 @@ class TabbarTests(unittest.TestCase):
         self.assertIn('<span class="tab-label">回滚</span>', text)
         self.assertIn('class="tab-icon"', text)
         self.assertNotIn('☁', text)
-        self.assertIn('↩', text)
+        # 换掉偏细偏小的 ↩，用光学大小更接近 ▦/✓/ⓘ 的 ⟲（U+27F2）
+        self.assertNotIn('↩', text)
+        self.assertIn('<span class="tab-icon" aria-hidden="true">⟲</span>', text)
 
     def test_sources_tab_and_view_are_gone(self) -> None:
         self.assertNotIn("sourcesView", INDEX)
@@ -79,18 +81,35 @@ class RollbackFrontendTests(unittest.TestCase):
 class AboutViewTests(unittest.TestCase):
     def setUp(self) -> None:
         self.about = section("aboutView")
+        self.cards = re.findall(r'<div class="about-card">.*?\n        </div>', self.about, re.S)
 
-    def test_former_sources_content_lives_in_about(self) -> None:
-        for text in (
-            "Kingwell Community",
-            "内置可信源 · ECDSA P-256",
-            "已启用",
-            "添加签名源",
-            "自定义源会在公钥指纹确认流程完成后开放。",
-        ):
-            self.assertIn(text, self.about, text)
-        # 原有信息没被删掉：禁用按钮依然是禁用的
-        self.assertIn('class="add-source" disabled', self.about)
+    def test_trusted_source_card_is_first(self) -> None:
+        self.assertEqual(4, len(self.cards), self.cards)
+        first = self.cards[0]
+        for text in ("Kingwell Community", "内置可信源 · ECDSA P-256", "已启用"):
+            self.assertIn(text, first, text)
+        self.assertIn('class="source-band"', first)
+
+    def test_add_source_button_and_note_are_removed(self) -> None:
+        """按用户要求删掉禁用的「添加签名源」按钮与下面那句说明。"""
+        self.assertNotIn("添加签名源", INDEX)
+        self.assertNotIn("自定义源会在公钥指纹确认流程完成后开放", INDEX)
+        self.assertNotIn("add-source", INDEX)
+        self.assertNotIn("source-note", INDEX)
+        # 样式里也不再留这两条的孤儿规则
+        self.assertNotIn(".add-source", STYLES)
+        self.assertNotIn(".source-note", STYLES)
+
+    def test_card_order_source_update_prune_repo(self) -> None:
+        """可信源在最上面；清理卡片紧跟更新卡片；仓库/声明在最后。"""
+        self.assertIn("当前版本", self.cards[1])
+        self.assertIn('id="pruneButton"', self.cards[2])
+        self.assertIn("旧版本", self.cards[2])
+        self.assertIn("仓库", self.cards[3])
+        self.assertIn("声明", self.cards[3])
+        # 更新卡片后面必须直接是清理卡片（两者相邻且顺序固定）
+        self.assertLess(self.about.index('id="checkUpdateButton"'), self.about.index('id="pruneButton"'))
+        self.assertLess(self.about.index('id="pruneButton"'), self.about.index('id="repoLink"'))
 
     def test_prune_button_in_about(self) -> None:
         self.assertIn('id="pruneButton"', self.about)
@@ -104,9 +123,33 @@ class AboutViewTests(unittest.TestCase):
         self.assertIn("项失败", SCRIPT)
 
     def test_sources_styles_are_reused_not_orphaned(self) -> None:
-        for rule in (".source-band {", ".source-icon {", ".source-copy {", ".source-state {", ".source-note {"):
+        for rule in (".source-band {", ".source-icon {", ".source-copy {", ".source-state {"):
             self.assertIn(rule, STYLES, rule)
         self.assertIn(".about-card .source-band", STYLES)
+
+
+class TabConsistencyTests(unittest.TestCase):
+    """四个 tab 必须共用同一套 class/尺寸，不能只给回滚 tab 单独写样式。"""
+
+    def test_tabs_share_the_same_markup(self) -> None:
+        tabs = re.findall(r'<button class="([^"]*)" data-view="([^"]+)">(.*?)</button>', INDEX, re.S)
+        self.assertEqual(4, len(tabs))
+        self.assertEqual(
+            [("tab", "featured"), ("tab", "installed"), ("tab", "rollback"), ("tab", "about")],
+            [(classes.replace(" active", ""), view) for classes, view, _ in tabs],
+        )
+        for _, _, body in tabs:
+            self.assertRegex(
+                body.strip(),
+                r'^<span class="tab-icon" aria-hidden="true">.</span><span class="tab-label">.+</span>$',
+            )
+
+    def test_no_per_tab_size_overrides(self) -> None:
+        # 只允许一个 .tabbar .tab-icon 规则，且没有任何针对回滚 tab 的单独尺寸
+        self.assertEqual(1, len(re.findall(r'\.tabbar \.tab-icon \{', STYLES)))
+        self.assertNotIn('data-view="rollback"', STYLES)
+        self.assertNotIn("tab-icon.rollback", STYLES)
+        self.assertNotIn("font-size: 19px", INDEX)
 
 
 if __name__ == "__main__":
