@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 import secrets
@@ -19,6 +20,7 @@ from pathlib import Path
 VERSION = '0.1.0'
 BUNDLE_NAME = 'fwclient-linux-arm64'
 PLUGIN_PORT = 18180
+LOG = logging.getLogger('fwclient-plugin')
 
 
 class Error(RuntimeError):
@@ -253,27 +255,100 @@ class Engine:
             time.sleep(0.25)
         raise Error('fwclient 已发出启动命令，但进程未就绪；请查看 fwclient.log')
 
-    def stop(self, remember=True):
-        if self.dev:
-            raise Error('预览模式不会停止穿透客户端')
-        pids = self.find_pids()
-        for pid in pids:
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except OSError:
-                continue
-        for _ in range(20):
+    # 停止流程的轮询节奏与等待预算：沿用旧实现（20 × 0.15s ≈ 3s）
+    STOP_POLL_ROUNDS = 20
+    STOP_POLL_INTERVAL = 0.15
+    # `fwclient -k` 与能力探测 `fwclient -h` 的最长执行时间，避免卡住拖住停止流程
+    SHUTDOWN_TIMEOUT = 10
+    PROBE_TIMEOUT = 5
+
+    def supports_shutdown_command(self):
+        """用本地 `fwclient -h` 探测是否支持规范关闭 `-k`。
+
+        只跑本地帮助，不联网、不触发版本检查或自动升级；
+        返回 True（帮助里列出 -k）/ False（帮助里没有 -k，明确不支持）/
+        None（探测失败或没有输出，无法判断）。
+        """
+        try:
+            _, output = self.run_cli('-h', timeout=self.PROBE_TIMEOUT)
+        except Error:
+            return None
+        if not output:
+            return None
+        # 匹配独立的 -k 选项，如 "  -k          优雅退出" 或 "  -k, --kill"
+        return bool(re.search(r'(?:^|\s)-k(?=\s|$|,|/|\))', output))
+
+    def shutdown_command(self):
+        """执行规范关闭命令 `fwclient -k`，返回 (是否成功, 失败原因)。
+
+        走 run_cli，因此与 start() 使用同一二进制路径、同一 cwd（插件数据目录），
+        且不传 env，运行身份与环境也一致；`-k` 不需要 `-s/-t` 配置文件参数。
+        """
+        try:
+            code, output = self.run_cli('-k', timeout=self.SHUTDOWN_TIMEOUT)
+        except Error as exc:
+            return False, str(exc)
+        if code != 0:
+            return False, output[:200] or ('fwclient -k 退出码 ' + str(code))
+        return True, ''
+
+    def wait_exit(self, deadline):
+        """按旧节奏轮询等待进程退出；返回截止时间内是否已全部退出。
+
+        判据是「当前没有任何 fwclient 进程」，整个停止流程共用一个截止时间，
+        所以总等待时长不超过旧实现。
+        """
+        while time.monotonic() < deadline:
             if not self.find_pids():
-                break
-            time.sleep(0.15)
-        for pid in self.find_pids():
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except OSError:
-                continue
+                return True
+            time.sleep(self.STOP_POLL_INTERVAL)
+        return not self.find_pids()
+
+    def mark_stopped(self, remember):
+        """停止结束后落盘 enabled=False（remember=False 时只停不记）。"""
         if remember and self.config:
             self.config['enabled'] = False
             atomic_json(self.cfgfile, self.config)
+
+    def stop(self, remember=True):
+        if self.dev:
+            raise Error('预览模式不会停止穿透客户端')
+        note = ''
+        if self.find_pids():
+            # 全流程共用一个等待预算，正常路径耗时与旧实现一致（≤3s）
+            deadline = time.monotonic() + self.STOP_POLL_ROUNDS * self.STOP_POLL_INTERVAL
+            # 一、先廉价探测 `-k` 是否受支持：老二进制遇到未知参数可能不报错、反而再拉起一个实例
+            support = self.supports_shutdown_command()
+            if support is False:
+                # 预期路径：包内老版本还不支持 -k（下次启动会自动升级），只记日志、不占用页面提示条
+                LOG.warning('停止服务：当前 fwclient 不支持 -k（帮助里没有该选项），改用信号终止')
+            else:
+                ok, reason = self.shutdown_command()
+                # 成功判据：当前没有任何 fwclient 进程残留（含 -k 可能多拉起的重复实例）
+                if ok and self.wait_exit(deadline):
+                    self.mark_stopped(remember)
+                    return
+                if ok:
+                    reason = '进程未在等待时间内退出'
+                elif support is None:
+                    reason = '未能确认是否支持 -k：' + reason
+                note = ('fwclient -k 未生效（' + reason + '），已回退到信号终止')[:240]
+                LOG.warning('停止服务：%s', note)
+            # 二、回退到原有信号流程：对所有残留 pid 做 SIGTERM → 轮询 → SIGKILL
+            for pid in self.find_pids():
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except OSError:
+                    continue
+            self.wait_exit(deadline)
+            for pid in self.find_pids():
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    continue
+        self.mark_stopped(remember)
+        if note:
+            self.error = note
 
     def upgrade(self):
         if self.dev:

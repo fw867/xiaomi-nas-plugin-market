@@ -1,6 +1,8 @@
 import http.client
 import json
 import re
+import signal
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -9,6 +11,9 @@ from unittest.mock import patch
 
 from engine import Engine, Error, validate_server, validate_token, installed_version, VERSION
 from server import Server
+
+# Windows 没有 SIGKILL（线上是 Linux）：补一个等效编号，便于本地跑通回退流程
+SIGKILL = getattr(signal, 'SIGKILL', 9)
 
 
 class EngineTests(unittest.TestCase):
@@ -82,6 +87,225 @@ class EngineTests(unittest.TestCase):
             self.engine.launch('start', {})
 
 
+class StopTests(unittest.TestCase):
+    """停止服务优先执行规范关闭命令 `fwclient -k`，不支持或未生效才回退到信号终止。"""
+
+    # 二进制 `-h` 帮助输出：新版列出 -k，包内老版本没有
+    HELP_WITH_K = ('用法:\n  fwclient -s <服务器> -t <令牌> [选项]\n\n选项:\n'
+                   '  -k          优雅退出并等待隧道排空\n  -v          显示版本号\n')
+    HELP_WITHOUT_K = ('用法:\n  fwclient -s <服务器> -t <令牌> [选项]\n\n选项:\n'
+                      '  -s string   服务器域名或 IP\n  -t string   访问令牌\n'
+                      '  -d          以守护进程在后台运行\n  -v          显示版本号\n')
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.data = Path(self.tmp.name) / 'data'
+        runtime = Path(__file__).resolve().parents[1]
+        self.engine = Engine(self.data, runtime)
+        self.engine.config = {
+            'server': 'fw867.com', 'token': 'tk_' + 'f' * 20, 'enabled': True,
+        }
+
+    def fake_run(self, calls, help_output, kill_code=0, kill_output='', on_kill=None):
+        """打桩 subprocess.run：`-h` 返回 help_output（None 表示执行失败），`-k` 返回给定退出码。"""
+
+        def run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            if '-h' in argv:
+                if help_output is None:
+                    raise OSError(8, 'Exec format error')
+                return subprocess.CompletedProcess(argv, 0, help_output, '')
+            if on_kill is not None:
+                on_kill()
+            return subprocess.CompletedProcess(argv, kill_code, kill_output, '')
+
+        return run
+
+    def test_stop_uses_shutdown_command_without_signals(self):
+        """③ 探测到支持 `-k`、`-k` 生效且无残留：不发任何信号。"""
+        running, calls = [4321], []
+        run = self.fake_run(calls, self.HELP_WITH_K, on_kill=running.clear)
+
+        with self.assertNoLogs('fwclient-plugin', level='WARNING'), \
+                patch('engine.Engine.find_pids', side_effect=lambda: list(running)), \
+                patch('engine.subprocess.run', side_effect=run), \
+                patch('engine.os.kill') as kill:
+            self.assertIsNone(self.engine.stop())
+        self.assertFalse(kill.called, '规范关闭成功后不应再发 SIGTERM/SIGKILL')
+        self.assertEqual([argv for argv, _ in calls],
+                         [[str(self.engine.binary), '-h'], [str(self.engine.binary), '-k']])
+        for _, kwargs in calls:
+            self.assertEqual(kwargs['cwd'], str(self.engine.data))
+            self.assertNotIn('env', kwargs)  # 不传 env = 继承当前环境，与 start() 相同
+        self.assertEqual(calls[0][1]['timeout'], Engine.PROBE_TIMEOUT)
+        self.assertEqual(calls[1][1]['timeout'], Engine.SHUTDOWN_TIMEOUT)
+        self.assertEqual(self.engine.error, '')
+        self.assertFalse(self.engine.config['enabled'])
+        self.assertFalse(json.loads(self.engine.cfgfile.read_text(encoding='utf-8'))['enabled'])
+
+    def test_stop_skips_shutdown_command_when_unsupported(self):
+        """① 老二进制（帮助里没有 `-k`）：不调用 -k，直接信号停止且停干净。"""
+        running, calls, killed = [4321], [], []
+        run = self.fake_run(calls, self.HELP_WITHOUT_K)
+
+        def kill(pid, sig):
+            killed.append(sig)
+            if sig == signal.SIGTERM:
+                running.clear()
+
+        with self.assertLogs('fwclient-plugin', level='WARNING') as logs, \
+                patch('engine.Engine.find_pids', side_effect=lambda: list(running)), \
+                patch('engine.subprocess.run', side_effect=run), \
+                patch('engine.os.kill', side_effect=kill):
+            self.engine.stop()
+        self.assertEqual([argv for argv, _ in calls], [[str(self.engine.binary), '-h']])
+        self.assertEqual(killed, [signal.SIGTERM])
+        self.assertEqual(running, [], '回退后不应残留 fwclient 进程')
+        # 预期路径：老版本还不支持 -k，只记日志；页面提示条留给真正异常
+        self.assertEqual(self.engine.error, '')
+        self.assertIn('不支持 -k', logs.output[0])
+        self.assertFalse(self.engine.config['enabled'])
+
+    def test_stop_tries_shutdown_command_when_probe_inconclusive(self):
+        """探测不确定（`-h` 执行失败）：退化成先试 `-k`。"""
+        running, calls = [4321], []
+        run = self.fake_run(calls, None, on_kill=running.clear)
+
+        with patch('engine.Engine.find_pids', side_effect=lambda: list(running)), \
+                patch('engine.subprocess.run', side_effect=run), \
+                patch('engine.os.kill') as kill:
+            self.engine.stop()
+        self.assertFalse(kill.called)
+        self.assertEqual([argv for argv, _ in calls],
+                         [[str(self.engine.binary), '-h'], [str(self.engine.binary), '-k']])
+        self.assertEqual(self.engine.error, '')
+
+    def test_stop_waits_for_shutdown_command_process_to_exit(self):
+        """`-k` 成功、进程稍后才退出：轮询等待即可，仍不发信号。"""
+        remaining, calls = [3], []
+
+        def find():
+            if remaining[0] > 0:
+                remaining[0] -= 1
+                return [4321]
+            return []
+
+        run = self.fake_run(calls, self.HELP_WITH_K)
+
+        with patch.object(Engine, 'STOP_POLL_INTERVAL', 0.001), \
+                patch('engine.Engine.find_pids', side_effect=find), \
+                patch('engine.subprocess.run', side_effect=run), \
+                patch('engine.os.kill') as kill:
+            self.engine.stop()
+        self.assertFalse(kill.called)
+        self.assertEqual(self.engine.error, '')
+
+    def test_stop_falls_back_when_shutdown_command_fails(self):
+        """② `-k` 非 0 退出：如实记录原因并回退到 SIGTERM → SIGKILL。"""
+        running, killed, calls = [4321], [], []
+        run = self.fake_run(calls, self.HELP_WITH_K, kill_code=2,
+                            kill_output='flag provided but not defined: -k')
+
+        def kill(pid, sig):
+            killed.append(sig)
+            if sig == signal.SIGTERM:
+                running.clear()
+
+        with self.assertLogs('fwclient-plugin', level='WARNING') as logs, \
+                patch('engine.Engine.find_pids', side_effect=lambda: list(running)), \
+                patch('engine.subprocess.run', side_effect=run), \
+                patch('engine.os.kill', side_effect=kill):
+            self.engine.stop()
+        self.assertEqual([argv for argv, _ in calls],
+                         [[str(self.engine.binary), '-h'], [str(self.engine.binary), '-k']])
+        self.assertEqual(killed, [signal.SIGTERM])
+        self.assertIn('flag provided but not defined', self.engine.error)
+        self.assertIn('fwclient -k 未生效', logs.output[0])
+        self.assertFalse(self.engine.config['enabled'])
+
+    def test_stop_falls_back_when_shutdown_command_cannot_run(self):
+        """② `-k` 抛异常（二进制不存在/执行失败）：记录原因后仍能停掉进程。"""
+        running, killed, calls = [4321], [], []
+
+        def run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            if '-h' in argv:
+                return subprocess.CompletedProcess(argv, 0, self.HELP_WITH_K, '')
+            raise FileNotFoundError(2, 'No such file or directory')
+
+        def kill(pid, sig):
+            killed.append(sig)
+            if sig == signal.SIGTERM:
+                running.clear()
+
+        with self.assertLogs('fwclient-plugin', level='WARNING') as logs, \
+                patch('engine.Engine.find_pids', side_effect=lambda: list(running)), \
+                patch('engine.subprocess.run', side_effect=run), \
+                patch('engine.os.kill', side_effect=kill):
+            self.engine.stop()
+        self.assertEqual(killed, [signal.SIGTERM])
+        self.assertIn('fwclient 执行失败或超时', self.engine.error)
+        self.assertIn('fwclient 执行失败或超时', logs.output[0])
+
+    def test_stop_falls_back_when_processes_survive_shutdown_command(self):
+        """②③ `-k` 返回 0 但仍有 fwclient 进程（含被多拉起的重复实例）：全部清掉。"""
+        pids, killed, calls, polls = [4321], [], [], []
+
+        def find():
+            polls.append(1)
+            return list(pids)
+
+        def run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            if '-h' in argv:
+                return subprocess.CompletedProcess(argv, 0, self.HELP_WITH_K, '')
+            # 模拟老二进制遇到未知参数：不报错，反而又拉起一个实例，且都赖着不退
+            pids.append(8765)
+            return subprocess.CompletedProcess(argv, 0, '', '')
+
+        def kill(pid, sig):
+            killed.append((pid, sig))
+            if sig == SIGKILL and pid in pids:
+                pids.remove(pid)
+
+        with self.assertLogs('fwclient-plugin', level='WARNING') as logs, \
+                patch.object(signal, 'SIGKILL', SIGKILL, create=True), \
+                patch.object(Engine, 'STOP_POLL_INTERVAL', 0.01), \
+                patch('engine.Engine.find_pids', side_effect=find), \
+                patch('engine.subprocess.run', side_effect=run), \
+                patch('engine.os.kill', side_effect=kill):
+            self.engine.stop()
+        self.assertEqual(killed, [(4321, signal.SIGTERM), (8765, signal.SIGTERM),
+                                  (4321, SIGKILL), (8765, SIGKILL)])
+        self.assertEqual(pids, [], '回退必须清掉所有 fwclient 进程')
+        self.assertGreater(len(polls), 5, '回退前应按现有节奏轮询等待超时')
+        self.assertIn('进程未在等待时间内退出', self.engine.error)
+        self.assertIn('已回退到信号终止', logs.output[0])
+        self.assertFalse(self.engine.config['enabled'])
+
+    def test_stop_without_process_is_unchanged(self):
+        """④ 未在运行：不探测、不执行 -k、不发信号、不报错，返回结构与 remember 语义不变。"""
+        with patch('engine.Engine.find_pids', return_value=[]), \
+                patch('engine.subprocess.run') as run, \
+                patch('engine.os.kill') as kill:
+            self.assertIsNone(self.engine.stop())
+        self.assertFalse(run.called, '进程未运行时不必探测或执行 -k')
+        self.assertFalse(kill.called)
+        self.assertEqual(self.engine.error, '')
+        self.assertFalse(self.engine.config['enabled'])
+
+    def test_stop_without_process_keeps_config_when_not_remembering(self):
+        """④ remember=False 时只停不记：不动 enabled。"""
+        with patch('engine.Engine.find_pids', return_value=[]), \
+                patch('engine.subprocess.run') as run, \
+                patch('engine.os.kill') as kill:
+            self.engine.stop(remember=False)
+        self.assertFalse(run.called)
+        self.assertFalse(kill.called)
+        self.assertTrue(self.engine.config['enabled'])
+
+
 class HTTPTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -152,7 +376,8 @@ class UiTests(unittest.TestCase):
     def test_relative_api(self):
         script = (self.web / 'app.js').read_text(encoding='utf-8')
         self.assertNotIn("'/api", script)
-        self.assertIn("fetch('api' + path", script)
+        # 以 script 自身 URL 为基址拼相对路径（Windows 客户端下 location 可能带盘符）
+        self.assertIn("fetch(assetUrl('api' + path", script)
 
 
 if __name__ == '__main__':
