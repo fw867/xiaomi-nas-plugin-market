@@ -42,12 +42,18 @@ ALLOWED_DOWNLOAD_HOSTS = frozenset(
 )
 _URL_SCHEME = re.compile(r"^https?://", re.I)
 
-# 本商店自身的插件 key：既不允许回滚，也不参与旧版本清理（它有自己的 self-update 目录规则）
+# 本商店自身的插件 key：不允许回滚；它有自己的 self-update 目录规则，但旧版本照样清理
 STORE_PLUGIN_ID = "communitystore"
 # install() 生成的版本目录名：<版本>-<unix 时间戳>-<pid>
 RELEASE_DIR_PATTERN = re.compile(r"^(?P<version>.+)-(?P<stamp>\d{9,})-(?P<pid>\d+)$")
-# 每个插件默认保留「当前版本 + 上一版本」
+# self_update_store() 生成的商店自身版本目录名：<版本>-self-<unix 时间戳>
+SELF_RELEASE_DIR_PATTERN = re.compile(r"^(?P<version>.+)-self-(?P<stamp>\d{9,})$")
+# 注册表备份文件名：<...>.list*.bak（在用的 <用户>.list 绝不在内）
+REGISTRY_BACKUP_SUFFIX = ".bak"
+REGISTRY_BACKUP_MARKER = ".list"
+# 每个插件默认保留「当前版本 + 上一版本」；每个注册表前缀默认只留最新 1 个备份
 DEFAULT_KEEP_RELEASES = 2
+DEFAULT_KEEP_REGISTRY_BACKUPS = 1
 
 # Default GitHub source for apps.json and app bundles.
 # Override via environment: XIAOMI_STORE_REPO=owner/name  XIAOMI_STORE_BRANCH=main
@@ -576,18 +582,27 @@ def _log(message: str) -> None:
 
 
 def release_name_parts(directory_name: str) -> tuple[str, int, int] | None:
-    """解析 install() 生成的版本目录名。
+    """解析本商店创建的版本目录名。
 
-    目录名形如 `<版本>-<unix 时间戳>-<pid>`，返回 (版本, 时间戳, pid)；
-    不符合该规则的历史遗留目录返回 None（调用方只跳过、不删）。
+    两种命名都算「本商店创建」：
+      * install() 安装插件：`<版本>-<unix 时间戳>-<pid>`
+      * self_update_store() 更新商店自身：`<版本>-self-<unix 时间戳>`
+    返回 (版本, 时间戳, pid)，商店自身的目录 pid 记为 0；
+    其它命名（`v0.1.0-*`、`local-*`、`bundles` 等历史遗留）返回 None，调用方只跳过、不删。
     """
     match = RELEASE_DIR_PATTERN.fullmatch(directory_name)
-    if match is None:
-        return None
-    version = match.group("version")
-    if not VERSION_PATTERN.fullmatch(version):
-        return None
-    return version, int(match.group("stamp")), int(match.group("pid"))
+    if match is not None:
+        version = match.group("version")
+        if not VERSION_PATTERN.fullmatch(version):
+            return None
+        return version, int(match.group("stamp")), int(match.group("pid"))
+    match = SELF_RELEASE_DIR_PATTERN.fullmatch(directory_name)
+    if match is not None:
+        version = match.group("version")
+        if not VERSION_PATTERN.fullmatch(version):
+            return None
+        return version, int(match.group("stamp")), 0
+    return None
 
 
 def release_version(directory_name: str) -> str | None:
@@ -605,6 +620,14 @@ def _release_sort_key(release_dir: Path) -> tuple[int, float, str]:
     except OSError:
         modified = 0.0
     return (stamp, modified, release_dir.name)
+
+
+def _backup_sort_key(path: Path) -> tuple[float, str]:
+    """注册表备份「最新优先」排序键：mtime > 名字。"""
+    try:
+        return (path.stat().st_mtime, path.name)
+    except OSError:
+        return (0.0, path.name)
 
 
 def current_release_target(release_root: Path) -> Path | None:
@@ -1066,12 +1089,14 @@ class InstallManager:
                     subprocess.run(["systemctl", "restart", manifest["service"]], check=False)
                     subprocess.run(["systemctl", "reload", "nginx"], check=False)
                 raise
-            # 安装成功、current 已切换后才清理旧版本；清理失败只记日志，不影响安装结果
+            # 安装成功、current 已切换后才清理旧版本；清理失败只记日志，不影响安装结果。
+            # prune 是本次安装插件的旧版本；cleanup 是商店自身旧版本与注册表备份。
             return {
                 "ok": True,
                 "id": manifest["id"],
                 "version": manifest["version"],
                 "prune": self._prune_after_install(manifest),
+                "cleanup": self._prune_shared_after_install(),
             }
         finally:
             shutil.rmtree(staging_root, ignore_errors=True)
@@ -1181,16 +1206,22 @@ class InstallManager:
                 "freedBytes": 0,
             }
 
-    def prune_releases(self, package_id: str, keep: int = DEFAULT_KEEP_RELEASES) -> dict[str, Any]:
-        """清理旧版本目录：永远保留 current 指向的版本，再保留最新 keep-1 个。
+    def _prune_shared_after_install(self) -> dict[str, Any]:
+        """安装成功后的全局清理：商店自身旧版本 + 注册表备份（失败只记日志）。"""
+        shared: dict[str, Any] = {"store": None, "registryBackups": None}
+        workers = (("store", self.prune_store_releases), ("registryBackups", self.prune_registry_backups))
+        for key, worker in workers:
+            try:
+                shared[key] = worker()
+            except Exception as error:  # noqa: BLE001 清理失败不能影响安装结果
+                _log(f"{key} 清理失败：{error}")
+                shared[key] = {"removed": [], "kept": [], "errors": [str(error)], "freedBytes": 0}
+        return shared
 
-        只在 `<releaseRoot>/releases/` 内操作，沿用 uninstall() 那套
-        `relative_to(releases_root)` 包含校验；只删本商店按
-        `<版本>-<时间戳>-<pid>` 规则创建的目录，名字不符合的遗留目录跳过并记日志。
-        单个目录删除失败只记日志并继续；除入参/状态错误外不向外抛异常。
-        """
-        if keep < 1:
-            raise StoreError("keep 至少要保留 1 个版本")
+    def _prune_releases_at(
+        self, package_id: str, release_root: Path, releases_root: Path, keep: int
+    ) -> dict[str, Any]:
+        """清理某个 release 根目录下的旧版本（插件与商店自身共用这一套）。"""
         result: dict[str, Any] = {
             "packageId": package_id,
             "removed": [],
@@ -1199,7 +1230,12 @@ class InstallManager:
             "errors": [],
             "freedBytes": 0,
         }
-        _, release_root, releases_root = self._managed_release_root(package_id, action="清理")
+        try:
+            releases_root.relative_to(Path(release_root).resolve())
+        except ValueError:
+            result["errors"].append("版本目录不在 release 根目录内")
+            _log(f"拒绝清理 release 根目录之外的路径：{releases_root}")
+            return result
         if not releases_root.is_dir():
             return result
 
@@ -1256,14 +1292,111 @@ class InstallManager:
             _log(f"已清理旧版本：{entry.name}")
         return result
 
+    def prune_releases(self, package_id: str, keep: int = DEFAULT_KEEP_RELEASES) -> dict[str, Any]:
+        """清理插件旧版本目录：永远保留 current 指向的版本，再保留最新 keep-1 个。
+
+        只在 `<releaseRoot>/releases/` 内操作，沿用 uninstall() 那套
+        `relative_to(releases_root)` 包含校验；只删本商店按
+        `<版本>-<时间戳>-<pid>` / `<版本>-self-<时间戳>` 规则创建的目录，
+        名字不符合的遗留目录跳过并记日志。
+        单个目录删除失败只记日志并继续；除入参/状态错误外不向外抛异常。
+        """
+        if keep < 1:
+            raise StoreError("keep 至少要保留 1 个版本")
+        _, release_root, releases_root = self._managed_release_root(package_id, action="清理")
+        return self._prune_releases_at(package_id, release_root, releases_root, keep)
+
+    def prune_store_releases(self, keep: int = DEFAULT_KEEP_RELEASES) -> dict[str, Any]:
+        """清理商店自身的旧版本目录（`/data/plugin/community-store/releases`）。
+
+        self_update_store() 生成的目录名是 `<版本>-self-<时间戳>`，与插件的
+        `<版本>-<时间戳>-<pid>` 同属「本商店创建的目录」，规则同样是
+        「current + 上一版」，其它命名只 skipped。
+        """
+        if keep < 1:
+            raise StoreError("keep 至少要保留 1 个版本")
+        store_root = self.state_dir.parent
+        releases_root = (store_root / "releases").resolve()
+        return self._prune_releases_at(STORE_PLUGIN_ID, store_root, releases_root, keep)
+
+    def _registry_backup_candidates(self) -> list[Path]:
+        """注册表目录下形如 `<...>.list*.bak` 的普通文件。
+
+        在用的 `<用户>.list`（不含 .bak）永远不在候选里；软链与目录也不收。
+        """
+        registry_dir = self._registry_path().parent
+        if not registry_dir.is_dir():
+            return []
+        candidates: list[Path] = []
+        for entry in sorted(registry_dir.iterdir(), key=lambda item: item.name):
+            name = entry.name
+            if REGISTRY_BACKUP_MARKER not in name or not name.endswith(REGISTRY_BACKUP_SUFFIX):
+                continue
+            if entry.is_symlink() or not entry.is_file():
+                continue
+            candidates.append(entry)
+        return candidates
+
+    def prune_registry_backups(self, keep: int = DEFAULT_KEEP_REGISTRY_BACKUPS) -> dict[str, Any]:
+        """清理注册表备份：每个 `<用户>.list` 前缀只保留最新 keep 个（默认 1）。
+
+        只删 `<...>.list*.bak` 普通文件，且删除前校验路径确实在注册表目录
+        （`/data/plugin`）下；在用的 `*.list`、非 .bak 文件一律不动。
+        单个删除失败只记 errors 并继续。
+        """
+        if keep < 1:
+            raise StoreError("keep 至少要保留 1 个备份")
+        result: dict[str, Any] = {"removed": [], "kept": [], "errors": [], "freedBytes": 0}
+        registry_dir = self._registry_path().parent.resolve()
+        groups: dict[str, list[Path]] = {}
+        for entry in self._registry_backup_candidates():
+            # 兜底再校验一次命名：只收 `<...>.list*.bak`，在用的 .list 绝不入组
+            marker = entry.name.find(REGISTRY_BACKUP_MARKER)
+            if marker < 0 or not entry.name.endswith(REGISTRY_BACKUP_SUFFIX):
+                continue
+            groups.setdefault(entry.name[: marker + len(REGISTRY_BACKUP_MARKER)], []).append(entry)
+
+        for prefix in sorted(groups):
+            entries = sorted(groups[prefix], key=_backup_sort_key, reverse=True)
+            protected = {entry.name for entry in entries[:keep]}
+            for entry in entries:
+                if entry.name in protected:
+                    result["kept"].append(entry.name)
+                    continue
+                # 删除前的兜底校验：必须在注册表目录下、且是普通文件
+                try:
+                    entry.resolve().relative_to(registry_dir)
+                except ValueError:
+                    result["errors"].append(f"{entry.name}: 路径超出注册表目录")
+                    _log(f"拒绝删除注册表目录之外的路径：{entry}")
+                    continue
+                if entry.is_symlink() or not entry.is_file():
+                    result["errors"].append(f"{entry.name}: 不是普通文件")
+                    _log(f"拒绝删除非普通文件：{entry}")
+                    continue
+                try:
+                    size = entry.stat().st_size
+                    entry.unlink()
+                except OSError as error:
+                    result["errors"].append(f"{entry.name}: {error}")
+                    _log(f"清理注册表备份失败 {entry}：{error}")
+                    continue
+                result["removed"].append(entry.name)
+                result["freedBytes"] += size
+                _log(f"已清理注册表备份：{entry.name}")
+        return result
+
     def prune_all(self, keep: int = DEFAULT_KEEP_RELEASES) -> dict[str, Any]:
-        """对所有由本商店安装的插件各跑一次 prune_releases(keep)。"""
+        """手动清理：所有本商店安装的插件 + 商店自身 + 注册表备份。"""
         summary: dict[str, Any] = {
             "ok": True,
             "removedCount": 0,
             "freedBytes": 0,
             "errors": [],
             "results": {},
+            "registryRemoved": [],
+            "registryKept": [],
+            "registryFreedBytes": 0,
         }
         for package_id in sorted(self.installed()):
             try:
@@ -1276,6 +1409,31 @@ class InstallManager:
             summary["removedCount"] += len(result["removed"])
             summary["freedBytes"] += result["freedBytes"]
             summary["errors"].extend(f"{package_id}: {item}" for item in result["errors"])
+
+        # 商店自身的旧版本目录（<版本>-self-<时间戳>）
+        try:
+            store_result = self.prune_store_releases(keep=keep)
+        except Exception as error:  # noqa: BLE001 商店自身失败不影响其余
+            summary["errors"].append(f"{STORE_PLUGIN_ID}: {error}")
+            _log(f"清理商店自身旧版本失败：{error}")
+        else:
+            summary["results"][STORE_PLUGIN_ID] = store_result
+            summary["removedCount"] += len(store_result["removed"])
+            summary["freedBytes"] += store_result["freedBytes"]
+            summary["errors"].extend(f"{STORE_PLUGIN_ID}: {item}" for item in store_result["errors"])
+
+        # 注册表备份：每个 <用户>.list 前缀只留最新 1 个
+        try:
+            registry_result = self.prune_registry_backups()
+        except Exception as error:  # noqa: BLE001 注册表备份失败不影响其余
+            summary["errors"].append(f"registry: {error}")
+            _log(f"清理注册表备份失败：{error}")
+        else:
+            summary["registryRemoved"] = registry_result["removed"]
+            summary["registryKept"] = registry_result["kept"]
+            summary["registryFreedBytes"] = registry_result["freedBytes"]
+            summary["freedBytes"] += registry_result["freedBytes"]
+            summary["errors"].extend(f"registry: {item}" for item in registry_result["errors"])
         return summary
 
     def rollback(self, package_id: str) -> dict[str, Any]:

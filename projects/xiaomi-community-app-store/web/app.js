@@ -487,7 +487,7 @@ async function rollbackPackage(item, actions) {
   }
 }
 
-// 清理旧版本：后端对所有已安装插件各跑一次 prune_releases(keep=2)
+// 清理旧版本：后端对所有已安装插件 + 商店自身 + 注册表备份跑一次清理（keep=2）
 async function pruneReleases() {
   if (preview) {
     showToast('本地预览不会修改 NAS');
@@ -510,9 +510,16 @@ async function pruneReleases() {
     const payload = await readJson(response);
     if (!response.ok || !payload.ok) throw new Error(payload.error || '清理失败');
     const failures = Array.isArray(payload.errors) ? payload.errors : [];
-    let message = payload.removedCount
-      ? `共清理 ${payload.removedCount} 个旧版本，释放约 ${formatSize(payload.freedBytes)}`
-      : '没有需要清理的旧版本';
+    // registryRemoved 可能是文件名数组（当前）也可能是数字，两种都兼容
+    const asCount = (value) => (Array.isArray(value) ? value.length : Number(value) || 0);
+    const releasedCount = Number(payload.removedCount) || 0;
+    const registryCount = asCount(payload.registryRemoved);
+    const parts = [];
+    if (releasedCount) parts.push(`${releasedCount} 个旧版本`);
+    if (registryCount) parts.push(`${registryCount} 个注册表备份`);
+    let message = parts.length
+      ? `共清理 ${parts.join('、')}，释放约 ${formatSize(payload.freedBytes)}`
+      : '没有需要清理的旧版本或注册表备份';
     if (failures.length) message += `；${failures.length} 项失败：${failures.join('；')}`;
     note.textContent = message;
     showToast(message);

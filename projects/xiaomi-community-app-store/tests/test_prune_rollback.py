@@ -13,6 +13,7 @@ import contextlib
 import hashlib
 import hmac
 import json
+import os
 import shutil
 import tempfile
 import threading
@@ -258,8 +259,13 @@ class PruneReleasesTests(unittest.TestCase):
         self.assertEqual(1, summary["removedCount"])
         self.assertGreater(summary["freedBytes"], 0)
         self.assertEqual([], summary["errors"])
-        self.assertEqual(sorted(["demo", "other"]), sorted(summary["results"]))
+        # 除了两个插件，商店自身（communitystore）也在清理范围内
+        self.assertEqual(["communitystore", "demo", "other"], sorted(summary["results"]))
         self.assertEqual([OLD], summary["results"]["demo"]["removed"])
+        # 注册表备份字段始终存在（这里没有 .bak，所以是空列表）
+        self.assertEqual([], summary["registryRemoved"])
+        self.assertEqual([], summary["registryKept"])
+        self.assertEqual(0, summary["registryFreedBytes"])
 
     def test_prune_all_reports_failures_per_plugin(self) -> None:
         self._make_releases([OLD, MID, NEWEST], current=NEWEST, package_id="demo")
@@ -273,17 +279,282 @@ class PruneReleasesTests(unittest.TestCase):
         self.assertEqual(1, len(summary["errors"]))
         self.assertIn("demo: state 文件损坏", summary["errors"][0])
         self.assertEqual(0, summary["removedCount"])
-        self.assertEqual({}, summary["results"])
+        # 插件失败不影响商店自身那一步
+        self.assertEqual(["communitystore"], sorted(summary["results"]))
 
 
 class ReleaseNameParsingTests(unittest.TestCase):
     def test_release_name_parts(self) -> None:
         self.assertEqual(("1.2.0", 1700000300, 100), release_name_parts(NEWEST))
         self.assertEqual("0.1.0-rc1", release_version("0.1.0-rc1-1700000300-7"))
-        # 历史遗留 / 商店自身的 self-update 目录都不算本商店创建的版本目录
-        for name in ("0.1.0-beta", "0.2.26-self-1791213759", "current", "1.0.0", "bundles"):
+        # 商店自更新的 `<版本>-self-<时间戳>` 也算本商店创建的目录
+        self.assertEqual(("0.2.29", 1791219071, 0), release_name_parts("0.2.29-self-1791219071"))
+        self.assertEqual("0.2.30-rc1", release_version("0.2.30-rc1-self-1791219071"))
+        # 无法识别的命名仍然只 skipped、绝不动
+        for name in (
+            "0.1.0-beta",
+            "v0.1.0-20240101120000",
+            "local-20240101120000",
+            "0.2.26-self-123",
+            "0.2.26-self-abc",
+            "current",
+            "1.0.0",
+            "bundles",
+        ):
             self.assertIsNone(release_name_parts(name), name)
             self.assertIsNone(release_version(name), name)
+
+
+class StoreReleasePruneTests(unittest.TestCase):
+    """商店自身的 `<版本>-self-<时间戳>` 版本目录也要按 keep=2 清理。"""
+
+    OLD_SELF = "0.2.26-self-1700000000"
+    MID_SELF = "0.2.28-self-1700000100"
+    NEW_SELF = "0.2.29-self-1700000200"
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.manager = InstallManager(
+            CATALOG, None, "u_test", root=self.root, execute_system=False, remote_apps=False
+        )
+        self.store_root = self.root / "data/plugin/community-store"
+        self.releases_root = self.store_root / "releases"
+        self.stack = contextlib.ExitStack()
+        self.stack.enter_context(fake_links())
+
+    def tearDown(self) -> None:
+        self.stack.close()
+        self.temporary.cleanup()
+
+    def _make_store_releases(self, names: list[str], *, current: str | None = None) -> None:
+        self.releases_root.mkdir(parents=True, exist_ok=True)
+        for name in names:
+            (self.releases_root / name).mkdir(parents=True, exist_ok=True)
+            (self.releases_root / name / "server.py").write_bytes(b"x" * 256)
+        if current:
+            _set_current(self.store_root, (self.releases_root / current).resolve())
+
+    def test_store_self_releases_keep_current_and_previous(self) -> None:
+        self._make_store_releases([self.OLD_SELF, self.MID_SELF, self.NEW_SELF], current=self.NEW_SELF)
+
+        result = self.manager.prune_store_releases(keep=2)
+
+        self.assertEqual("communitystore", result["packageId"])
+        self.assertEqual([self.NEW_SELF, self.MID_SELF], result["kept"])
+        self.assertEqual([self.OLD_SELF], result["removed"])
+        self.assertGreater(result["freedBytes"], 0)
+        self.assertEqual([], result["errors"])
+        self.assertEqual([], result["skipped"])
+        self.assertFalse((self.releases_root / self.OLD_SELF).exists())
+        self.assertEqual(
+            sorted([self.MID_SELF, self.NEW_SELF]),
+            sorted(item.name for item in self.releases_root.iterdir()),
+        )
+
+    def test_store_prune_never_removes_current(self) -> None:
+        """current 指向最旧的一个时也必须留着它。"""
+        self._make_store_releases([self.OLD_SELF, self.MID_SELF, self.NEW_SELF], current=self.OLD_SELF)
+
+        result = self.manager.prune_store_releases(keep=2)
+
+        self.assertIn(self.OLD_SELF, result["kept"])
+        self.assertNotIn(self.OLD_SELF, result["removed"])
+        self.assertTrue((self.releases_root / self.OLD_SELF).is_dir())
+        self.assertEqual([self.NEW_SELF, self.OLD_SELF], result["kept"])
+        self.assertEqual([self.MID_SELF], result["removed"])
+
+    def test_store_prune_skips_unknown_names(self) -> None:
+        self._make_store_releases([self.OLD_SELF, self.NEW_SELF], current=self.NEW_SELF)
+        unknown = ("v0.1.0-1699999999", "local-20240101120000", "bundles")
+        for name in unknown:
+            (self.releases_root / name).mkdir()
+        (self.releases_root / "notes.txt").write_text("x", encoding="utf-8")
+
+        result = self.manager.prune_store_releases(keep=2)
+
+        self.assertEqual([], result["removed"])
+        self.assertEqual(
+            sorted([*unknown, "notes.txt"]),
+            sorted(result["skipped"]),
+        )
+        for name in (*unknown, "notes.txt"):
+            self.assertTrue((self.releases_root / name).exists(), name)
+
+    def test_prune_all_covers_the_store_itself(self) -> None:
+        """只遍历 installed() 是不够的：商店自身没有 state 清单，也要被清到。"""
+        self.assertEqual({}, self.manager.installed())
+        self._make_store_releases([self.OLD_SELF, self.MID_SELF, self.NEW_SELF], current=self.NEW_SELF)
+
+        summary = self.manager.prune_all(keep=2)
+
+        self.assertTrue(summary["ok"])
+        self.assertEqual(1, summary["removedCount"])
+        self.assertEqual([self.OLD_SELF], summary["results"]["communitystore"]["removed"])
+        self.assertGreater(summary["freedBytes"], 0)
+        self.assertEqual([], summary["errors"])
+        self.assertFalse((self.releases_root / self.OLD_SELF).exists())
+        self.assertTrue((self.releases_root / self.NEW_SELF).is_dir())
+
+
+class RegistryBackupPruneTests(unittest.TestCase):
+    """注册表备份：每个 `<用户>.list` 前缀只留最新 1 个，在用的 .list 一个不动。"""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.manager = InstallManager(
+            CATALOG, None, "u_test", root=self.root, execute_system=False, remote_apps=False
+        )
+        self.plugin_dir = self.root / "data/plugin"
+        self.plugin_dir.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def _touch(self, name: str, *, mtime: float = 1700000000, size: int = 512) -> Path:
+        path = self.plugin_dir / name
+        path.write_bytes(b"b" * size)
+        os.utime(path, (mtime, mtime))
+        return path
+
+    def test_keeps_only_the_newest_backup_per_registry(self) -> None:
+        old = self._touch("u_test.list.before-communitystore-1700000000.bak", mtime=1000)
+        newest = self._touch("u_test.list.before-communitystore-1700000100.bak", mtime=2000)
+        middle = self._touch("u_test.list.rtrcenter.bak", mtime=1500)
+        other_old = self._touch("u_other.list.before-x-1700000000.bak", mtime=1000)
+        other_new = self._touch("u_other.list.before-y-1700000100.bak", mtime=2000)
+
+        result = self.manager.prune_registry_backups()
+
+        self.assertEqual(
+            sorted([
+                "u_test.list.before-communitystore-1700000000.bak",
+                "u_test.list.rtrcenter.bak",
+                "u_other.list.before-x-1700000000.bak",
+            ]),
+            sorted(result["removed"]),
+        )
+        self.assertEqual(
+            sorted([
+                "u_test.list.before-communitystore-1700000100.bak",
+                "u_other.list.before-y-1700000100.bak",
+            ]),
+            sorted(result["kept"]),
+        )
+        self.assertEqual([], result["errors"])
+        self.assertGreater(result["freedBytes"], 0)
+        self.assertTrue(newest.is_file())
+        self.assertTrue(other_new.is_file())
+        for gone in (old, middle, other_old):
+            self.assertFalse(gone.exists(), gone.name)
+
+    def test_active_registry_and_non_backups_are_untouched(self) -> None:
+        actives = [
+            self._touch("u_test.list", mtime=1000),
+            self._touch("server.list", mtime=1000),
+            self._touch("u_other.list", mtime=1000),
+            self._touch("u_test.list.before-x.gz", mtime=1000),
+            self._touch("notes.txt", mtime=1000),
+        ]
+        directory = self.plugin_dir / "weird.list.bak"
+        directory.mkdir()
+
+        result = self.manager.prune_registry_backups()
+
+        self.assertEqual([], result["removed"])
+        self.assertEqual([], result["kept"])
+        self.assertEqual([], result["errors"])
+        self.assertEqual(0, result["freedBytes"])
+        for path in actives:
+            self.assertTrue(path.is_file(), path.name)
+            self.assertEqual(512, path.stat().st_size, path.name)
+        self.assertTrue(directory.is_dir())
+
+    def test_backup_outside_registry_dir_is_rejected(self) -> None:
+        inside = self._touch("u_test.list.before-a-1700000000.bak", mtime=1000)
+        newer = self._touch("u_test.list.before-b-1700000100.bak", mtime=2000)
+        elsewhere = self.root / "elsewhere"
+        elsewhere.mkdir()
+        outside = elsewhere / "u_test.list.before-outside.bak"
+        outside.write_bytes(b"x")
+        os.utime(outside, (500, 500))
+
+        with mock.patch.object(
+            self.manager, "_registry_backup_candidates", return_value=[inside, newer, outside]
+        ):
+            result = self.manager.prune_registry_backups()
+
+        self.assertEqual(["u_test.list.before-a-1700000000.bak"], result["removed"])
+        self.assertEqual(["u_test.list.before-b-1700000100.bak"], result["kept"])
+        self.assertEqual(1, len(result["errors"]))
+        self.assertIn("注册表目录", result["errors"][0])
+        self.assertTrue(outside.is_file())
+        self.assertFalse(inside.exists())
+
+    def test_directory_candidate_is_rejected(self) -> None:
+        real = self._touch("u_test.list.before-a-1700000100.bak", mtime=1000)
+        directory = self.plugin_dir / "u_test.list.dir.bak"
+        directory.mkdir()
+        os.utime(directory, (500, 500))
+
+        with mock.patch.object(
+            self.manager, "_registry_backup_candidates", return_value=[real, directory]
+        ):
+            result = self.manager.prune_registry_backups()
+
+        self.assertEqual([], result["removed"])
+        self.assertEqual([real.name], result["kept"])
+        self.assertEqual(1, len(result["errors"]))
+        self.assertIn("普通文件", result["errors"][0])
+        self.assertTrue(directory.is_dir())
+
+    def test_single_backup_delete_failure_continues(self) -> None:
+        oldest = self._touch("u_test.list.before-a-1700000000.bak", mtime=1000)
+        failing = self._touch("u_test.list.before-b-1700000100.bak", mtime=2000)
+        newest = self._touch("u_test.list.before-c-1700000200.bak", mtime=3000)
+        real_unlink = Path.unlink
+
+        def fake_unlink(self, *args, **kwargs):
+            if self.name == failing.name:
+                raise OSError("拒绝访问")
+            return real_unlink(self, *args, **kwargs)
+
+        with mock.patch.object(Path, "unlink", fake_unlink):
+            result = self.manager.prune_registry_backups()
+
+        self.assertEqual([oldest.name], result["removed"])
+        self.assertEqual([newest.name], result["kept"])
+        self.assertEqual(1, len(result["errors"]))
+        self.assertIn(failing.name, result["errors"][0])
+        self.assertTrue(failing.is_file())
+
+    def test_prune_all_merges_registry_backups(self) -> None:
+        old = self._touch("u_test.list.before-a-1700000000.bak", mtime=1000, size=2048)
+        new = self._touch("u_test.list.before-b-1700000100.bak", mtime=2000, size=1024)
+
+        summary = self.manager.prune_all(keep=2)
+
+        self.assertEqual([old.name], summary["registryRemoved"])
+        self.assertEqual([new.name], summary["registryKept"])
+        self.assertEqual(2048, summary["registryFreedBytes"])
+        self.assertEqual(2048, summary["freedBytes"])
+        self.assertEqual(0, summary["removedCount"])
+        self.assertEqual([], summary["errors"])
+        self.assertTrue(new.is_file())
+
+    def test_prune_all_reports_registry_failures(self) -> None:
+        self._touch("u_test.list.before-a-1700000000.bak", mtime=1000)
+        self._touch("u_test.list.before-b-1700000100.bak", mtime=2000)
+
+        with mock.patch.object(
+            self.manager, "prune_registry_backups", side_effect=StoreError("权限不足")
+        ):
+            summary = self.manager.prune_all(keep=2)
+
+        self.assertEqual(1, len(summary["errors"]))
+        self.assertIn("registry: 权限不足", summary["errors"][0])
+        self.assertEqual([], summary["registryRemoved"])
 
 
 @unittest.skipUnless(SYMLINKS, "本机没有创建软链的权限")
@@ -434,6 +705,44 @@ class InstallPruneIntegrationTests(unittest.TestCase):
         self.assertEqual(["磁盘只读"], result["prune"]["errors"])
         self.assertTrue(self.manager.installed()["demo"]["version"] == "1.0.0")
         self.assertTrue((self.release_root / "current").is_dir())
+
+    def test_install_also_cleans_store_releases_and_registry_backups(self) -> None:
+        """安装成功后的自动清理也要覆盖商店自身旧版本与注册表备份。"""
+        store_root = self.root / "data/plugin/community-store"
+        store_releases = store_root / "releases"
+        store_names = ["0.2.26-self-1700000000", "0.2.28-self-1700000100", "0.2.29-self-1700000200"]
+        for name in store_names:
+            (store_releases / name).mkdir(parents=True)
+            (store_releases / name / "server.py").write_bytes(b"x" * 128)
+        _set_current(store_root, (store_releases / store_names[-1]).resolve())
+        old_backup = self.root / "data/plugin/u_test.list.before-a-1700000000.bak"
+        new_backup = self.root / "data/plugin/u_test.list.before-b-1700000100.bak"
+        for path, mtime in ((old_backup, 1000), (new_backup, 2000)):
+            path.write_bytes(b"b" * 256)
+            os.utime(path, (mtime, mtime))
+
+        self._publish("1.0.0")
+        result = self.manager.install("demo")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual([store_names[0]], result["cleanup"]["store"]["removed"])
+        self.assertEqual([old_backup.name], result["cleanup"]["registryBackups"]["removed"])
+        self.assertTrue(new_backup.is_file())
+        self.assertTrue((self.root / "data/plugin/u_test.list").is_file())
+        self.assertFalse((store_releases / store_names[0]).exists())
+
+    def test_install_survives_shared_cleanup_failure(self) -> None:
+        self._publish("1.0.0")
+        with mock.patch.object(
+            self.manager, "prune_store_releases", side_effect=StoreError("版本目录只读")
+        ), mock.patch.object(
+            self.manager, "prune_registry_backups", side_effect=StoreError("注册表只读")
+        ):
+            result = self.manager.install("demo")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(["版本目录只读"], result["cleanup"]["store"]["errors"])
+        self.assertEqual(["注册表只读"], result["cleanup"]["registryBackups"]["errors"])
 
 
 class RollbackTests(unittest.TestCase):
@@ -687,6 +996,9 @@ class _StubManager:
             "freedBytes": 5 * 1024 * 1024,
             "errors": ["other: 拒绝访问"],
             "results": {},
+            "registryRemoved": ["u_test.list.before-a-1700000000.bak"],
+            "registryKept": ["u_test.list.before-b-1700000100.bak"],
+            "registryFreedBytes": 2048,
         }
 
     def inventory(self):
@@ -766,6 +1078,10 @@ class PruneRollbackHttpTests(unittest.TestCase):
         self.assertEqual(2, payload["removedCount"])
         self.assertEqual(["other: 拒绝访问"], payload["errors"])
         self.assertEqual([("prune_all", 2)], self.manager.calls)
+        # 注册表备份的数量也要出现在返回体里（前端 toast 用）
+        self.assertEqual(["u_test.list.before-a-1700000000.bak"], payload["registryRemoved"])
+        self.assertEqual(["u_test.list.before-b-1700000100.bak"], payload["registryKept"])
+        self.assertEqual(2048, payload["registryFreedBytes"])
 
     def test_prune_endpoint_with_id_prunes_one_plugin(self) -> None:
         status, payload = self.post("/api/prune", {"id": "demo"})

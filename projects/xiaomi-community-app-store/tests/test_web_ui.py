@@ -197,6 +197,22 @@ class AboutViewTests(unittest.TestCase):
         self.assertIn("释放约", SCRIPT)
         self.assertIn("formatSize", SCRIPT)
         self.assertIn("项失败", SCRIPT)
+        # 清理结果里要体现「注册表备份」这一类（toast 与关于页说明都要提到）
+        self.assertIn("注册表备份", SCRIPT)
+        self.assertIn("payload.registryRemoved", SCRIPT)
+        self.assertIn("注册表备份", self.about)
+
+    def test_prune_toast_merges_both_counts(self) -> None:
+        body = SCRIPT.split("async function pruneReleases", 1)[1].split(
+            "document.getElementById('pruneButton').addEventListener", 1
+        )[0]
+        # 旧版本与注册表备份两个数量都要汇总，缺一时不显示那一段
+        self.assertIn("payload.removedCount", body)
+        self.assertIn("payload.registryRemoved", body)
+        self.assertIn("${releasedCount} 个旧版本", body)
+        self.assertIn("${registryCount} 个注册表备份", body)
+        self.assertIn("parts.join('、')", body)
+        self.assertIn("没有需要清理的旧版本或注册表备份", body)
 
     def test_sources_styles_are_reused_not_orphaned(self) -> None:
         for rule in (".source-band {", ".source-icon {", ".source-copy {", ".source-state {"):
