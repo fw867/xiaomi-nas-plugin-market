@@ -42,6 +42,13 @@ ALLOWED_DOWNLOAD_HOSTS = frozenset(
 )
 _URL_SCHEME = re.compile(r"^https?://", re.I)
 
+# 本商店自身的插件 key：既不允许回滚，也不参与旧版本清理（它有自己的 self-update 目录规则）
+STORE_PLUGIN_ID = "communitystore"
+# install() 生成的版本目录名：<版本>-<unix 时间戳>-<pid>
+RELEASE_DIR_PATTERN = re.compile(r"^(?P<version>.+)-(?P<stamp>\d{9,})-(?P<pid>\d+)$")
+# 每个插件默认保留「当前版本 + 上一版本」
+DEFAULT_KEEP_RELEASES = 2
+
 # Default GitHub source for apps.json and app bundles.
 # Override via environment: XIAOMI_STORE_REPO=owner/name  XIAOMI_STORE_BRANCH=main
 DEFAULT_REPO = os.environ.get("XIAOMI_STORE_REPO", "fw867/xiaomi-nas-plugin-market")
@@ -563,6 +570,72 @@ def _write_json_atomic(path: Path, value: Any, mode: int = 0o644) -> None:
     os.chmod(path, mode)
 
 
+def _log(message: str) -> None:
+    """清理类操作的日志：只打印，不抛异常（不能影响安装结果）。"""
+    print(f"[community-store] {message}", flush=True)
+
+
+def release_name_parts(directory_name: str) -> tuple[str, int, int] | None:
+    """解析 install() 生成的版本目录名。
+
+    目录名形如 `<版本>-<unix 时间戳>-<pid>`，返回 (版本, 时间戳, pid)；
+    不符合该规则的历史遗留目录返回 None（调用方只跳过、不删）。
+    """
+    match = RELEASE_DIR_PATTERN.fullmatch(directory_name)
+    if match is None:
+        return None
+    version = match.group("version")
+    if not VERSION_PATTERN.fullmatch(version):
+        return None
+    return version, int(match.group("stamp")), int(match.group("pid"))
+
+
+def release_version(directory_name: str) -> str | None:
+    """版本目录名里的版本号；不是本商店创建的目录返回 None。"""
+    parts = release_name_parts(directory_name)
+    return parts[0] if parts else None
+
+
+def _release_sort_key(release_dir: Path) -> tuple[int, float, str]:
+    """最新优先的排序键：目录名里的时间戳 > mtime > 名字（都是越大越新）。"""
+    parts = release_name_parts(release_dir.name)
+    stamp = parts[1] if parts else 0
+    try:
+        modified = release_dir.stat().st_mtime
+    except OSError:
+        modified = 0.0
+    return (stamp, modified, release_dir.name)
+
+
+def current_release_target(release_root: Path) -> Path | None:
+    """读 `<releaseRoot>/current` 软链指向的版本目录；不是软链时返回 None。"""
+    current = release_root / "current"
+    try:
+        if not current.is_symlink():
+            return None
+        target = Path(os.readlink(current))
+    except OSError:
+        return None
+    if not target.is_absolute():
+        target = current.parent / target
+    try:
+        return target.resolve()
+    except OSError:
+        return target
+
+
+def _directory_size(path: Path) -> int:
+    """目录占用的字节数；读不到的条目按 0 计。"""
+    total = 0
+    for root, _directories, files in os.walk(path):
+        for name in files:
+            try:
+                total += (Path(root) / name).lstat().st_size
+            except OSError:
+                continue
+    return total
+
+
 class InstallManager:
     def __init__(
         self,
@@ -594,7 +667,20 @@ class InstallManager:
         return self.root / absolute.lstrip("/")
 
     def _load_catalog(self) -> dict[str, Any]:
-        """从 GitHub 拉取 apps.json（带本地缓存）。"""
+        """插件清单：显式配置了本地 apps.json 时优先用它，否则从 GitHub 拉取。
+
+        server.py 部署时不传 apps_json，走远程；只有本地/测试场景会显式传，
+        此时本地清单就是调用方指定的来源（读坏了才退回远程）。
+        """
+        if self.apps_json and self.apps_json.is_file():
+            try:
+                document = validate_apps_catalog(
+                    json.loads(self.apps_json.read_text(encoding="utf-8"))
+                )
+                document["_source"] = str(self.apps_json)
+                return document
+            except (OSError, json.JSONDecodeError, StoreError) as error:
+                _log(f"本地 apps.json 不可用（{error}），改用远程清单")
         cache = self.state_dir / "apps-cache.json"
         return load_apps_catalog(cache_path=cache)
 
@@ -829,6 +915,59 @@ class InstallManager:
             time.sleep(0.4)
         raise StoreError(f"Health check failed after {timeout:g}s: {last_error}")
 
+    def _activate_release(
+        self,
+        manifest: dict[str, Any],
+        release: Path,
+        *,
+        ui_target: Path,
+        release_root: Path,
+        registry_path: Path,
+        registry: dict[str, Any] | None = None,
+    ) -> None:
+        """切换 current 并执行安装成功后的收尾步骤。
+
+        install() 与 rollback() 共用同一套步骤：铺 UI → 补齐小米插件规范结构 →
+        原子切换 current 软链 → reload/restart → 写注册表与状态文件。
+        用户数据目录（/data/plugin/<plugin>/data 之类）不在这里，永远不被动。
+        """
+        # release 里另存了一份 UI（/home 下的副本会被 plugincenter 强制卸载清掉）
+        if (release / "ui").is_dir():
+            _copy_path(release / "ui", ui_target)
+        # UI 就位后补齐小米插件规范结构（abstract 覆盖 src/ 下全部文件）
+        self._apply_native_layout(ui_target.parents[1], manifest, release)
+
+        current = release_root / "current"
+        current.parent.mkdir(parents=True, exist_ok=True)
+        temporary_link = current.with_name("current.community-store.tmp")
+        if temporary_link.exists() or temporary_link.is_symlink():
+            temporary_link.unlink()
+        temporary_link.symlink_to(release)
+        if current.exists() and not current.is_symlink() and current.is_dir():
+            shutil.rmtree(current)
+        temporary_link.replace(current)
+
+        self._run(["nginx", "-t"])
+        self._run(["systemctl", "daemon-reload"])
+        self._run(["systemctl", "enable", manifest["service"]])
+        self._run(["systemctl", "restart", manifest["service"]])
+        self._run(["systemctl", "reload", "nginx"])
+        if self.execute_system:
+            health = f"http://127.0.0.1:{manifest['port']}{manifest['healthPath']}"
+            self._wait_for_health(health)
+
+        if registry is None:
+            registry = self._load_registry()
+        registry[manifest["id"]] = self._registry_record(manifest)
+        _write_json_atomic(registry_path, registry)
+        state = {
+            "managed": True,
+            "installedAt": int(time.time()),
+            "manifest": manifest,
+            "release": str(release),
+        }
+        _write_json_atomic(self.state_dir / f"{manifest['id']}.json", state, 0o600)
+
     def install(self, package_id: str) -> dict[str, Any]:
         package = self._package_entry(package_id)
         bundle = self._resolve_artifact(package["bundle"], expected_sha256=package["sha256"])
@@ -886,13 +1025,10 @@ class InstallManager:
             try:
                 _copy_path(staging_root / "runtime", release)
                 self._install_requirements(staging_root, manifest, release)
-                _copy_path(staging_root / "ui", ui_target)
                 # 另存一份 UI 到 release 目录：/home 下的副本会被
                 # plugincenter 的强制卸载清掉，恢复时需要从这里重新拷贝
                 _copy_path(staging_root / "ui", release / "ui")
                 _copy_path(staging_root / "icon", icon_target)
-                # UI 就位后补齐小米插件规范结构（abstract 覆盖 src/ 下全部文件）
-                self._apply_native_layout(ui_target.parents[1], manifest, release)
                 service_text = (staging_root / "config" / manifest["service"]).read_text(encoding="utf-8")
                 service_text = service_text.replace("__NAS_USER_ID__", self.user_id)
                 nginx_text = (staging_root / "config" / manifest["nginx"]).read_text(encoding="utf-8")
@@ -903,34 +1039,16 @@ class InstallManager:
                 nginx_target.write_text(nginx_text, encoding="utf-8")
                 os.chmod(service_target, 0o644)
                 os.chmod(nginx_target, 0o644)
-                current = release_root / "current"
-                current.parent.mkdir(parents=True, exist_ok=True)
-                temporary_link = current.with_name("current.community-store.tmp")
-                if temporary_link.exists() or temporary_link.is_symlink():
-                    temporary_link.unlink()
-                temporary_link.symlink_to(release)
-                if current.exists() and not current.is_symlink() and current.is_dir():
-                    shutil.rmtree(current)
-                temporary_link.replace(current)
-
-                self._run(["nginx", "-t"])
-                self._run(["systemctl", "daemon-reload"])
-                self._run(["systemctl", "enable", manifest["service"]])
-                self._run(["systemctl", "restart", manifest["service"]])
-                self._run(["systemctl", "reload", "nginx"])
-                if self.execute_system:
-                    health = f"http://127.0.0.1:{manifest['port']}{manifest['healthPath']}"
-                    self._wait_for_health(health)
-
-                registry[manifest["id"]] = self._registry_record(manifest)
-                _write_json_atomic(registry_path, registry)
-                state = {
-                    "managed": True,
-                    "installedAt": int(time.time()),
-                    "manifest": manifest,
-                    "release": str(release),
-                }
-                _write_json_atomic(self.state_dir / f"{manifest['id']}.json", state, 0o600)
+                # 切换 current + 收尾（铺 UI / 补原生结构 / 起服务 / 写注册表与状态），
+                # 与 rollback() 共用同一套步骤
+                self._activate_release(
+                    manifest,
+                    release,
+                    ui_target=ui_target,
+                    release_root=release_root,
+                    registry_path=registry_path,
+                    registry=registry,
+                )
             except Exception:
                 for key, target in tracked.items():
                     if target.exists() or target.is_symlink():
@@ -948,7 +1066,13 @@ class InstallManager:
                     subprocess.run(["systemctl", "restart", manifest["service"]], check=False)
                     subprocess.run(["systemctl", "reload", "nginx"], check=False)
                 raise
-            return {"ok": True, "id": manifest["id"], "version": manifest["version"]}
+            # 安装成功、current 已切换后才清理旧版本；清理失败只记日志，不影响安装结果
+            return {
+                "ok": True,
+                "id": manifest["id"],
+                "version": manifest["version"],
+                "prune": self._prune_after_install(manifest),
+            }
         finally:
             shutil.rmtree(staging_root, ignore_errors=True)
 
@@ -991,13 +1115,225 @@ class InstallManager:
         self._run(["systemctl", "reload", "nginx"])
         return {"ok": True, "id": package_id, "dataPreserved": True}
 
-    def installed(self) -> dict[str, str]:
-        result: dict[str, str] = {}
+    # ------------------------------------------------------------------
+    # 旧版本清理 / 回滚
+    # ------------------------------------------------------------------
+
+    def _managed_release_root(self, package_id: str, *, action: str = "管理") -> tuple[dict[str, Any], Path, Path]:
+        """本商店安装的插件的 manifest、release 根目录与 releases 目录。"""
+        state_path = self.state_dir / f"{package_id}.json"
+        if not state_path.is_file():
+            raise StoreError(f"该插件不是由本商店安装的，无法{action}")
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        manifest = validate_manifest(state.get("manifest"))
+        release_root = self._host(manifest["paths"]["releaseRoot"])
+        releases_root = (release_root / "releases").resolve()
+        try:
+            releases_root.relative_to(release_root.resolve())
+        except ValueError as error:
+            raise StoreError("Managed release path is outside the plugin release root") from error
+        return manifest, release_root, releases_root
+
+    def _release_candidates(self, releases_root: Path) -> list[Path]:
+        """releases/ 下由本商店创建的版本目录，最新优先。
+
+        只认名字符合 install() 规则（`<版本>-<时间戳>-<pid>`）的真实目录；
+        历史遗留目录、软链、普通文件都不算，由调用方跳过。
+        """
+        if not releases_root.is_dir():
+            return []
+        candidates: list[Path] = []
+        for entry in releases_root.iterdir():
+            if entry.is_symlink() or not entry.is_dir():
+                continue
+            if release_name_parts(entry.name) is None:
+                continue
+            candidates.append(entry)
+        candidates.sort(key=_release_sort_key, reverse=True)
+        return candidates
+
+    def rollback_info(self, release_root: Path, package_id: str = "") -> dict[str, Any]:
+        """上一版版本号与是否可回滚（只读，不修改任何东西）。"""
+        if package_id == STORE_PLUGIN_ID:
+            return {"previousVersion": None, "canRollback": False}
+        release_root = Path(release_root)
+        releases_root = (release_root / "releases").resolve()
+        current = current_release_target(release_root)
+        current_resolved = current.resolve() if current is not None else None
+        for entry in self._release_candidates(releases_root):
+            if current_resolved is not None and entry.resolve() == current_resolved:
+                continue
+            return {"previousVersion": release_version(entry.name), "canRollback": True}
+        return {"previousVersion": None, "canRollback": False}
+
+    def _prune_after_install(self, manifest: dict[str, Any]) -> dict[str, Any]:
+        """安装成功后的自动清理：无论出什么问题都不改变安装结果。"""
+        try:
+            return self.prune_releases(manifest["id"], keep=DEFAULT_KEEP_RELEASES)
+        except Exception as error:  # noqa: BLE001 清理失败不能影响安装结果
+            _log(f"清理 {manifest['id']} 旧版本失败：{error}")
+            return {
+                "packageId": manifest["id"],
+                "removed": [],
+                "kept": [],
+                "skipped": [],
+                "errors": [str(error)],
+                "freedBytes": 0,
+            }
+
+    def prune_releases(self, package_id: str, keep: int = DEFAULT_KEEP_RELEASES) -> dict[str, Any]:
+        """清理旧版本目录：永远保留 current 指向的版本，再保留最新 keep-1 个。
+
+        只在 `<releaseRoot>/releases/` 内操作，沿用 uninstall() 那套
+        `relative_to(releases_root)` 包含校验；只删本商店按
+        `<版本>-<时间戳>-<pid>` 规则创建的目录，名字不符合的遗留目录跳过并记日志。
+        单个目录删除失败只记日志并继续；除入参/状态错误外不向外抛异常。
+        """
+        if keep < 1:
+            raise StoreError("keep 至少要保留 1 个版本")
+        result: dict[str, Any] = {
+            "packageId": package_id,
+            "removed": [],
+            "kept": [],
+            "skipped": [],
+            "errors": [],
+            "freedBytes": 0,
+        }
+        _, release_root, releases_root = self._managed_release_root(package_id, action="清理")
+        if not releases_root.is_dir():
+            return result
+
+        candidates: list[Path] = []
+        for entry in sorted(releases_root.iterdir(), key=lambda item: item.name):
+            if entry.is_symlink() or not entry.is_dir():
+                result["skipped"].append(entry.name)
+                _log(f"跳过不是目录的条目：{entry}")
+                continue
+            if release_name_parts(entry.name) is None:
+                result["skipped"].append(entry.name)
+                _log(f"跳过非本商店创建的目录（历史遗留，不动它）：{entry}")
+                continue
+            candidates.append(entry)
+        candidates.sort(key=_release_sort_key, reverse=True)
+
+        current = current_release_target(release_root)
+        current_resolved = current.resolve() if current is not None else None
+        protected: set[Path] = set()
+        for entry in candidates:
+            if current_resolved is not None and entry.resolve() == current_resolved:
+                protected.add(entry)
+                break
+        remaining = keep - 1
+        for entry in candidates:
+            if entry in protected:
+                continue
+            if remaining <= 0:
+                break
+            protected.add(entry)
+            remaining -= 1
+
+        for entry in candidates:
+            if entry in protected:
+                result["kept"].append(entry.name)
+                continue
+            # 包含校验：只允许删 releases/ 内的目录（沿用 uninstall() 的写法）
+            resolved = entry.resolve()
+            try:
+                resolved.relative_to(releases_root)
+            except ValueError:
+                result["errors"].append(f"{entry.name}: 路径超出版本目录")
+                _log(f"拒绝删除 releases 目录之外的路径：{resolved}")
+                continue
+            size = _directory_size(entry)
+            try:
+                shutil.rmtree(entry)
+            except OSError as error:
+                result["errors"].append(f"{entry.name}: {error}")
+                _log(f"清理旧版本失败 {entry}：{error}")
+                continue
+            result["removed"].append(entry.name)
+            result["freedBytes"] += size
+            _log(f"已清理旧版本：{entry.name}")
+        return result
+
+    def prune_all(self, keep: int = DEFAULT_KEEP_RELEASES) -> dict[str, Any]:
+        """对所有由本商店安装的插件各跑一次 prune_releases(keep)。"""
+        summary: dict[str, Any] = {
+            "ok": True,
+            "removedCount": 0,
+            "freedBytes": 0,
+            "errors": [],
+            "results": {},
+        }
+        for package_id in sorted(self.installed()):
+            try:
+                result = self.prune_releases(package_id, keep=keep)
+            except Exception as error:  # noqa: BLE001 一个插件失败不影响其余
+                summary["errors"].append(f"{package_id}: {error}")
+                _log(f"清理 {package_id} 旧版本失败：{error}")
+                continue
+            summary["results"][package_id] = result
+            summary["removedCount"] += len(result["removed"])
+            summary["freedBytes"] += result["freedBytes"]
+            summary["errors"].extend(f"{package_id}: {item}" for item in result["errors"])
+        return summary
+
+    def rollback(self, package_id: str) -> dict[str, Any]:
+        """一键回滚到上一版本：只切版本目录 + 与安装相同的收尾步骤。
+
+        不动用户数据（与 install() 一致）；包未安装、没有上一版、回滚商店
+        自身都会报中文错误。
+        """
+        if package_id == STORE_PLUGIN_ID:
+            raise StoreError("插件市场自身不能回滚到旧版本")
+        manifest, release_root, releases_root = self._managed_release_root(package_id, action="回滚")
+        current = current_release_target(release_root)
+        current_resolved = current.resolve() if current is not None else None
+
+        target: Path | None = None
+        for entry in self._release_candidates(releases_root):
+            if current_resolved is not None and entry.resolve() == current_resolved:
+                continue
+            target = entry
+            break
+        if target is None:
+            raise StoreError("没有可回滚的上一版本")
+        version = release_version(target.name)
+        if version is None:
+            raise StoreError("没有可回滚的上一版本")
+
+        # 注册表、状态文件与 INFO 都要写成回滚后的版本
+        rolled_manifest = json.loads(json.dumps(manifest, ensure_ascii=False))
+        rolled_manifest["version"] = version
+        ui_target = self._host(f"/home/{self.user_id}/plugin/{manifest['paths']['uiKey']}/src/ui")
+        self._activate_release(
+            rolled_manifest,
+            target,
+            ui_target=ui_target,
+            release_root=release_root,
+            registry_path=self._registry_path(),
+        )
+        return {
+            "ok": True,
+            "packageId": package_id,
+            "version": version,
+            "previous": str(manifest.get("version", "")),
+        }
+
+    def installed(self) -> dict[str, dict[str, Any]]:
+        """已安装插件：当前版本 + 上一版信息（供页面判断能否回滚）。"""
+        result: dict[str, dict[str, Any]] = {}
         for path in self.state_dir.glob("*.json"):
             try:
                 state = json.loads(path.read_text(encoding="utf-8"))
                 manifest = validate_manifest(state.get("manifest"))
-                result[manifest["id"]] = manifest["version"]
+                release_root = self._host(manifest["paths"]["releaseRoot"])
+                info = self.rollback_info(release_root, manifest["id"])
+                result[manifest["id"]] = {
+                    "version": manifest["version"],
+                    "previousVersion": info["previousVersion"],
+                    "canRollback": info["canRollback"],
+                }
             except Exception:
                 continue
         return result
@@ -1013,8 +1349,8 @@ class InstallManager:
             version = info.get("version")
             if isinstance(version, str) and VERSION_PATTERN.fullmatch(version):
                 result[plugin_id] = {"version": version, "managed": False}
-        for plugin_id, version in self.installed().items():
-            result[plugin_id] = {"version": version, "managed": True}
+        for plugin_id, record in self.installed().items():
+            result[plugin_id] = {"version": record["version"], "managed": True}
         return result
 
 

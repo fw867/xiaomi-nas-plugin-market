@@ -2,6 +2,7 @@ let csrfToken = document.querySelector('meta[name="csrf-token"]').content;
 const sessionToken = document.querySelector('meta[name="session-token"]').content;
 const packageList = document.getElementById('packageList');
 const installedList = document.getElementById('installedList');
+const rollbackList = document.getElementById('rollbackList');
 const toast = document.getElementById('toast');
 let packages = [];
 let preview = false;
@@ -89,6 +90,34 @@ function emptyState(text) {
   return Object.assign(document.createElement('div'), { className: 'empty', textContent: text });
 }
 
+// 回滚视图：列出「当前版本 + 可回滚到的上一版」与本商店管理下的回滚按钮
+function rollbackCard(item) {
+  const article = document.createElement('article');
+  article.className = 'package-item';
+  const copy = document.createElement('div');
+  copy.className = 'package-copy';
+  const name = document.createElement('strong');
+  name.textContent = item.name;
+  const summary = document.createElement('p');
+  summary.textContent = item.summary || '';
+  const version = document.createElement('small');
+  version.textContent = `当前 ${item.installedVersion} · 可回滚到 ${item.previousVersion}`;
+  version.classList.add('has-update');
+  copy.append(name, summary, version);
+  const actions = document.createElement('div');
+  actions.className = 'package-actions';
+  actions.append(makeButton('回滚', '', () => rollbackPackage(item, actions), 'rollback'));
+  article.append(makeIcon(item), copy, actions);
+  return article;
+}
+
+function formatSize(bytes) {
+  const value = Number(bytes) || 0;
+  if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  if (value >= 1024) return `${Math.round(value / 1024)} KB`;
+  return `${value} B`;
+}
+
 // 精选：只展示还没装的插件
 function packageCard(item) {
   const article = document.createElement('article');
@@ -128,6 +157,12 @@ function render() {
   installedList.replaceChildren(...(installed.length
     ? installed.map(installedCard)
     : [emptyState('还没有通过插件市场安装插件')]));
+
+  // 回滚：只列本商店安装、且还留着上一版本的插件
+  const rollbackable = installed.filter(item => item.canRollback);
+  rollbackList.replaceChildren(...(rollbackable.length
+    ? rollbackable.map(rollbackCard)
+    : [emptyState('暂无可回滚的插件；某插件更新过一次后，这里就会保留它的上一版本')]));
 
   const updates = installed.filter(item => item.installedVersion !== item.version).length;
   const parts = [`${available.length} 个可安装`];
@@ -414,6 +449,84 @@ async function mutate(action, item, actions) {
     if (clicked) clicked.textContent = original;
   }
 }
+
+// ---------- 回滚 / 清理旧版本 ----------
+// 回滚只把插件切回上一版本目录，用户数据不动，之后仍可再更新回来
+async function rollbackPackage(item, actions) {
+  if (preview) {
+    showToast('本地预览不会修改 NAS');
+    return;
+  }
+  const confirmed = window.confirm(
+    `回滚「${item.name}」到 ${item.previousVersion}？\n`
+    + '只会把插件切回上一版本，用户数据保留；之后仍可再更新回来。'
+  );
+  if (!confirmed) return;
+  const button = actions.querySelector('button');
+  const original = button ? button.textContent : '';
+  [...actions.querySelectorAll('button')].forEach((node) => { node.disabled = true; });
+  if (button) button.textContent = '回滚中…';
+  try {
+    const response = await fetch(assetUrl('api/rollback'), {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: sessionHeaders({
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': csrfToken || undefined,
+      }),
+      body: JSON.stringify({ id: item.id }),
+    });
+    const payload = await readJson(response);
+    if (!response.ok || !payload.ok) throw new Error(payload.error || '回滚失败');
+    showToast(`${item.name} 已回滚到 ${payload.version}`);
+    await loadCatalog();
+  } catch (error) {
+    showToast(error.message);
+    [...actions.querySelectorAll('button')].forEach((node) => { node.disabled = false; });
+    if (button) button.textContent = original;
+  }
+}
+
+// 清理旧版本：后端对所有已安装插件各跑一次 prune_releases(keep=2)
+async function pruneReleases() {
+  if (preview) {
+    showToast('本地预览不会修改 NAS');
+    return;
+  }
+  const button = document.getElementById('pruneButton');
+  const note = document.getElementById('pruneNote');
+  button.disabled = true;
+  button.textContent = '清理中…';
+  try {
+    const response = await fetch(assetUrl('api/prune'), {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: sessionHeaders({
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': csrfToken || undefined,
+      }),
+      body: '{}',
+    });
+    const payload = await readJson(response);
+    if (!response.ok || !payload.ok) throw new Error(payload.error || '清理失败');
+    const failures = Array.isArray(payload.errors) ? payload.errors : [];
+    let message = payload.removedCount
+      ? `共清理 ${payload.removedCount} 个旧版本，释放约 ${formatSize(payload.freedBytes)}`
+      : '没有需要清理的旧版本';
+    if (failures.length) message += `；${failures.length} 项失败：${failures.join('；')}`;
+    note.textContent = message;
+    showToast(message);
+    await loadCatalog();
+  } catch (error) {
+    note.textContent = error.message;
+    showToast(error.message);
+  } finally {
+    button.disabled = false;
+    button.textContent = '清理旧版本';
+  }
+}
+
+document.getElementById('pruneButton').addEventListener('click', pruneReleases);
 
 document.querySelectorAll('.tab').forEach(tab => {
   tab.addEventListener('click', () => {

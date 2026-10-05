@@ -293,6 +293,9 @@ class StoreHandler(BaseHTTPRequestHandler):
         try:
             catalog = load_apps_catalog(cache_path=CATALOG_CACHE, force_refresh=force_refresh)
             packages = catalog.get("apps", [])
+            manager = self.app.manager
+            inventory = manager.inventory() if manager else {}
+            installed = manager.installed() if manager else {}
             for package in packages:
                 icon = str(package.get("icon", ""))
                 if icon and not icon.startswith("http"):
@@ -301,9 +304,13 @@ class StoreHandler(BaseHTTPRequestHandler):
                     package["iconUrl"] = icon
                 else:
                     package["iconUrl"] = ""
-                inventory = (self.app.manager.inventory() if self.app.manager else {}).get(package["id"], {})
-                package["installedVersion"] = inventory.get("version")
-                package["managed"] = bool(inventory.get("managed"))
+                record = inventory.get(package["id"], {})
+                package["installedVersion"] = record.get("version")
+                package["managed"] = bool(record.get("managed"))
+                # 回滚视图要判断「能不能回滚到上一版」
+                detail = installed.get(package["id"], {})
+                package["previousVersion"] = detail.get("previousVersion")
+                package["canRollback"] = bool(detail.get("canRollback"))
             payload = {
                 "ok": True,
                 "catalog": {"schemaVersion": 2, "packages": packages, "store": catalog.get("store", {})},
@@ -400,7 +407,7 @@ class StoreHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
-        if path not in ("/api/install", "/api/uninstall", "/api/self-update"):
+        if path not in ("/api/install", "/api/uninstall", "/api/rollback", "/api/prune", "/api/self-update"):
             self._json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
             return
         if not self._require_session(write=True):
@@ -423,7 +430,18 @@ class StoreHandler(BaseHTTPRequestHandler):
             if not ACTION_LOCK.acquire(blocking=False):
                 raise StoreError("另一个安装任务正在执行")
             try:
-                result = self.app.manager.install(package_id) if path == "/api/install" else self.app.manager.uninstall(package_id)
+                if path == "/api/install":
+                    result = self.app.manager.install(package_id)
+                elif path == "/api/uninstall":
+                    result = self.app.manager.uninstall(package_id)
+                elif path == "/api/rollback":
+                    result = self.app.manager.rollback(package_id)
+                elif package_id:
+                    result = dict(self.app.manager.prune_releases(package_id))
+                    result.setdefault("ok", True)
+                else:
+                    # 不带 id：对所有已安装插件各清理一次
+                    result = self.app.manager.prune_all()
             finally:
                 ACTION_LOCK.release()
             self._json(HTTPStatus.OK, result)
