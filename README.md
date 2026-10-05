@@ -70,15 +70,15 @@ NAS_USER_ID=u123456 bash -c "$(curl -fsSL https://raw.githubusercontent.com/fw86
 | [115 云备份](projects/xiaomi-115-sync-plugin) | 0.1.6 | 需要自己获批的 115 App ID，再扫码授权 |
 | [阿里云盘备份](projects/xiaomi-aliyundrive-sync-plugin) | 0.1.6 | 需要自己获批的阿里云盘应用，再扫码授权 |
 | [WebDAV 文件桥](projects/xiaomi-webdav-plugin) | 0.2.2-rc5 | 测试版；多账号、多目录授权、远程单向备份 |
-| [qB 下载](projects/xiaomi-qbittorrent-plugin) | 0.1.7 | 磁力/种子下载、限速；需要 Docker |
+| [qB 下载](projects/xiaomi-qbittorrent-plugin) | 0.1.12 | 磁力/种子下载、限速；下载目录可在「存储池 / 外接设备」之间选择，可随时改目录或重新初始化；需要 Docker |
 | [SSH 开关](projects/xiaomi-ssh-control-plugin) | 0.1.4 | 启停 SSH 远程登录，可设开机自启 |
-| [Transmission 下载](projects/xiaomi-transmission-plugin) | 0.1.12 | Docker 版 BT：可设下载/配置/监控目录与 WebUI 账号；端口 9091、51413；需要 Docker |
-| [Emby](projects/xiaomi-emby-plugin) | 0.1.10 | Emby 官方镜像的受限容器；媒体目录读写挂载，端口 8096 对局域网开放；需要 Docker |
+| [Transmission 下载](projects/xiaomi-transmission-plugin) | 0.1.41 | Docker 版 BT：下载/配置/监控目录可在「存储池 / 外接设备」之间选择，可随时改目录（保留种子与数据）或重新初始化（凭据会归档，可恢复）；端口 9091、51413；需要 Docker |
+| [Emby](projects/xiaomi-emby-plugin) | 0.1.17 | Emby 官方镜像的受限容器；媒体目录读写挂载、可在「存储池 / 外接设备」之间选择并可随时改目录或重新初始化，端口 8096 对局域网开放；需要 Docker |
 | [DPanel 容器管理](projects/xiaomi-dpanel-plugin) | 0.1.0 | 轻量 Docker 面板；挂载 docker.sock 与配置目录，端口 8807；需要 Docker |
-| [Jellyfin](projects/xiaomi-jellyfin-plugin) | 0.1.0 | 开源媒体服务器；配置/缓存/媒体持久化，端口 8097；需要 Docker |
+| [Jellyfin](projects/xiaomi-jellyfin-plugin) | 0.1.10 | 开源媒体服务器；媒体/配置持久化、媒体目录可在「存储池 / 外接设备」之间选择并可随时改目录或重新初始化，端口 8097；需要 Docker |
 | [内网穿透](projects/xiaomi-fwclient-plugin) | 0.1.1 | fwclient 隧道；可配服务器/令牌，显示版本并支持升级 |
 | [硬盘休眠](projects/xiaomi-disk-sleep-plugin) | 0.1.0 | 与系统休眠开关联动，自定义休眠时长（官方固定 30 分钟），可查休眠/唤醒日志 |
-| [网络邻居](projects/xiaomi-netneighbor-plugin) | 0.1.0 | 让主机出现在 Windows 资源管理器「网络」里；并支持一个账号挂多个共享目录 |
+| [网络邻居](projects/xiaomi-netneighbor-plugin) | 0.1.5 | 让主机出现在 Windows 资源管理器「网络」里；一个账号可挂多个共享目录，**外接设备（`/nas/mnt` 下，含 U 盘）的文件夹也能共享** |
 | [控制台](projects/xiaomi-nas-console) | 0.1.0 | 电脑端桌面式控制台（硬件、硬盘 SMART、文件、容器、服务与已装插件）；文件可上传/重命名/删除（进回收站），支持右键菜单与复制/移动后台任务；手机端只管开关、端口与令牌 |
 | [Unifi](projects/xiaomi-router-center) | 0.1.1 | 手机 App 里远程打开路由器上的 UniFi SoftCenter（插件中心）：插件在 NAS 上反代、**无需给路由器做端口映射**，客户端 webview 也能用（Vue/Tailwind/Lucide 本地化、GitHub 走 NAS）；左侧中间一个关闭按钮，插件里可改目标地址并保存 AdminToken 自动注入 |
 | 应用商店（本体） | 0.2.21 | 浏览、安装、更新上述插件；见 [xiaomi-community-app-store](projects/xiaomi-community-app-store) |
