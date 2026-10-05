@@ -32,6 +32,9 @@ button { font: inherit; letter-spacing: 0; }
 .topbar-title { text-align: center; font-size: 16px; font-weight: 650; }
 
 .icon-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 36px;
   height: 36px;
   border: 0;
@@ -43,6 +46,9 @@ button { font: inherit; letter-spacing: 0; }
   line-height: 30px;
 }
 .refresh { justify-self: end; font-size: 25px; }
+
+/* 图标统一用内联 SVG：字体无关（Android WebView 缺生僻字形时不会缩小），尺寸跟随 1em */
+.icon-button svg { display: block; width: 1em; height: 1em; }
 
 main { width: min(1120px, calc(100% - 24px)); margin: 0 auto; padding: 12px 0 calc(66px + env(safe-area-inset-bottom)); }
 
@@ -74,7 +80,7 @@ main { width: min(1120px, calc(100% - 24px)); margin: 0 auto; padding: 12px 0 ca
   font-weight: 600;
 }
 .tabbar .tab-icon { font-size: 19px; line-height: 1; }
-/* 图标可以用内联 SVG（字体无关）：尺寸跟 .tab-icon 的 1em 走，块级避免基线把行高顶高 */
+/* 图标统一用内联 SVG：字体无关，尺寸跟 .tab-icon 的 1em 走，块级避免基线把行高顶高 */
 .tabbar .tab-icon svg { display: block; width: 1em; height: 1em; }
 .tabbar .tab.active { color: var(--blue); }
 .tabbar .tab:focus-visible { outline: 2px solid var(--blue); outline-offset: -3px; }

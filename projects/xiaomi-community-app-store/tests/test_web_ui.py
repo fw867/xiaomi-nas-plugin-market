@@ -1,8 +1,8 @@
 """前端静态断言：底部 tab 第 3 个换成「回滚」、来源信息挪进「关于」、
-回滚按钮与二次确认文案、清理旧版本按钮。
+回滚按钮与二次确认文案、清理旧版本按钮，以及「所有图标都是内联 SVG」。
 
 项目没有前端构建链（纯原生 JS），这里只做源码级断言；真实交互另由
-`server.py --dev` + DOM 桩验证。
+`server.py --dev` + DOM 桩验证，渲染尺寸由 Playwright 真渲染量测。
 """
 
 from __future__ import annotations
@@ -17,6 +17,11 @@ INDEX = (PROJECT / "web" / "index.html").read_text(encoding="utf-8")
 SCRIPT = (PROJECT / "web" / "app.js").read_text(encoding="utf-8")
 STYLES = (PROJECT / "web" / "styles.css").read_text(encoding="utf-8")
 
+# 全部改成内联 SVG 后，index.html 里不该再出现的「当图标用的生僻字形」
+BANNED_ICON_GLYPHS = ("▦", "✓", "ⓘ", "⟲", "↩", "↺", "↻", "⤺", "⇦", "⭯", "☁", "‹", "＋")
+# 正文/排版用途，允许保留
+ALLOWED_TEXT_GLYPHS = ("—", "…")
+
 
 def section(view_id: str) -> str:
     match = re.search(rf'<section id="{view_id}".*?</section>', INDEX, re.S)
@@ -25,49 +30,90 @@ def section(view_id: str) -> str:
     return match.group(0)
 
 
+def tab_markup(view: str) -> str:
+    match = re.search(rf'<button class="tab[^"]*" data-view="{view}">.*?</button>', INDEX, re.S)
+    if match is None:
+        raise AssertionError(f"index.html 里找不到 {view} tab")
+    return match.group(0)
+
+
+def icon_button_markup(button_id: str) -> str:
+    match = re.search(rf'<button class="icon-button[^"]*" id="{button_id}".*?</button>', INDEX, re.S)
+    if match is None:
+        raise AssertionError(f"index.html 里找不到 {button_id}")
+    return match.group(0)
+
+
+def all_svgs() -> list[str]:
+    return re.findall(r"<svg .*?</svg>", INDEX, re.S)
+
+
 class TabbarTests(unittest.TestCase):
     def test_third_tab_is_rollback(self) -> None:
         views = re.findall(r'<button class="tab[^"]*" data-view="([^"]+)"', INDEX)
         self.assertEqual(["featured", "installed", "rollback", "about"], views)
-        tab = re.search(r'<button class="tab[^"]*" data-view="rollback".*?</button>', INDEX, re.S)
-        self.assertIsNotNone(tab)
-        text = tab.group(0)
+        text = tab_markup("rollback")
         self.assertIn('<span class="tab-label">回滚</span>', text)
         self.assertIn('class="tab-icon"', text)
         self.assertNotIn('☁', text)
-        # 回滚图标必须是内联 SVG：Android WebView 缺 U+27F2/↩ 这类箭头字形，
+        # 回滚图标是内联 SVG：Android WebView 缺 U+27F2/↩ 这类箭头字形，
         # 回退字体会渲染得又小又细，改用 SVG 才与字体无关。
         self.assertIn("<svg ", text)
         self.assertNotIn('⟲', text)
         self.assertNotIn('↩', text)
 
-    def test_rollback_icon_svg_is_font_independent(self) -> None:
-        svg = re.search(r'<svg .*?</svg>', INDEX, re.S).group(0)
-        self.assertIn('viewBox="0 0 20 20"', svg)
-        self.assertIn('width="1em"', svg)
-        self.assertIn('height="1em"', svg)
-        self.assertIn('fill="none"', svg)
-        self.assertIn('stroke="currentColor"', svg)
-        self.assertIn('stroke-linecap="round"', svg)
-        self.assertIn('stroke-linejoin="round"', svg)
-        stroke = float(re.search(r'stroke-width="([0-9.]+)"', svg).group(1))
-        self.assertGreaterEqual(stroke, 1.6)
-        self.assertLessEqual(stroke, 1.8)
-        # 弧线 + 箭头两段，且不再依赖任何 Unicode 图形字符
-        self.assertEqual(2, len(re.findall(r"<path ", svg)))
-        for glyph in ("⟲", "↩", "↺", "⤺", "⇦", "⭯"):
-            self.assertNotIn(glyph, INDEX)
-        # tab 栏里只剩 ▦ / ✓ / ⓘ 三个字形（刷新按钮的 ↻ 在顶栏，本轮不动）
-        tabbar = re.search(r'<nav class="tabbar".*?</nav>', INDEX, re.S).group(0)
-        self.assertEqual(
-            ["▦", "✓", "ⓘ"],
-            re.findall(r'aria-hidden="true">([^<]+)</span>', tabbar),
-        )
+    def test_all_four_tabs_use_inline_svg(self) -> None:
+        for view in ("featured", "installed", "rollback", "about"):
+            body = tab_markup(view)
+            self.assertIn("<svg ", body, view)
+            # .tab-icon 里只剩 SVG，没有任何文本字形
+            icon = re.search(r'<span class="tab-icon" aria-hidden="true">(.*?)</span>', body, re.S).group(1)
+            self.assertTrue(icon.strip().startswith("<svg"), view)
+            self.assertTrue(icon.strip().endswith("</svg>"), view)
 
-    def test_tab_icon_svg_follows_the_shared_box(self) -> None:
-        # SVG 只继承 .tab-icon 的 1em，不给回滚 tab 单独写尺寸
+    def test_no_icon_glyph_left_in_index(self) -> None:
+        for glyph in BANNED_ICON_GLYPHS:
+            self.assertNotIn(glyph, INDEX, f"index.html 里还有当图标用的字形 {glyph!r}")
+        # 正文/排版用的破折号与省略号保留（不是图标）
+        for glyph in ALLOWED_TEXT_GLYPHS:
+            self.assertIn(glyph, INDEX)
+
+    def test_icon_svgs_share_one_visual_style(self) -> None:
+        svgs = all_svgs()
+        self.assertEqual(6, len(svgs), "应为 顶栏 2 + tab 4 共 6 个内联 SVG")
+        for svg in svgs:
+            self.assertIn('width="1em"', svg)
+            self.assertIn('height="1em"', svg)
+            self.assertIn('fill="none"', svg)
+            self.assertIn('stroke="currentColor"', svg)
+            self.assertIn('stroke-linecap="round"', svg)
+            self.assertIn('stroke-linejoin="round"', svg)
+            self.assertEqual("1.8", re.search(r'stroke-width="([0-9.]+)"', svg).group(1))
+            self.assertIn('focusable="false"', svg)
+        # 四个 tab 共用 20×20 画布；顶栏按各自的 em（30px / 25px）取 1:1 画布，
+        # 这样 stroke-width=1.8 在任何位置都渲染成约 1.8px，描边光学等重
+        self.assertEqual(
+            ["0 0 30 30", "0 0 25 25", "0 0 20 20", "0 0 20 20", "0 0 20 20", "0 0 20 20"],
+            [re.search(r'viewBox="([^"]+)"', svg).group(1) for svg in svgs],
+        )
+        for view in ("featured", "installed", "rollback", "about"):
+            self.assertIn('viewBox="0 0 20 20"', tab_markup(view), view)
+
+    def test_topbar_icons_use_inline_svg(self) -> None:
+        for button_id in ("backButton", "refreshButton"):
+            body = icon_button_markup(button_id)
+            self.assertIn("<svg ", body, button_id)
+            self.assertIn('aria-hidden="true"', body, button_id)
+
+    def test_icon_svgs_follow_the_shared_boxes(self) -> None:
+        # SVG 只继承容器的 1em 尺寸，不给某个图标单独写尺寸
         self.assertIn(".tabbar .tab-icon svg {", STYLES)
+        self.assertIn(".icon-button svg {", STYLES)
         self.assertIn("width: 1em; height: 1em;", STYLES)
+        # 顶栏按钮靠 flex 居中图标，点击区仍是 36×36（≥34px 触控约定）
+        self.assertIn("align-items: center;", STYLES)
+        self.assertIn("justify-content: center;", STYLES)
+        self.assertIn("width: 36px;\n  height: 36px;", STYLES)
 
     def test_sources_tab_and_view_are_gone(self) -> None:
         self.assertNotIn("sourcesView", INDEX)
@@ -159,7 +205,7 @@ class AboutViewTests(unittest.TestCase):
 
 
 class TabConsistencyTests(unittest.TestCase):
-    """四个 tab 必须共用同一套 class/尺寸，不能只给回滚 tab 单独写样式。"""
+    """四个 tab 必须共用同一套 class/尺寸，不能给某个 tab 单独写样式。"""
 
     def test_tabs_share_the_same_markup(self) -> None:
         tabs = re.findall(r'<button class="([^"]*)" data-view="([^"]+)">(.*?)</button>', INDEX, re.S)
@@ -169,19 +215,15 @@ class TabConsistencyTests(unittest.TestCase):
             [(classes.replace(" active", ""), view) for classes, view, _ in tabs],
         )
         for _, view, body in tabs:
-            # 四个 tab 都是「一个 .tab-icon + 一个 .tab-label」，图标容器写法完全一致；
-            # 图标本身要么是单个字形，要么是内联 SVG（回滚）
-            self.assertRegex(body.strip(), r'^<span class="tab-icon" aria-hidden="true">')
-            self.assertRegex(body.strip(), r'</span><span class="tab-label">.+</span>$')
-            if view == "rollback":
-                self.assertIn("<svg ", body)
-            else:
-                self.assertNotIn("<svg", body)
-                self.assertRegex(body.strip(), r'<span class="tab-icon" aria-hidden="true">.<')
+            # 四个 tab 都是「一个 .tab-icon（内联 SVG）+ 一个 .tab-label」，写法完全一致
+            self.assertRegex(body.strip(), r'^<span class="tab-icon" aria-hidden="true"><svg ')
+            self.assertRegex(body.strip(), r'</svg></span><span class="tab-label">.+</span>$')
+            self.assertEqual(1, body.count("<svg "), view)
+            self.assertEqual(1, body.count("viewBox=\"0 0 20 20\""), view)
 
     def test_no_per_tab_size_overrides(self) -> None:
         # 只允许一个 .tabbar .tab-icon 规则（外加一条给内部 svg 的通用规则），
-        # 且没有任何针对回滚 tab 的单独尺寸
+        # 且没有任何针对某个 tab 的单独尺寸
         self.assertEqual(1, len(re.findall(r'\.tabbar \.tab-icon \{', STYLES)))
         self.assertEqual(1, len(re.findall(r'\.tabbar \.tab-icon svg \{', STYLES)))
         self.assertNotIn('data-view="rollback"', STYLES)
