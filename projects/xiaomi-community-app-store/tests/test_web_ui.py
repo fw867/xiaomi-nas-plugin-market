@@ -35,9 +35,39 @@ class TabbarTests(unittest.TestCase):
         self.assertIn('<span class="tab-label">回滚</span>', text)
         self.assertIn('class="tab-icon"', text)
         self.assertNotIn('☁', text)
-        # 换掉偏细偏小的 ↩，用光学大小更接近 ▦/✓/ⓘ 的 ⟲（U+27F2）
+        # 回滚图标必须是内联 SVG：Android WebView 缺 U+27F2/↩ 这类箭头字形，
+        # 回退字体会渲染得又小又细，改用 SVG 才与字体无关。
+        self.assertIn("<svg ", text)
+        self.assertNotIn('⟲', text)
         self.assertNotIn('↩', text)
-        self.assertIn('<span class="tab-icon" aria-hidden="true">⟲</span>', text)
+
+    def test_rollback_icon_svg_is_font_independent(self) -> None:
+        svg = re.search(r'<svg .*?</svg>', INDEX, re.S).group(0)
+        self.assertIn('viewBox="0 0 20 20"', svg)
+        self.assertIn('width="1em"', svg)
+        self.assertIn('height="1em"', svg)
+        self.assertIn('fill="none"', svg)
+        self.assertIn('stroke="currentColor"', svg)
+        self.assertIn('stroke-linecap="round"', svg)
+        self.assertIn('stroke-linejoin="round"', svg)
+        stroke = float(re.search(r'stroke-width="([0-9.]+)"', svg).group(1))
+        self.assertGreaterEqual(stroke, 1.6)
+        self.assertLessEqual(stroke, 1.8)
+        # 弧线 + 箭头两段，且不再依赖任何 Unicode 图形字符
+        self.assertEqual(2, len(re.findall(r"<path ", svg)))
+        for glyph in ("⟲", "↩", "↺", "⤺", "⇦", "⭯"):
+            self.assertNotIn(glyph, INDEX)
+        # tab 栏里只剩 ▦ / ✓ / ⓘ 三个字形（刷新按钮的 ↻ 在顶栏，本轮不动）
+        tabbar = re.search(r'<nav class="tabbar".*?</nav>', INDEX, re.S).group(0)
+        self.assertEqual(
+            ["▦", "✓", "ⓘ"],
+            re.findall(r'aria-hidden="true">([^<]+)</span>', tabbar),
+        )
+
+    def test_tab_icon_svg_follows_the_shared_box(self) -> None:
+        # SVG 只继承 .tab-icon 的 1em，不给回滚 tab 单独写尺寸
+        self.assertIn(".tabbar .tab-icon svg {", STYLES)
+        self.assertIn("width: 1em; height: 1em;", STYLES)
 
     def test_sources_tab_and_view_are_gone(self) -> None:
         self.assertNotIn("sourcesView", INDEX)
@@ -138,18 +168,27 @@ class TabConsistencyTests(unittest.TestCase):
             [("tab", "featured"), ("tab", "installed"), ("tab", "rollback"), ("tab", "about")],
             [(classes.replace(" active", ""), view) for classes, view, _ in tabs],
         )
-        for _, _, body in tabs:
-            self.assertRegex(
-                body.strip(),
-                r'^<span class="tab-icon" aria-hidden="true">.</span><span class="tab-label">.+</span>$',
-            )
+        for _, view, body in tabs:
+            # 四个 tab 都是「一个 .tab-icon + 一个 .tab-label」，图标容器写法完全一致；
+            # 图标本身要么是单个字形，要么是内联 SVG（回滚）
+            self.assertRegex(body.strip(), r'^<span class="tab-icon" aria-hidden="true">')
+            self.assertRegex(body.strip(), r'</span><span class="tab-label">.+</span>$')
+            if view == "rollback":
+                self.assertIn("<svg ", body)
+            else:
+                self.assertNotIn("<svg", body)
+                self.assertRegex(body.strip(), r'<span class="tab-icon" aria-hidden="true">.<')
 
     def test_no_per_tab_size_overrides(self) -> None:
-        # 只允许一个 .tabbar .tab-icon 规则，且没有任何针对回滚 tab 的单独尺寸
+        # 只允许一个 .tabbar .tab-icon 规则（外加一条给内部 svg 的通用规则），
+        # 且没有任何针对回滚 tab 的单独尺寸
         self.assertEqual(1, len(re.findall(r'\.tabbar \.tab-icon \{', STYLES)))
+        self.assertEqual(1, len(re.findall(r'\.tabbar \.tab-icon svg \{', STYLES)))
         self.assertNotIn('data-view="rollback"', STYLES)
         self.assertNotIn("tab-icon.rollback", STYLES)
         self.assertNotIn("font-size: 19px", INDEX)
+        # 四个 tab 的图标盒都还是同一个 font-size（19px），SVG 用 1em 跟随
+        self.assertIn(".tabbar .tab-icon { font-size: 19px; line-height: 1; }", STYLES)
 
 
 if __name__ == "__main__":
