@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "name": "小米智能存储应用商店",
-  "generatedAt": 1791127152,
+  "generatedAt": 1791212926,
   "repository": "fw867/xiaomi-nas-plugin-market",
   "branch": "main",
   "store": {
@@ -89,12 +89,12 @@
     {
       "id": "qbittorrent",
       "name": "qB 下载",
-      "version": "0.1.11",
+      "version": "0.1.12",
       "summary": "磁力与种子下载、暂停继续和限速；首次启动需拉取独立 Docker 镜像",
       "description": "磁力/种子下载、进度、暂停继续、限速。需要 Docker。",
-      "bundle": "apps/qbittorrent-0.1.11.zip",
-      "sha256": "83b653e5043741bb3b07dbce0363407ac1f336e6569288f14d1baa60c80f49f0",
-      "size": 244986,
+      "bundle": "apps/qbittorrent-0.1.12.zip",
+      "sha256": "558f462d8ef75776703a26ddcc1f3526c68d18ca73c347d234b5c9e334392a8b",
+      "size": 258075,
       "icon": "apps/icons/qbittorrent.png",
       "channel": "stable",
       "tags": [
@@ -126,12 +126,12 @@
     {
       "id": "transmission",
       "name": "Transmission 下载",
-      "version": "0.1.40",
+      "version": "0.1.41",
       "summary": "Docker 版 BT 下载：可设置下载/配置/监控目录与 WebUI 账号；端口 9091、51413",
       "description": "Docker 容器运行 LinuxServer Transmission；配置页可设置下载目录、配置文件夹目录、监控目录与 WebUI 用户名密码。需要 Docker。",
-      "bundle": "apps/transmission-0.1.40.zip",
-      "sha256": "c32ab46b03866613fb6708e6d471d79afd76179847ef6e0885c2c7fa341d690e",
-      "size": 184215,
+      "bundle": "apps/transmission-0.1.41.zip",
+      "sha256": "af54be2f05d721e61b7d544f5f637f716a18d23e109a05956ad929d2aa50a551",
+      "size": 201783,
       "icon": "apps/icons/transmission.png",
       "channel": "stable",
       "tags": [
@@ -144,12 +144,12 @@
     {
       "id": "emby",
       "name": "Emby",
-      "version": "0.1.16",
+      "version": "0.1.17",
       "summary": "在 NAS 上运行 Emby，向局域网设备串流个人影音",
       "description": "官方 Emby 镜像的受限容器；媒体目录读写挂载以便写回元数据，配置保存在插件私有目录，Emby 默认端口 8096 对局域网开放。",
-      "bundle": "apps/emby-0.1.16.zip",
-      "sha256": "1c53a07730af7191a059e80dedf00a27118a90e28682bbe904c8026c35329262",
-      "size": 68054,
+      "bundle": "apps/emby-0.1.17.zip",
+      "sha256": "6712e1894dc0b0827adc38ef60e36df7c9238075954be864eb121ecaae050000",
+      "size": 79453,
       "icon": "apps/icons/emby.png",
       "channel": "stable",
       "tags": [
@@ -181,12 +181,12 @@
     {
       "id": "jellyfin",
       "name": "Jellyfin",
-      "version": "0.1.9",
+      "version": "0.1.10",
       "summary": "开源媒体服务器；配置/缓存/媒体持久化，HTTP 端口 8097 对局域网开放",
       "description": "官方 Jellyfin 镜像的受限容器；媒体目录、配置目录与缓存持久化，端口映射 8097/8920/7359，可与 Emby 同时安装。需要 Docker。",
-      "bundle": "apps/jellyfin-0.1.9.zip",
-      "sha256": "4dce111447764bd9a489c5dfbb617d7880706f60edafd348dfd24e317c933bde",
-      "size": 88610,
+      "bundle": "apps/jellyfin-0.1.10.zip",
+      "sha256": "34b35190ebd9b807f52ec38fe8e0f4c189dfdca3d607b34594115a7ca8621f9e",
+      "size": 102358,
       "icon": "apps/icons/jellyfin.png",
       "channel": "stable",
       "tags": [
@@ -237,12 +237,12 @@
     {
       "id": "netneighbor",
       "name": "网络邻居",
-      "version": "0.1.4",
+      "version": "0.1.5",
       "summary": "让小米存储在 Windows「网络」里直接可见，并支持一个账号挂多个共享目录",
       "description": "Windows 的资源管理器「网络」里一直看不到小米存储，只能手输 IP 访问。本插件自带 WSD 回应器（Hello/Bye/Probe/Resolve 与设备描述服务）接管系统那套不完整的发现服务，主机即可出现在网络里；同时调用官方 smb_mgr.sh 让同一个账号挂多个共享目录，绕开共享 app 只能配一个的限制。",
-      "bundle": "apps/netneighbor-0.1.4.zip",
-      "sha256": "99e1f4780bac5a595514a99177e3e7b915c08df48b673f49e27a5200433ccde9",
-      "size": 109609,
+      "bundle": "apps/netneighbor-0.1.5.zip",
+      "sha256": "97c8e4393315922f2b37f150b587a29b23aff41427872d937e18c46c09296042",
+      "size": 116372,
       "icon": "apps/icons/netneighbor.png",
       "channel": "stable",
       "tags": [
