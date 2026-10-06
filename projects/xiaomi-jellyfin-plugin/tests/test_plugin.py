@@ -15,6 +15,7 @@ from engine import (
     Engine, Error, IMAGE, NAME, LABEL, PORT,
     CONTAINER_HTTP, CONTAINER_HTTPS, CONTAINER_DLNA,
     container_config, confined, installed_version, parse_roots, root_label, VERSION,
+    MEMORY_LIMIT, CPU_LIMIT,
 )
 from server import Server
 
@@ -149,7 +150,9 @@ class EngineTests(unittest.TestCase):
         self.assertNotIn('Privileged', host)
         self.assertNotIn('NetworkMode', host)
         self.assertFalse(any('docker.sock' in s for s in mounts.values()))
-        self.assertEqual(host['Memory'], 1024 * 1024 * 1024)
+        self.assertEqual(host['Memory'], MEMORY_LIMIT)
+        self.assertEqual(host['MemorySwap'], MEMORY_LIMIT)      # 与 Memory 相同 = 不给 swap
+        self.assertEqual(host['NanoCpus'], CPU_LIMIT)
         self.assertEqual(host['SecurityOpt'], ['no-new-privileges:true'])
 
     def test_snapshot_before_setup(self):
@@ -270,6 +273,8 @@ class HealthcheckTests(unittest.TestCase):
         item = {
             'Config': {'Labels': {LABEL: 'tok'}, 'Healthcheck': {'Test': ['NONE']},
                        'Env': ['TZ=Asia/Shanghai']},
+            'HostConfig': {'Memory': MEMORY_LIMIT, 'MemorySwap': MEMORY_LIMIT,
+                           'NanoCpus': CPU_LIMIT},
             'State': {'Running': True},
         }
         calls = self._run_start(item)
@@ -281,11 +286,51 @@ class HealthcheckTests(unittest.TestCase):
         item = {
             'Config': {'Labels': {LABEL: 'tok'}, 'Healthcheck': {'Test': ['NONE']},
                        'Env': ['TZ=Asia/Shanghai']},
+            'HostConfig': {'Memory': MEMORY_LIMIT, 'MemorySwap': MEMORY_LIMIT,
+                           'NanoCpus': CPU_LIMIT},
             'State': {'Running': False},
         }
         calls = self._run_start(item)
         paths = [path for _, path, _ in calls]
         self.assertEqual(paths, ['/containers/' + NAME + '/start'])
+
+    def test_resources_stale_detection(self):
+        """内存/CPU 上限只在创建时生效：和现在要求的不一致就得重建。
+
+        回归用例：Jellyfin 扫描媒体库时单个 ffprobe 能吃到 780 MB 匿名内存，
+        1 GiB 上限下被 memcg OOM kill（宿主机当时还有 2.3 GB 可用），所以提到 2 GiB；
+        已经装好的容器必须能自动换成新上限，而不是等用户卸载重装。
+        """
+        good = {'HostConfig': {'Memory': MEMORY_LIMIT, 'MemorySwap': MEMORY_LIMIT,
+                               'NanoCpus': CPU_LIMIT}}
+        cases = [
+            (good, False),
+            ({'HostConfig': {'Memory': 1024 * 1024 * 1024, 'MemorySwap': 1024 * 1024 * 1024,
+                             'NanoCpus': CPU_LIMIT}}, True),
+            ({'HostConfig': {'Memory': MEMORY_LIMIT, 'MemorySwap': 1024 * 1024 * 1024,
+                             'NanoCpus': CPU_LIMIT}}, True),          # swap 口径不一致也算
+            ({'HostConfig': {'Memory': MEMORY_LIMIT, 'MemorySwap': MEMORY_LIMIT,
+                             'NanoCpus': 10 ** 9}}, True),
+            ({'HostConfig': {}}, True),                               # 老容器没有这些键
+        ]
+        for item, expected in cases:
+            with self.subTest(item=item):
+                self.assertEqual(Engine.resources_stale(item), expected)
+
+    def test_start_recreates_container_with_old_memory_limit(self):
+        item = {
+            'Config': {'Labels': {LABEL: 'tok'}, 'Healthcheck': {'Test': ['NONE']},
+                       'Env': ['TZ=Asia/Shanghai']},
+            'HostConfig': {'Memory': 1024 * 1024 * 1024, 'MemorySwap': 1024 * 1024 * 1024,
+                           'NanoCpus': CPU_LIMIT},
+            'State': {'Running': True},
+        }
+        calls = self._run_start(item)
+        paths = [path for _, path, _ in calls]
+        self.assertIn('/containers/' + NAME + '/stop?t=30', paths)
+        self.assertIn('/containers/' + NAME, paths)                   # 删掉旧容器
+        self.assertIn('/containers/create?name=' + NAME, paths)       # 按新上限重建
+        self.assertIn('/containers/' + NAME + '/start', paths)
 
     def test_stale_env_detection(self):
         """环境变量只在创建时生效：值不对、或残留已删除的键，都得重建。"""

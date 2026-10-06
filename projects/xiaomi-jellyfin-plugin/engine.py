@@ -40,6 +40,14 @@ DOCKER_SOCKET = os.environ.get('DOCKER_SOCKET', '/var/run/docker.sock')
 # 定位过程见 projects/xiaomi-disk-sleep-plugin/tools/disk-activity-report.py。
 HEALTHCHECK_OFF = {'Test': ['NONE']}
 
+# 容器资源上限。Jellyfin 扫描媒体库时，单个 ffprobe 进程就能吃到 780 MB 匿名内存
+# （2026-10-06 实测：1 GiB 上限下 jellyfin 容器的 memcg 把它 OOM kill 了两次，
+# 而当时宿主机还有 2.3 GB 可用——是容器自己的上限不够，不是整机缺内存）。
+# 所以放宽到 2 GiB。MemorySwap 与 Memory 相同＝不额外给 swap：媒体扫描这种负载
+# 换页出去只会更慢，而且宿主机本来也没有 swap。
+MEMORY_LIMIT = 2048 * 1024 * 1024
+CPU_LIMIT = 2 * 10 ** 9
+
 # 插件给容器设的环境变量键。`JELLYFIN_PublishedServerUrl` 是**已经删掉**的那个：
 # 历史上写死成 `http://__NAS_IP__:8097`，占位符从来没有被替换过，于是 Jellyfin
 # 把 `http://__NAS_IP__:8097` 当成自己的对外地址（`GET /System/Info/Public` 的
@@ -264,9 +272,9 @@ def container_config(config):
         'Healthcheck': dict(HEALTHCHECK_OFF),
         'HostConfig': {
             'RestartPolicy': {'Name': 'no'},
-            'Memory': 1024 * 1024 * 1024,
-            'MemorySwap': 1024 * 1024 * 1024,
-            'NanoCpus': 2 * 10 ** 9,
+            'Memory': MEMORY_LIMIT,
+            'MemorySwap': MEMORY_LIMIT,
+            'NanoCpus': CPU_LIMIT,
             'PidsLimit': 512,
             'SecurityOpt': ['no-new-privileges:true'],
             'LogConfig': {'Type': 'json-file', 'Config': {'max-size': '5m', 'max-file': '2'}},
@@ -378,13 +386,25 @@ class Engine:
                 return True
         return any(key in current for key in REMOVED_ENV_KEYS)
 
-    def recreate_if_stale(self, item):
-        """旧配置只能靠重建生效：继承的健康检查、或已删除的环境变量。
+    @staticmethod
+    def resources_stale(item):
+        """容器的内存/CPU 上限和现在要求的不一致（只能在创建时生效，得重建）。
 
-        健康检查只能在创建容器时决定（Docker 20.10 的
-        `POST /containers/<id>/update` 接受 Healthcheck 并返回 200，但不生效）；
-        环境变量同理。这里停容器 → 删除 → 交给调用方按新配置重建。
-        /config、/cache、/media 都是 bind 挂载，配置与媒体库不受影响。
+        Docker 20.10 的 `POST /containers/<id>/update` 对这类资源上限不生效，
+        所以只能停 → 删 → 按新配置重建（bind 挂载的 /config /cache /media 不受影响）。
+        """
+        host = item.get('HostConfig') or {}
+        return (host.get('Memory') != MEMORY_LIMIT
+                or host.get('MemorySwap') != MEMORY_LIMIT
+                or host.get('NanoCpus') != CPU_LIMIT)
+
+    def recreate_if_stale(self, item):
+        """旧配置只能靠重建生效：继承的健康检查、已删除的环境变量、过期的资源上限。
+
+        健康检查与资源上限只能在创建容器时决定（Docker 20.10 的
+        `POST /containers/<id>/update` 接受 Healthcheck 并返回 200，但不生效；
+        资源上限同理）；环境变量也是创建时写入。这里停容器 → 删除 → 交给调用方
+        按新配置重建。/config、/cache、/media 都是 bind 挂载，配置与媒体库不受影响。
         返回 True 表示已经把它删掉了。
         """
         reasons = []
@@ -392,6 +412,11 @@ class Engine:
             reasons.append('镜像自带的健康检查')
         if self.stale_env(item):
             reasons.append('过期的环境变量')
+        if self.resources_stale(item):
+            host = item.get('HostConfig') or {}
+            reasons.append('过期的资源上限（内存 %s MB → %s MB）'
+                           % (int((host.get('Memory') or 0) / 1048576),
+                              int(MEMORY_LIMIT / 1048576)))
         if not reasons:
             return False
         if item.get('State', {}).get('Running'):

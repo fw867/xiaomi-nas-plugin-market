@@ -67,7 +67,13 @@
 
 - 不挂载 docker.sock，不使用 privileged / host 网络
 - 容器以媒体目录属主 `uid:gid` 运行
-- 资源上限：1 GiB 内存、2 CPU
+- 资源上限：2 GiB 内存、2 CPU（`MemorySwap` 与 `Memory` 相同＝容器内不给 swap）
+  - 早期是 1 GiB。2026-10-06 实测：扫描媒体库时，单个 `ffprobe` 进程就能吃到
+    780 MB 匿名内存，1 GiB 上限下被容器自己的 memcg OOM kill 了两次，而当时宿主机
+    还有 2.3 GB 可用——是容器上限不够，不是整机缺内存，所以放宽到 2 GiB。
+  - 资源上限只在**创建容器**时生效（Docker 20.10 的 `/containers/<id>/update` 对
+    这类上限不生效），所以插件启动时发现旧容器的上限不对会**停 → 删 → 按新配置重建**；
+    `/config`、`/cache`、`/media` 都是 bind 挂载，配置与媒体库不受影响。
 - 停止/卸载只停容器，配置与媒体保留
 
 ## 已关闭容器健康检查
