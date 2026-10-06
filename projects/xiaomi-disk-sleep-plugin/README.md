@@ -143,6 +143,42 @@ findexd 40 分钟：run_maintenance 448 次、PASSIVE checkpoint 24 次、
 现在已经由 Jellyfin / Emby 插件在建容器时关掉健康检查（见各自 README），
 上面这条 30 秒心跳不会再出现。
 
+## 电源状态是怎么判定的（两类特殊盘）
+
+页面上的「休眠中 / 活动」来自 `hdparm -C`；但有两类盘它靠不住，插件分别做了处理：
+
+**一、固件不报电源状态的盘（实测：WDC WD200EDGZ 20TB）**
+
+这块盘对 ATA CHECK POWER MODE 永远回 `drive state is:  unknown`（连跑 5 次都一样，
+退出码 0；`smartctl` 里也不在数据库内、部分属性读不到）。也就是说 `unknown` 是**盘自己的
+回答**，任何解析都变不出状态来。原来的实现会把这种读数当成一次状态变化写进日志，于是留下
+一堆 `unknown → standby`、`standby → unknown` 的噪声。
+
+现在这类盘改用**休眠控制器自己的日志**判断——`hdidle` 会明确记录：
+
+```
+disk sda: spindown
+disk sda: spinup (running: 1502, stopped: 543)
+```
+
+插件解析每块盘最近一次 `spindown`/`spinup`（`hdidle_states()`，结果缓存 15 秒），
+状态来源标注为 `hdidle`，事件详情也会带「（hdidle 日志）」后缀。两边都读不到时保持
+上一次可靠状态做基线，不写事件、不改基线（界面显示「未知（盘不报告）」）。
+
+**二、USB 硬盘盒（实测：ASM2464 桥 + SSD）**
+
+这类设备不实现 ATA 电源状态查询：`hdparm -C` 会先回一段坏掉的 sense
+（`SG_IO: bad/missing sense data, sb[]: 70 00 05 ...`）然后照样打印一个
+`drive state is:  standby`；`smartctl -n standby` 也会误报 `Device is in SLEEP mode`。
+结果是一块正挂在 `/mnt/usb-…` 上读写的 SSD 被一直显示成「休眠中」。
+
+现在按 `/sys/block/<盘>` 的路径里有没有 `/usb` 判断（`is_usb_device()`）：USB 桥后面的盘
+一律标记 `unsupported`，`standby=false`，不参与休眠/唤醒事件统计；界面上显示
+「不适用（USB）」，悬停有说明。另外凡是 hdparm 输出里带 `bad/missing sense data` 的，
+即使不是 USB 也一律按 `unknown` 处理（`_hdparm_power_state()`）。
+
+读不到状态时会重试一次（`STATE_RETRY_DELAY`，默认 1 秒），避免一次瞬时失败就记成 unknown。
+
 ## 页面
 
 移动端优先：按钮与输入框都不小于 44px，输入框 16px（iOS 聚焦不会放大页面），

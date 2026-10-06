@@ -80,6 +80,15 @@ BLOCK_PREFIXES = ('/dev/sd', '/dev/hd', '/dev/nvme', '/dev/md', '/dev/mmcblk', '
 # hdparm -C 的可能输出
 STANDBY_STATES = {'standby', 'sleeping'}
 ACTIVE_STATES = {'active/idle', 'idle', 'unknown'}
+# 明确「读得到」的两个集合；只有落在里面的读数才作为真实状态参与休眠/唤醒判定。
+# 'unknown'（这一次没读上来）与 'unsupported'（USB 硬盘盒根本没有这个概念）都不可信：
+# USB 桥接设备会先回一段坏掉的 sense data（SG_IO: bad/missing sense data），hdparm
+# 照着瞎报一个 "standby"，smartctl -n standby 也会误报 SLEEP——于是一块正在读写的外接
+# SSD 被一直显示成「休眠中」；WD200EDGZ 这类盘偶发 ATA softreset 失败又会读成 unknown。
+IDLE_STATES = {'active/idle', 'idle'}
+UNRELIABLE_STATES = {'unknown', 'unsupported'}
+# 读不到状态时重试前的等待（测试里置 0）
+STATE_RETRY_DELAY = float(os.environ.get('STATE_RETRY_DELAY', '1.0'))
 
 _lock = threading.Lock()
 _sampler = None
@@ -302,17 +311,113 @@ def disk_model(name: str) -> str:
     return ''
 
 
-def disk_state(name: str) -> str:
-    """hdparm -C 查询电源状态；该查询不会把盘唤醒。"""
+def is_usb_device(name: str) -> bool:
+    """这块盘是不是挂在 USB 桥后面（硬盘盒）。
+
+    这类设备不实现 ATA 电源状态查询：`hdparm -C` 会先回一段无意义的 sense
+    （`SG_IO: bad/missing sense data, sb[]: 70 00 05 ...`），然后照样打印一个
+    `drive state is: standby`；`smartctl -n standby` 也会误报 `Device is in SLEEP mode`。
+    实测（ASM2464 硬盘盒 + SSD，挂着 /mnt/usb-… 在用）就是这样被误判成休眠的，
+    所以 USB 后面的盘一律标记为「不支持查询」，不参与休眠统计。
+    """
+    try:
+        return '/usb' in str((Path('/sys/block') / name).resolve())
+    except OSError:
+        return False
+
+
+def _hdparm_power_state(name: str) -> tuple[str, str]:
+    """跑一次 hdparm -C，返回 (状态, 原始输出)。
+
+    只有确实能确认时才给具体状态；输出里带 `bad/missing sense data` 的（USB 桥的
+    标准表现）一律算 unknown，绝不当成 standby。
+    """
     result = run([HDPARM, '-C', f'/dev/{name}'], timeout=10)
-    match = re.search(r'drive state is:\s*(.+)', result.stdout)
+    text = f'{getattr(result, "stdout", "")}\n{getattr(result, "stderr", "")}'
+    match = re.search(r'drive state is:\s*(.+)', text)
     if not match:
-        return 'unknown'
-    return match.group(1).strip().lower()
+        return 'unknown', text.strip()
+    if 'bad/missing sense data' in text:
+        return 'unknown', text.strip()
+    return match.group(1).strip().lower(), text.strip()
+
+
+def disk_state(name: str) -> str:
+    """盘当前的电源状态；该查询不会把盘唤醒。
+
+    - USB 桥后面的盘：'unsupported'（不支持查询，界面按「不适用」展示）
+    - 读不到（超时、ATA softreset 失败）：'unknown'
+    - 其余：'active/idle' / 'idle' / 'standby' / 'sleeping'
+
+    完全读不到时重试一次，避免一次瞬时失败就记成 unknown。
+    """
+    if is_usb_device(name):
+        return 'unsupported'
+    state, text = _hdparm_power_state(name)
+    if state == 'unknown' and 'drive state is:' not in text:
+        time.sleep(STATE_RETRY_DELAY)
+        state, _ = _hdparm_power_state(name)
+    return state
 
 
 def is_standby(state: str) -> bool:
     return state in STANDBY_STATES
+
+
+# ---------------------------------------------------------------------------
+# 盘自己不报电源状态时的退路：hdidle 的日志
+#
+# 实测：WDC WD200EDGZ（OEM 盘，不在 smartctl 数据库里）对 ATA CHECK POWER MODE
+# 永远回 `drive state is:  unknown`（连跑 5 次都一样，rc=0），smartctl 也只能当它是活动。
+# 但真正的休眠控制器 hdidle 自己会记：
+#     disk sda: spindown
+#     disk sda: spinup (running: 1502, stopped: 543)
+# 所以这类盘以 hdidle 的日志为准，既能看到真实状态，也不会再往事件里写 unknown。
+# ---------------------------------------------------------------------------
+HDIDLE_STATE_TTL = float(os.environ.get('HDIDLE_STATE_TTL', '15'))
+_hdidle_state_cache: dict = {'at': 0.0, 'states': {}}
+
+
+def hdidle_states(limit: int = 200) -> dict:
+    """从 hdidle 日志里取每块盘最近一次 spindown/spinup，返回 {盘名: 状态}。"""
+    states: dict = {}
+    for entry in hdidle_log(limit):
+        message = str(entry.get('message') or '')
+        match = re.search(r'disk\s+(\S+?):\s*(spindown|spinup)', message)
+        if not match:
+            continue
+        name, action = match.group(1), match.group(2)
+        if name in states:
+            continue                     # hdidle_log 是新的在前，先到的是最新的
+        states[name] = 'standby' if action == 'spindown' else 'active/idle'
+    return states
+
+
+def cached_hdidle_states() -> dict:
+    now = time.time()
+    if now - float(_hdidle_state_cache.get('at') or 0) >= HDIDLE_STATE_TTL:
+        try:
+            _hdidle_state_cache['states'] = hdidle_states()
+        except Exception:
+            _hdidle_state_cache['states'] = {}
+        _hdidle_state_cache['at'] = now
+    return dict(_hdidle_state_cache.get('states') or {})
+
+
+def effective_power_state(name: str, fallback: dict | None = None) -> tuple[str, str]:
+    """返回 (状态, 来源)。来源是 'hdparm' / 'hdidle' / 'unsupported' / 'unknown'。
+
+    盘自己能报就用它；报 unknown（例如 WD200EDGZ 固件就是不报）时退回 hdidle 的日志。
+    """
+    state = disk_state(name)
+    if state == 'unsupported':
+        return state, 'unsupported'
+    if state == 'unknown':
+        states = cached_hdidle_states() if fallback is None else fallback
+        if states.get(name):
+            return states[name], 'hdidle'
+        return 'unknown', 'unknown'
+    return state, 'hdparm'
 
 
 def add_event(device: str | None, kind: str, detail: str = '') -> None:
@@ -359,18 +464,29 @@ def last_event(device: str, kind: str) -> int | None:
 
 
 def sample_once(last: dict[str, str]) -> dict[str, str]:
-    """采样一次盘状态，把状态跃迁写进事件日志，返回新的状态表。"""
+    """采样一次盘状态，把可靠的休眠/唤醒跃迁写进事件日志。
+
+    'unsupported'（USB 桥）与读不到的 'unknown' 不参与跃迁判定：读不到时保留上一次
+    可靠状态作为基线，等下一次读数再判断，避免日志里混进「unknown → standby」这种噪声。
+    盘自己不报状态（WD200EDGZ 固件就回 unknown）时，用 hdidle 的 spindown/spinup 日志判断。
+    """
     current: dict[str, str] = {}
+    fallback = cached_hdidle_states()
     for name in disk_devices():
-        state = disk_state(name)
+        state, source = effective_power_state(name, fallback)
+        if state in UNRELIABLE_STATES:
+            if name in last:
+                current[name] = last[name]           # 保持上一次可靠状态做基线
+            continue
         current[name] = state
         previous = last.get(name)
         if previous is None or previous == state:
             continue
+        suffix = '（hdidle 日志）' if source == 'hdidle' else ''
         if is_standby(state) and not is_standby(previous):
-            add_event(name, 'standby', f'{previous} → {state}')
+            add_event(name, 'standby', f'{previous} → {state}{suffix}')
         elif not is_standby(state) and is_standby(previous):
-            add_event(name, 'wake', f'{previous} → {state}')
+            add_event(name, 'wake', f'{previous} → {state}{suffix}')
     return current
 
 
@@ -984,13 +1100,20 @@ def hdidle_log(limit: int = 100) -> list[dict]:
 
 def disk_summary() -> list[dict]:
     items = []
+    fallback = cached_hdidle_states()
     for name in disk_devices():
-        state = disk_state(name)
+        state, source = effective_power_state(name, fallback)
         items.append({
             'device': name,
             'model': disk_model(name),
             'state': state,
+            # 状态从哪来：hdparm（盘自己报）/ hdidle（盘不报，用休眠控制器日志）/
+            # unsupported（USB 桥）/ unknown（都读不到）
+            'source': source,
             'standby': is_standby(state),
+            # USB 硬盘盒不实现 ATA 电源状态：界面要说明，别把它算成休眠
+            'usb': is_usb_device(name),
+            'powerStateSupported': state != 'unsupported',
             'lastStandby': last_event(name, 'standby'),
             'lastWake': last_event(name, 'wake'),
         })

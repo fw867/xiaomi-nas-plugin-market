@@ -130,7 +130,27 @@ function render(current) {
     const row = element('div', 'disk-row');
     row.append(element('span', 'disk-name', disk.device.toUpperCase()));
     const standby = Boolean(disk.standby);
-    row.append(element('span', `disk-state${standby ? ' is-standby' : ''}`, standby ? '休眠中' : '活动'));
+    // 三种非"活动"的状态分开展示：
+    //  - unsupported：USB 硬盘盒不实现 ATA 电源状态（hdparm 会瞎报 standby）
+    //  - unknown：这一次没读到（例如盘偶发 ATA 查询失败）
+    //  - standby：真的休眠了
+    let label = '活动';
+    let className = 'disk-state';
+    if (standby) {
+      label = '休眠中';
+      className += ' is-standby';
+    } else if (disk.state === 'unsupported') {
+      label = '不适用（USB）';
+      className += ' is-muted';
+    } else if (disk.state === 'unknown') {
+      label = '未知（盘不报告）';
+      className += ' is-muted';
+    }
+    const stateCell = element('span', className, label);
+    if (disk.source === 'hdidle') stateCell.title = '状态取自休眠控制器（hdidle）的日志：这块盘不响应 ATA 电源查询';
+    else if (disk.state === 'unsupported') stateCell.title = 'USB 硬盘盒不实现 ATA 电源状态查询，不作为休眠统计';
+    else if (disk.state === 'unknown') stateCell.title = '这一次没读到电源状态（例如盘偶发查询失败）';
+    row.append(stateCell);
     const since = formatSince(standby ? disk.lastStandby : disk.lastWake);
     if (since) row.append(element('span', 'disk-since', `${since} 起`));
     return row;
