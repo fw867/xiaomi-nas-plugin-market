@@ -158,6 +158,106 @@ def router_token() -> str:
         return ''
 
 
+def token_hint(token: str | None = None) -> str:
+    """令牌的展示提示（绝不等于令牌本身）：够长就"前 4 位…后 2 位"，否则只说"已设置"。"""
+    value = router_token() if token is None else (token or '')
+    if not value:
+        return ''
+    return (value[:4] + '…' + value[-2:]) if len(value) >= 6 else '已设置'
+
+
+def _user_id_digits(user: str) -> str:
+    """把用户名规整成"用户号"：注册表里可能是 u3943892，客户端证书里是 nas.3943892.*。"""
+    value = (user or '').strip()
+    return value[1:] if value[:1].lower() == 'u' else value
+
+
+def client_certificate_owner(verify: str, dn: str, user: str) -> bool:
+    """请求是否来自"设备所有者的小米客户端"（判据与其余插件里的 trusted() 同一套）。
+
+    nginx（443 的 server 块）把 `$ssl_client_verify` / `$ssl_client_s_dn` 透传成
+    `X-Xiaomi-Client-Verify` / `X-Xiaomi-Client-DN`，所以判据是：
+
+      * 验签结果必须是 SUCCESS；
+      * DN 里的 CN 必须是 `nas.<用户号>.…`。
+
+    控制台那一跳（本机 5001 → proxy_pass 到 127.0.0.1:443）**没有**客户端证书，
+    `$ssl_client_verify` 是 NONE；插件的 nginx 又对所有请求都写死 `X-Console-Entry: xiaomi`，
+    所以那个头区分不出来 —— 只有客户端证书能。拿不到证书就不给明文（失败关闭）。
+    """
+    if (verify or '').strip().upper() != 'SUCCESS':
+        return False
+    digits = _user_id_digits(user)
+    if not digits:
+        return False
+    return re.search(r'CN=nas\.' + re.escape(digits) + r'\.', dn or '') is not None
+
+
+# ---------------------------------------------------------------------------
+# 转发时的 Authorization 决策
+#
+# 背景（实际报障）：从「控制台」电脑端的插件图标打开本插件时，页面由控制台的本机
+# nginx（默认 5001，server 块见 xiaomi-nas-console-lan.nginx.conf）转到本机 443，
+# 而那一跳会无条件写 `proxy_set_header Authorization "Bearer console-loopback"`
+# 去过 443 的"至少一种凭据"门槛 —— 客户端原本的 Authorization 被这个占位值覆盖。
+# 转发链再往下是插件自己的 nginx（proxy_set_header Authorization $http_authorization）
+# 原样透传，于是路由器软件中心拿到 "Bearer console-loopback"，AdminToken 校验失败，
+# 页面显示「令牌不正确」。
+#
+# 所以转发前要认得出这个占位值：认出来就用插件自己保存的令牌（TOKEN_FILE，0600）顶上；
+# 认不出来（小米 App 注入的真实令牌、或客户端自己带的凭据）必须原样透传，不许覆盖。
+# ---------------------------------------------------------------------------
+
+# 与控制台 deploy/xiaomi-nas-console-lan.nginx.conf 里的字面量保持一致（有测试核对）
+CONSOLE_LOOPBACK_TOKEN = 'console-loopback'
+CONSOLE_PLACEHOLDER_AUTHORIZATION = f'Bearer {CONSOLE_LOOPBACK_TOKEN}'
+
+
+def is_console_placeholder_authorization(value: str) -> bool:
+    """判断 Authorization 是不是控制台那一跳塞进来的占位值。
+
+    容错：授权方案大小写、Bearer 前后多写的空格、只剩裸值（没有方案）都认。
+    """
+    raw = (value or '').strip()
+    if not raw:
+        return False
+    scheme, separator, credentials = raw.partition(' ')
+    if separator and scheme.strip().lower() != 'bearer':
+        return False
+    return (credentials if separator else raw).strip() == CONSOLE_LOOPBACK_TOKEN
+
+
+def resolve_authorization(value: str) -> str:
+    """返回真正要转发给路由器的 Authorization；返回空串表示这一跳不带 Authorization。
+
+    规则：
+      * 客户端自己带了凭据（App 注入的真实令牌、浏览器/页面自己设的值）→ 原样返回，不动；
+      * 没带凭据 → 用插件保存的令牌顶上（本地插件用自己的凭据，就不再 401）；
+      * 带的是控制台那一跳的占位值 → 也当"没带"，换成保存的令牌；
+      * 该顶上却没有保存令牌时返回空串（宁可不带，也别把占位值当令牌送去，否则软件中心
+        只能报"令牌不正确"，看不出是哪一环的问题），并写日志说明下一步该做什么。
+    """
+    client_value = (value or '').strip()
+    if client_value and not is_console_placeholder_authorization(client_value):
+        return client_value
+    saved = router_token()
+    if saved:
+        if client_value:
+            log('收到控制台的占位 Authorization，改用插件保存的路由器令牌转发')
+        else:
+            log('请求里没有 Authorization，改用插件保存的路由器令牌转发')
+        return saved
+    if client_value:
+        log(f'收到控制台的占位 Authorization（{CONSOLE_PLACEHOLDER_AUTHORIZATION}），'
+            '但插件还没保存路由器令牌：本次转发不带 Authorization，'
+            '路由器会回 401；请在 Unifi 设置页填入 AdminToken 后保存')
+    else:
+        log('请求里没有 Authorization，插件也还没保存路由器令牌：'
+            '本次转发不带 Authorization，路由器会回 401；'
+            '请在 Unifi 设置页填入 AdminToken 后保存')
+    return ''
+
+
 def save_router_token(token: str) -> None:
     token = (token or '').strip()
     if not token:
@@ -422,7 +522,7 @@ def status_payload(port: int) -> dict[str, Any]:
         'target': settings['target'],
         'default_target': DEFAULT_TARGET,
         'token_set': bool(token),
-        'token_hint': (token[:4] + '…' + token[-2:]) if len(token) >= 6 else ('已设置' if token else ''),
+        'token_hint': token_hint(token),
         'router': probe_router(settings['target']),
         'nginx_conf': str(NGINX_CONF),
         'nginx_conf_ready': NGINX_CONF.is_file(),

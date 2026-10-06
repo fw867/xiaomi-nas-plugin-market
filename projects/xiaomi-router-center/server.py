@@ -1,8 +1,9 @@
-"""路由器软件中心插件的服务端：只做三件事
+"""路由器软件中心插件的服务端：只做四件事
 
   1. 提供前端页面（src/ui 下的静态文件，含被 iframe 嵌入的真实软件中心）；
   2. 提供 /api/status、/api/settings，让插件页显示路由器状态、保存目标地址与令牌；
-  3. /healthz 给厂商框架与商店做健康检查。
+  3. /view/… 转发路由器软件中心（页面的 CDN/GitHub 本地化 + 接口带令牌转发）；
+  4. /healthz 给厂商框架与商店做健康检查。
 
 写操作只有一处：换目标地址时重新渲染自己的那一个 nginx 配置文件（nginx -t 通过才 reload）。
 """
@@ -64,6 +65,42 @@ class Handler(BaseHTTPRequestHandler):
     def entry(self) -> str:
         return (self.headers.get('X-Console-Entry') or '').strip().lower() or LOCAL_ENTRY
 
+    def user_id(self) -> str:
+        return os.environ.get('NAS_USER_ID', '')
+
+    def client_certificate_owner(self) -> bool:
+        """请求是否真的来自"设备所有者的小米客户端"（看客户端证书，不看 X-Console-Entry）。
+
+        插件的 nginx 对所有请求都写死了 `X-Console-Entry: xiaomi`，控制台那一跳也会带上，
+        所以那个头区分不出"真小米客户端"和"局域网里的 curl"；只有 `$ssl_client_verify`
+        与 `$ssl_client_s_dn` 透传过来的这两条能区分。拿不到就不认（失败关闭）。
+        """
+        return engine.client_certificate_owner(
+            self.headers.get('X-Xiaomi-Client-Verify') or '',
+            self.headers.get('X-Xiaomi-Client-DN') or '',
+            self.user_id())
+
+    def settings_payload(self) -> dict[str, object]:
+        """`GET /api/settings` 的返回：明文令牌只给设备所有者的小米客户端。
+
+        明文令牌是路由器的高权限凭据，而控制台电脑端入口是"回环即信任"（不需要客户端证书），
+        所以本地/控制台/浏览器/局域网 curl 一律只回提示（`token_hint`），不回明文。
+        页面注入不受影响：那是插件服务端自己读文件做的，不经过这个接口。
+        """
+        trusted = self.client_certificate_owner()
+        token = engine.router_token()
+        return {
+            'ok': True,
+            'target': engine.load_settings()['target'],
+            'default_target': engine.DEFAULT_TARGET,
+            'token_set': bool(token),
+            'token': token if trusted else '',
+            'token_hint': engine.token_hint(token),
+            'token_visible': trusted,
+            'assets': engine.assets_present(STATIC_DIR),
+            'entry': self.entry(),
+        }
+
     def _send(self, status: HTTPStatus, body: bytes, content_type: str) -> None:
         self.send_response(status)
         self.send_header('Content-Type', content_type)
@@ -98,13 +135,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, engine.status_payload(self.app.port))
             return
         if path == '/api/settings':
-            settings = engine.load_settings()
-            self._json(HTTPStatus.OK, {'ok': True, 'target': settings['target'],
-                                       'default_target': engine.DEFAULT_TARGET,
-                                       'token_set': bool(engine.router_token()),
-                                       'token': engine.router_token(),
-                                       'assets': engine.assets_present(STATIC_DIR),
-                                       'entry': self.entry()})
+            self._json(HTTPStatus.OK, self.settings_payload())
             return
         if path.startswith('/view'):
             self._proxy_view(path[len('/view'):], parsed.query)
@@ -152,6 +183,9 @@ class Handler(BaseHTTPRequestHandler):
         """插件根路径（App 打开的就是这里）：直接返回本地化后的软件中心页面。
 
         不做 iframe 套壳 —— 厂商客户端里没有一个插件用 iframe，直接给页面最稳。
+        已保存的 AdminToken 由 engine.prepare_page 无条件注入 localStorage.sc_token：
+        入口（小米 App / 控制台电脑端 / 浏览器直连 / /view/）判断在别处，注入不挑入口，
+        这样哪个入口打开都不会再弹软件中心那层"配置门"。
         """
         try:
             html = engine.fetch_router_page()
@@ -205,8 +239,12 @@ class Handler(BaseHTTPRequestHandler):
         """`/view/...` 是软件中心在客户端里的入口：
 
         * `/view/`（首页）—— 取回来把外部 CDN 换成本地副本再发出去；
-        * `/view/api/...` —— 原样转发到路由器（含 Authorization），不缓冲；
+        * `/view/api/...` —— 带着 Authorization 转发到路由器，不缓冲；
         * 其它（favicon 等）—— 直接转发。
+
+        转发的 Authorization 不是无脑透传：控制台电脑端那一跳会把客户端凭据覆盖成
+        占位值（Bearer console-loopback），那个值送到路由器必然是"令牌不正确"。
+        取值规则见 engine.resolve_authorization —— 占位值换成插件保存的令牌，真实令牌原样过。
         """
         suffix = rest.lstrip('/')
         target = engine.load_settings()['target'].rstrip('/')
@@ -224,7 +262,10 @@ class Handler(BaseHTTPRequestHandler):
                 'User-Agent': self.headers.get('User-Agent') or 'XiaomiNasRouterCenter',
                 'Accept': self.headers.get('Accept') or '*/*',
             }
-            for name in ('Authorization', 'Content-Type', 'Accept-Language'):
+            authorization = engine.resolve_authorization(self.headers.get('Authorization') or '')
+            if authorization:
+                headers['Authorization'] = authorization
+            for name in ('Content-Type', 'Accept-Language'):
                 value = self.headers.get(name)
                 if value:
                     headers[name] = value

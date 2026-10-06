@@ -108,7 +108,10 @@ class _MockRouter(BaseHTTPRequestHandler):
 
     def do_GET(self):                                          # noqa: N802
         if self.path.startswith('/api/system/info'):
-            if self.headers.get('Authorization') != self.token:
+            # 软件中心比的是令牌本身；这里顺手也认一下带 Bearer 前缀的写法，
+            # 好让"客户端自己带的真令牌原样透传"这条用例能整条走通
+            authorization = (self.headers.get('Authorization') or '').strip()
+            if authorization not in (self.token, f'Bearer {self.token}'):
                 self._send(401, b'', 'application/json')
                 return
             self._send(200, json.dumps({'Version': '0.0.0-mock', 'Device': 'MockUDM'}).encode(),
@@ -352,6 +355,7 @@ class HttpTests(unittest.TestCase):
         self.state = root / 'settings.json'
         self.token = root / 'router-token'
         self.static = static
+        self.user = mock.patch.dict(os.environ, {'NAS_USER_ID': 'u3943892'})
 
         self.patchers = [
             mock.patch.object(engine, 'STATE_FILE', self.state),
@@ -361,6 +365,7 @@ class HttpTests(unittest.TestCase):
         ]
         for patcher in self.patchers:
             patcher.start()
+        self.user.start()
 
         handler = type('BoundHandler', (server.Handler,), {'app': server.RouterCenter(18101)})
         self.httpd = ThreadingHTTPServer(('127.0.0.1', 0), handler)
@@ -378,6 +383,7 @@ class HttpTests(unittest.TestCase):
         self.httpd.server_close()
         self.router.shutdown()
         self.router.server_close()
+        self.user.stop()
         for patcher in self.patchers:
             patcher.stop()
         self.temp.cleanup()
@@ -423,6 +429,78 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(engine.router_token(), 'tok-123')
         self.assertTrue(json.loads(body)['token_set'])
 
+    def test_settings_returns_plaintext_only_to_verified_xiaomi_client(self) -> None:
+        """明文令牌只给设备所有者的小米客户端（看客户端证书，不看 X-Console-Entry）。"""
+        engine.save_router_token('good-token')
+        status, body = self.request('/api/settings', headers={
+            'X-Xiaomi-Client-Verify': 'SUCCESS',
+            'X-Xiaomi-Client-DN': 'CN=nas.3943892.test.2,OU=devices',
+            'X-Console-Entry': 'xiaomi',
+        })
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertEqual(payload['token'], 'good-token')       # 小米客户端（客户端证书）→ 明文
+        self.assertTrue(payload['token_visible'])
+        self.assertEqual(payload['token_hint'], 'good…en')
+        self.assertEqual(body.decode('utf-8').count('good-token'), 1)
+
+    def test_settings_hides_plaintext_from_console_loopback(self) -> None:
+        """控制台电脑端那一跳（回环 + 占位 Authorization、没有客户端证书）拿不到明文。"""
+        engine.save_router_token('s3cret-router-token')
+        status, body = self.request('/api/settings', headers={
+            'X-Console-Entry': 'xiaomi',                          # 插件 nginx 对谁都加这个头 → 不算数
+            'Authorization': engine.CONSOLE_PLACEHOLDER_AUTHORIZATION,
+        })
+        self.assertEqual(status, 200)
+        text = body.decode('utf-8')
+        payload = json.loads(body)
+        self.assertEqual(payload['token'], '')
+        self.assertFalse(payload['token_visible'])
+        self.assertTrue(payload['token_set'])
+        self.assertEqual(payload['token_hint'], 's3cr…en')
+        self.assertNotIn('s3cret-router-token', text)             # 响应体里绝不能出现真实令牌
+
+    def test_settings_hides_plaintext_from_direct_browser_and_bad_certificate(self) -> None:
+        """浏览器直连 / 局域网 curl / 证书验签失败 / CN 不是本机用户 → 都只给提示。"""
+        engine.save_router_token('s3cret-router-token')
+        cases = {
+            '回环直连（无任何头）': {},
+            '证书验签失败': {'X-Xiaomi-Client-Verify': 'FAILED',
+                        'X-Xiaomi-Client-DN': 'CN=nas.3943892.test.2'},
+            '没有证书': {'X-Xiaomi-Client-Verify': 'NONE',
+                     'X-Xiaomi-Client-DN': 'CN=nas.3943892.test.2'},
+            '别人的客户端证书': {'X-Xiaomi-Client-Verify': 'SUCCESS',
+                          'X-Xiaomi-Client-DN': 'CN=nas.999999.test.2'},
+        }
+        for label, headers in cases.items():
+            with self.subTest(entry=label):
+                status, body = self.request('/api/settings', headers=headers)
+                text = body.decode('utf-8')
+                self.assertEqual(status, 200)
+                self.assertEqual(json.loads(body)['token'], '')
+                self.assertFalse(json.loads(body)['token_visible'])
+                self.assertNotIn('s3cret-router-token', text)
+                self.assertIn('s3cr…en', text)                    # 只给提示
+
+    def test_settings_never_exposes_plaintext_without_nas_user_id(self) -> None:
+        """拿不到用户号（没设 NAS_USER_ID）时核对不了证书 CN → 失败关闭，只给提示。"""
+        engine.save_router_token('s3cret-router-token')
+        with mock.patch.dict(os.environ, {'NAS_USER_ID': ''}):
+            status, body = self.request('/api/settings', headers={
+                'X-Xiaomi-Client-Verify': 'SUCCESS',
+                'X-Xiaomi-Client-DN': 'CN=nas.3943892.test.2',
+            })
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)['token'], '')
+        self.assertNotIn('s3cret-router-token', body.decode('utf-8'))
+
+    def test_page_injection_is_not_affected_by_the_plaintext_gate(self) -> None:
+        """注入是插件服务端自己读文件做的：没有客户端证书也照样注入 sc_token。"""
+        engine.save_router_token('s3cret-router-token')
+        status, body = self.request('/root/', headers={'X-Plugin-Prefix': '/plugin/3943892/rtrcenter'})
+        self.assertEqual(status, 200)
+        self.assertIn('localStorage.setItem("sc_token","s3cret-router-token")', body.decode('utf-8'))
+
     def test_shell_page_and_static(self) -> None:
         status, body = self.request('/')
         self.assertEqual(status, 200)
@@ -465,6 +543,217 @@ class HttpTests(unittest.TestCase):
     def test_path_traversal_is_refused(self) -> None:
         status, _ = self.request('/../settings.json')
         self.assertIn(status, (403, 404))
+
+
+class _RecordingRouter(_MockRouter):
+    """在上面那个假路由器上多记一笔：每次请求带来的 Authorization。"""
+
+    seen: list[tuple[str, str]] = []
+
+    def do_GET(self):                                          # noqa: N802
+        type(self).seen.append((self.path.split('?')[0], self.headers.get('Authorization') or ''))
+        super().do_GET()
+
+
+class ForwardedAuthorizationTests(unittest.TestCase):
+    """从「控制台」电脑端打开时的报障回归：转发到路由器用的必须是真令牌。
+
+    控制台的本机 nginx（xiaomi-nas-console-lan.nginx.conf）把 Authorization 覆盖成
+    "Bearer console-loopback"，插件转发时若原样透传，路由器就报「令牌不正确」。
+    """
+
+    def setUp(self) -> None:
+        import tempfile
+
+        import server
+
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        static = root / 'web'
+        static.mkdir()
+        (static / 'index.html').write_text('<html><body>shell</body></html>', encoding='utf-8')
+        self.token = root / 'router-token'
+
+        self.patchers = [
+            mock.patch.object(engine, 'STATE_FILE', root / 'settings.json'),
+            mock.patch.object(engine, 'TOKEN_FILE', self.token),
+            mock.patch.object(engine, 'DEFAULT_TARGET', 'http://192.168.1.1:9958/'),
+            mock.patch.object(server, 'STATIC_DIR', static),
+        ]
+        for patcher in self.patchers:
+            patcher.start()
+
+        handler = type('BoundHandler', (server.Handler,), {'app': server.RouterCenter(18101)})
+        self.httpd = ThreadingHTTPServer(('127.0.0.1', 0), handler)
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.port = self.httpd.server_address[1]
+
+        _RecordingRouter.seen = []
+        self.router = ThreadingHTTPServer(('127.0.0.1', 0), _RecordingRouter)
+        threading.Thread(target=self.router.serve_forever, daemon=True).start()
+        self.router_target = f'http://127.0.0.1:{self.router.server_address[1]}/'
+        engine.STATE_FILE.write_text(json.dumps({'target': self.router_target}), encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.router.shutdown()
+        self.router.server_close()
+        for patcher in self.patchers:
+            patcher.stop()
+        self.temp.cleanup()
+
+    def request(self, headers: dict | None = None):
+        import urllib.error
+        import urllib.request
+
+        request = urllib.request.Request(f'http://127.0.0.1:{self.port}/view/api/system/info')
+        for name, value in (headers or {}).items():
+            request.add_header(name, value)
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                return response.status, response.read()
+        except urllib.error.HTTPError as error:
+            return error.code, error.read()
+
+    def test_console_placeholder_is_replaced_by_saved_token(self) -> None:
+        """① 控制台占位 Authorization → 转发时换成插件保存的令牌。"""
+        engine.save_router_token('good-token')
+        status, body = self.request({'Authorization': engine.CONSOLE_PLACEHOLDER_AUTHORIZATION})
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)['Device'], 'MockUDM')
+        self.assertEqual(_RecordingRouter.seen[-1][1], 'good-token')
+
+    def test_missing_authorization_uses_saved_token(self) -> None:
+        """② 完全没有 Authorization → 同样用插件保存的令牌，不再白挨一次 401。"""
+        engine.save_router_token('good-token')
+        status, body = self.request()
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)['Device'], 'MockUDM')
+        self.assertEqual(_RecordingRouter.seen[-1][1], 'good-token')
+
+    def test_real_token_is_passed_through_untouched(self) -> None:
+        """③ 客户端自己的合法令牌必须原样透传，不能被插件保存的令牌覆盖。"""
+        engine.save_router_token('good-token')
+        for real in ('good-token', 'Bearer good-token'):
+            with self.subTest(authorization=real):
+                status, _ = self.request({'Authorization': real})
+                self.assertEqual(status, 200)
+                self.assertEqual(_RecordingRouter.seen[-1][1], real)
+
+    def test_other_real_tokens_are_not_replaced_by_the_saved_one(self) -> None:
+        """③ 续：与保存的令牌不同的真值也照样透传（路由器判它无效是路由器的事）。"""
+        engine.save_router_token('good-token')
+        for real in ('other-real-token', 'Bearer other-real-token'):
+            with self.subTest(authorization=real):
+                status, _ = self.request({'Authorization': real})
+                self.assertEqual(status, 401)
+                self.assertEqual(_RecordingRouter.seen[-1][1], real)
+
+    def test_placeholder_without_saved_token_forwards_nothing(self) -> None:
+        """④ 没保存令牌时不把占位值当令牌送去：这一跳不带 Authorization，401 由页面照实显示。"""
+        engine.save_router_token('')
+        status, _ = self.request({'Authorization': engine.CONSOLE_PLACEHOLDER_AUTHORIZATION})
+        self.assertEqual(status, 401)
+        self.assertEqual(_RecordingRouter.seen[-1][1], '')
+
+    def test_missing_authorization_and_no_saved_token_forwards_nothing(self) -> None:
+        """④ 续：既没带凭据、插件也没保存令牌 → 同样不带 Authorization。"""
+        engine.save_router_token('')
+        status, _ = self.request()
+        self.assertEqual(status, 401)
+        self.assertEqual(_RecordingRouter.seen[-1][1], '')
+
+    def test_placeholder_detection_tolerates_case_and_spaces(self) -> None:
+        for value in ('Bearer console-loopback', 'bearer console-loopback', 'Bearer  console-loopback ',
+                      'BEARER console-loopback', ' console-loopback '):
+            with self.subTest(authorization=value):
+                self.assertTrue(engine.is_console_placeholder_authorization(value))
+        for value in ('', 'console-loopbacks', 'Bearer other-token', 'Basic console-loopback',
+                      'Bearer good-token', 'Bearerconsole-loopback'):
+            with self.subTest(authorization=value):
+                self.assertFalse(engine.is_console_placeholder_authorization(value))
+
+    def test_console_placeholder_matches_the_console_nginx_template(self) -> None:
+        """占位值是从控制台那份 nginx 模板里核对的，这里把两者钉在一起，防止哪天改了没人发现。"""
+        template = (Path(__file__).resolve().parents[2] / 'xiaomi-nas-console' / 'deploy'
+                    / 'xiaomi-nas-console-lan.nginx.conf')
+        if not template.is_file():
+            self.skipTest('仓库里没有控制台插件，跳过交叉核对')
+        text = template.read_text(encoding='utf-8')
+        found = re.findall(r'proxy_set_header\s+Authorization\s+"([^"]*)"', text)
+        self.assertIn(engine.CONSOLE_PLACEHOLDER_AUTHORIZATION, found,
+                      '控制台模板改了这个占位值，插件侧常量要跟着改')
+
+
+class PageInjectionEntryTests(unittest.TestCase):
+    """⑤ 令牌注入不挑入口：App 标记 / 无标记（控制台电脑端与浏览器直连）/ /view/ 都要注入。"""
+
+    def setUp(self) -> None:
+        import tempfile
+
+        import server
+
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        static = root / 'web'
+        static.mkdir()
+        (static / 'index.html').write_text('<html><body>shell</body></html>', encoding='utf-8')
+
+        self.patchers = [
+            mock.patch.object(engine, 'STATE_FILE', root / 'settings.json'),
+            mock.patch.object(engine, 'TOKEN_FILE', root / 'router-token'),
+            mock.patch.object(engine, 'DEFAULT_TARGET', 'http://192.168.1.1:9958/'),
+            mock.patch.object(server, 'STATIC_DIR', static),
+        ]
+        for patcher in self.patchers:
+            patcher.start()
+        engine.save_router_token('good-token')
+
+        handler = type('BoundHandler', (server.Handler,), {'app': server.RouterCenter(18101)})
+        self.httpd = ThreadingHTTPServer(('127.0.0.1', 0), handler)
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.port = self.httpd.server_address[1]
+
+        self.router = ThreadingHTTPServer(('127.0.0.1', 0), _MockRouter)
+        threading.Thread(target=self.router.serve_forever, daemon=True).start()
+        engine.STATE_FILE.write_text(
+            json.dumps({'target': f'http://127.0.0.1:{self.router.server_address[1]}/'}), encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.router.shutdown()
+        self.router.server_close()
+        for patcher in self.patchers:
+            patcher.stop()
+        self.temp.cleanup()
+
+    def fetch(self, path: str, headers: dict | None = None) -> str:
+        import urllib.request
+
+        request = urllib.request.Request(f'http://127.0.0.1:{self.port}{path}')
+        for name, value in (headers or {}).items():
+            request.add_header(name, value)
+        with urllib.request.urlopen(request, timeout=20) as response:
+            return response.read().decode('utf-8')
+
+    def test_token_is_injected_for_every_entry(self) -> None:
+        cases = {
+            '小米 App 入口': ('/root/', {'X-Console-Entry': 'xiaomi', 'X-Plugin-Prefix': '/plugin/3943892/rtrcenter'}),
+            '控制台电脑端（无标记）': ('/root/', {'X-Plugin-Prefix': '/plugin/3943892/rtrcenter'}),
+            '浏览器直连（无前缀）': ('/root/', None),
+            '/view/ 兼容入口': ('/view/', {'X-Plugin-Prefix': '/plugin/3943892/rtrcenter'}),
+        }
+        for label, (path, headers) in cases.items():
+            with self.subTest(entry=label):
+                text = self.fetch(path, headers)
+                self.assertIn('localStorage.setItem("sc_token","good-token")', text)
+                self.assertLess(text.index('sc_token'), text.index('</head>'))
+
+    def test_no_injection_when_no_token_saved(self) -> None:
+        engine.save_router_token('')
+        self.assertNotIn('sc_token', self.fetch('/root/', {'X-Plugin-Prefix': '/plugin/u/rtrcenter'}))
 
 
 class FrontendTests(unittest.TestCase):

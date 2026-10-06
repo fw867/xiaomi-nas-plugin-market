@@ -24,6 +24,10 @@ NAS nginx 443  /plugin/<用户>/rtrcenter/
 - **自动带令牌**：在插件里存一次 AdminToken（存在 NAS 上，权限 0600），打开页面时自动写进同源的
   `localStorage`，软件中心一加载就通过鉴权 —— 手机上不用每次重输（令牌校验那层"配置门"由软件中心
   自己负责，电脑端与移动端同一套）；
+- **入口不挑、令牌不丢**：令牌注入对小米 App、控制台电脑端、浏览器直连、`/view/` 一视同仁；
+  转发到路由器的 `Authorization` 按三条规则取值 —— 客户端自己带的真实令牌原样透传；控制台那一跳
+  塞的占位值 `Bearer console-loopback`（`xiaomi-nas-console-lan.nginx.conf` 里写死的）换成插件保存的
+  令牌；完全没带凭据时也用保存的令牌顶上（都没保存才不带，让软件中心照实报 401）；
 - **关闭按钮**：左上角中间一个图形按钮，客户端里调宿主方法 `normal_goback` 关闭当前插件页
   （与官方「应用商店」插件同款），非客户端环境退回 `history.back()` / `window.close()`；
 - **设置页 `panel.html`**（右上角 ⚙ 进入）：改目标地址、看路由器可达性、延迟与自检状态；
@@ -89,8 +93,18 @@ const apiUrl = (path) => new URL(String(path).replace(/^\/+/, ''), PAGE_DIR).hre
 | `/api/settings` | GET | 目标地址、是否已存令牌（含明文，供同源页面注入） |
 | `/api/settings` | POST | `{target?, token?}` 保存；改目标走"渲染 → `nginx -t` → reload"，失败回滚 |
 | `/root/` | GET | 软件中心页面（本地化 + 令牌注入后返回，App 打开的就是这里） |
-| `/view/…` | GET | 兼容入口（页面 + 接口转发），老地址仍可用 |
+| `/view/…` | GET | 兼容入口（页面 + 接口转发），老地址仍可用；`/view/api/…` 带令牌转发到路由器 |
 | `/api/github/…` | GET | 页面里直连 GitHub 的地址经此转发（见下） |
+
+### 转发到路由器时的 Authorization
+
+`/view/api/…` 转发前会过一遍 `engine.resolve_authorization`：
+
+| 收到的 Authorization | 转发用的值 |
+| --- | --- |
+| 客户端自己带的真令牌（含 App 注入的、页面里手输的） | 原样透传，绝不覆盖 |
+| 控制台电脑端那一跳的占位值 `Bearer console-loopback` | 插件保存的令牌（`/data/plugin/router-center/router-token`） |
+| 完全没带 | 插件保存的令牌；没保存就不带（软件中心照实报 401，日志里写清该去哪填） |
 
 ## 安全
 
@@ -98,6 +112,8 @@ const apiUrl = (path) => new URL(String(path).replace(/^\/+/, ''), PAGE_DIR).hre
 - 这个界面能在路由器上装包、重启服务、升级系统，等于路由器的高权限入口 —— 请给 AdminToken 用强随机值，
   并且**不要**在路由器上给 9958 做端口映射（本方案的价值就是不需要）；
 - AdminToken 存在 NAS 上（0600），只有能打开插件页（需通过客户端证书 + 管理员）的人能取到；
+  注意**电脑端入口**（控制台的 `LAN_PORT`，默认 5001）走的是"回环即信任"，能打开那个端口的人
+  也能打开插件页并读到这个令牌 —— 所以那个端口只放局域网、不要转发到公网。
 - 软件中心自身的令牌比较已改为 `CryptographicOperations.FixedTimeEquals` 固定时间比较。
 
 ## 已知限制
@@ -114,6 +130,9 @@ const apiUrl = (path) => new URL(String(path).replace(/^\/+/, ''), PAGE_DIR).hre
 python3 -m unittest discover -s tests -v
 ```
 
-24 个用例：目标地址规整、设置与令牌读写（含 0600 权限）、假路由器探测（可达/带令牌/错令牌/不可达）、
-换地址的失败回滚（`nginx -t` 不过与 reload 失败两种）、服务真起一遍打 `/healthz`、`/api/status`、
-`/api/settings`、静态文件、未知接口 404、路径穿越拒绝、前端语法与 id 一致性、安装脚本占位符校验。
+48 个用例：目标地址规整、设置与令牌读写（含 0600 权限）、假路由器探测（可达/带令牌/错令牌/不可达）、
+换地址的失败回滚（`nginx -t` 不过与 reload 失败两种）、转发到路由器时 Authorization 的取值
+（控制台占位值换保存令牌、缺 Authorization、真令牌原样透传、没保存令牌时不乱送）、
+令牌注入对 App / 控制台 / 浏览器直连 / `/view/` 四个入口都生效、服务真起一遍打 `/healthz`、
+`/api/status`、`/api/settings`、静态文件、未知接口 404、路径穿越拒绝、前端语法与 id 一致性、
+安装脚本占位符校验。
