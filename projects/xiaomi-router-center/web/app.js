@@ -83,24 +83,21 @@ async function loadStatus() {
 /* 令牌明文只有"设备所有者的小米客户端"能拿到：其它入口（控制台电脑端、浏览器直连）
    /api/settings 只回 token_hint（例如 a1b2…z9）。这里绝不把提示当令牌显示 ——
    输入框只显示"已保存（留空则保持不变）"，提示另起一行说明去哪看明文。 */
-let tokenVisible = false;
-let tokenHint = '';
-
 async function loadSettings() {
   try {
     const settings = await api('settings');
-    tokenVisible = Boolean(settings.token_visible);
-    tokenHint = settings.token_hint || '';
+    const hint = settings.token_hint || '';
+    const visible = Boolean(settings.token_visible);
     $('targetInput').value = settings.target || '';
     $('tokenInput').value = '';                       // 明文令牌从不预填（免得被误当提示显示/回存）
     $('tokenInput').placeholder = settings.token_set ? '已保存（留空则保持不变）' : '留空表示不保存';
-    const hint = $('tokenHint');
-    hint.textContent = settings.token_set
-      ? (tokenVisible
-        ? `已保存：${tokenHint}（明文只在小mi App 或 NAS 本地可见）`
-        : `已保存：${tokenHint} —— 明文只在小mi App 或 NAS 本地能看到；这里只能替换，看不到原值`)
+    const note = $('tokenHint');
+    note.textContent = settings.token_set
+      ? (visible
+        ? `已保存：${hint}（明文只在小mi App 或 NAS 本地可见）`
+        : `已保存：${hint} —— 明文只在小mi App 或 NAS 本地能看到；这里只能替换，看不到原值`)
       : '';
-    hint.classList.toggle('hidden', !settings.token_set);
+    note.classList.toggle('hidden', !settings.token_set);
   } catch (error) {
     $('settingsError').textContent = error.message;
     $('settingsError').classList.remove('hidden');

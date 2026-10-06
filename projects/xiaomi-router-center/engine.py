@@ -37,6 +37,8 @@ PLUGIN_ROOT = Path(os.environ.get('PLUGIN_ROOT', '/data/plugin/router-center'))
 STATE_FILE = Path(os.environ.get('STATE_FILE', str(PLUGIN_ROOT / 'settings.json')))
 TOKEN_FILE = Path(os.environ.get('TOKEN_FILE', str(PLUGIN_ROOT / 'router-token')))
 HOME_ROOT = Path(os.environ.get('HOME_ROOT', '/home'))
+# 插件注册表目录（/data/plugin/<用户>.list）：用来反推本插件装给哪个用户（见 plugin_owner）
+REGISTRY_ROOT = Path(os.environ.get('REGISTRY_ROOT', '/data/plugin'))
 
 NGINX_CONF = Path(os.environ.get('NGINX_CONF', '/etc/nginx/conf.d/luci/xiaomi-router-center.conf'))
 NGINX_TEMPLATE = Path(os.environ.get('NGINX_TEMPLATE',
@@ -170,6 +172,39 @@ def _user_id_digits(user: str) -> str:
     """把用户名规整成"用户号"：注册表里可能是 u3943892，客户端证书里是 nas.3943892.*。"""
     value = (user or '').strip()
     return value[1:] if value[:1].lower() == 'u' else value
+
+
+def plugin_owner() -> str:
+    """本插件是装给哪个小米用户的（拿它去核对客户端证书 CN 里的用户号）。
+
+    优先环境变量 `NAS_USER_ID`；没有就反推（这个单元文件刻意保持无占位符，商店那套
+    安装路径不一定会渲染它，所以不能只靠环境变量）：
+      1. `/data/plugin/<用户>.list` 注册表里含本插件 key 的那个文件；
+      2. `/home/<用户>/plugin/rtrcenter/` 这种插件目录（只有一个才认，多个不猜）。
+    都拿不到就返回空串 —— 调用方按"不给明文"处理（失败关闭）。
+    """
+    from_env = os.environ.get('NAS_USER_ID', '').strip()
+    if from_env and '__' not in from_env:                 # 占位符没被渲染时当没有，别拿去比对
+        return from_env
+    try:
+        for path in sorted(REGISTRY_ROOT.glob('*.list')):
+            name = path.name[:-len('.list')]
+            if not name.startswith('u'):
+                continue
+            try:
+                payload = json.loads(path.read_text(encoding='utf-8'))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(payload, dict) and PLUGIN_KEY in payload:
+                return name
+    except OSError:
+        pass
+    try:
+        # path 形如 /home/<用户>/plugin/rtrcenter → 用户目录是再上一层
+        owners = [path.parent.parent.name for path in HOME_ROOT.glob(f'*/plugin/{PLUGIN_KEY}')]
+    except OSError:
+        return ''
+    return owners[0] if len(owners) == 1 else ''
 
 
 def client_certificate_owner(verify: str, dn: str, user: str) -> bool:

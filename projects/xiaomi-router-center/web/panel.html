@@ -33,8 +33,9 @@
       <span>AdminToken（存在 NAS 上，权限 0600；打开软件中心时自动注入，手机端不用每次输入）</span>
       <input id="tokenInput" type="password" autocomplete="off" spellcheck="false" placeholder="留空表示不保存">
     </label>
+    <p class="rc-muted hidden" id="tokenHint"></p>
     <p class="rc-error hidden" id="settingsError"></p>
-    <p class="rc-muted" id="settingsHint">改地址会重新渲染本插件自己的 nginx 入口（`nginx -t` 通过才生效，失败自动回滚）。</p>
+    <p class="rc-muted" id="settingsHint">改地址会重新渲染本插件自己的 nginx 入口（`nginx -t` 通过才生效，失败自动回滚）。令牌明文只在设备所有者的小mi App（或 NAS 本地）里可见，其它入口只显示提示，避免局域网里的电脑把它读走。</p>
     <div class="rc-card-actions">
       <button class="rc-btn is-primary" id="saveSettings" type="button">保存</button>
       <button class="rc-btn" id="refreshStatus" type="button">重新探测</button>

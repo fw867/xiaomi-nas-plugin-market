@@ -90,7 +90,7 @@ const apiUrl = (path) => new URL(String(path).replace(/^\/+/, ''), PAGE_DIR).hre
 | --- | --- | --- |
 | `/healthz` | GET | 健康检查（版本、目标地址、运行时长、本地资源是否齐全） |
 | `/api/status` | GET | 目标可达性、延迟、软件中心标题、设备与版本、令牌状态、nginx 入口是否已渲染 |
-| `/api/settings` | GET | 目标地址、是否已存令牌（含明文，供同源页面注入） |
+| `/api/settings` | GET | 目标地址、`token_set`、`token_hint`、`token_visible`；**明文 `token` 只回给设备所有者的小米客户端**（见"安全"） |
 | `/api/settings` | POST | `{target?, token?}` 保存；改目标走"渲染 → `nginx -t` → reload"，失败回滚 |
 | `/root/` | GET | 软件中心页面（本地化 + 令牌注入后返回，App 打开的就是这里） |
 | `/view/…` | GET | 兼容入口（页面 + 接口转发），老地址仍可用；`/view/api/…` 带令牌转发到路由器 |
@@ -111,9 +111,19 @@ const apiUrl = (path) => new URL(String(path).replace(/^\/+/, ''), PAGE_DIR).hre
 - 插件注册为 `permission: admin`，只有管理员账号能看到；
 - 这个界面能在路由器上装包、重启服务、升级系统，等于路由器的高权限入口 —— 请给 AdminToken 用强随机值，
   并且**不要**在路由器上给 9958 做端口映射（本方案的价值就是不需要）；
-- AdminToken 存在 NAS 上（0600），只有能打开插件页（需通过客户端证书 + 管理员）的人能取到；
-  注意**电脑端入口**（控制台的 `LAN_PORT`，默认 5001）走的是"回环即信任"，能打开那个端口的人
-  也能打开插件页并读到这个令牌 —— 所以那个端口只放局域网、不要转发到公网。
+- AdminToken 存在 NAS 上（0600）。**明文只在"设备所有者的小米客户端"里可见**：
+  `GET /api/settings` 会用 nginx 透传的 `X-Xiaomi-Client-Verify: SUCCESS` + `X-Xiaomi-Client-DN`
+  里的 `CN=nas.<用户号>.…` 判断（判据与其余插件里的 `trusted()` 同一套，见 `engine.client_certificate_owner`）；
+  其它入口 —— 回环直连、**控制台电脑端**（`LAN_PORT`，默认 5001）、浏览器/局域网 curl、验签失败的请求 ——
+  只回 `token_hint`（例如 `a1b2…z9`），响应体里不会出现明文令牌。
+  注意插件的 nginx 对所有请求都写死 `X-Console-Entry: xiaomi`，**不能**拿它当判别依据。
+- 判断"是本机哪个用户"的顺序：环境变量 `NAS_USER_ID`（单元文件里由安装脚本渲染；万一没渲染，
+  插件会从注册表 `/data/plugin/<用户>.list` 或 `/home/<用户>/plugin/rtrcenter/` 反推，见
+  `engine.plugin_owner`）→ 拿不到用户号时一律只给提示、不给明文（失败关闭）。
+- 要看/复制明文令牌，请用小米 App 打开本插件（或在 NAS 本地打开设置页）；电脑端只能"替换"令牌，看不到原值。
+  页面注入不受影响：那是插件服务端自己读文件写进页面 `localStorage.sc_token` 的，不经过 `/api/settings`。
+- 电脑端入口（控制台的 `LAN_PORT`，默认 5001）走的是"回环即信任"，虽然读不到明文令牌，但仍然
+  能打开插件页、改目标地址、把令牌替换成自己的 —— 所以那个端口只放局域网、不要转发到公网。
 - 软件中心自身的令牌比较已改为 `CryptographicOperations.FixedTimeEquals` 固定时间比较。
 
 ## 已知限制
@@ -130,9 +140,11 @@ const apiUrl = (path) => new URL(String(path).replace(/^\/+/, ''), PAGE_DIR).hre
 python3 -m unittest discover -s tests -v
 ```
 
-48 个用例：目标地址规整、设置与令牌读写（含 0600 权限）、假路由器探测（可达/带令牌/错令牌/不可达）、
+59 个用例：目标地址规整、设置与令牌读写（含 0600 权限）、假路由器探测（可达/带令牌/错令牌/不可达）、
 换地址的失败回滚（`nginx -t` 不过与 reload 失败两种）、转发到路由器时 Authorization 的取值
 （控制台占位值换保存令牌、缺 Authorization、真令牌原样透传、没保存令牌时不乱送）、
+明文令牌的可见性（小米客户端证书 → 明文；控制台/回环/浏览器/证书不符 → 只有提示且响应体里无明文；
+无 `NAS_USER_ID` 时失败关闭、占位符没渲染时从注册表反推用户号；nginx 模板确实透传证书头）、
 令牌注入对 App / 控制台 / 浏览器直连 / `/view/` 四个入口都生效、服务真起一遍打 `/healthz`、
 `/api/status`、`/api/settings`、静态文件、未知接口 404、路径穿越拒绝、前端语法与 id 一致性、
-安装脚本占位符校验。
+前端不把 `token_hint` 当令牌显示、安装脚本占位符校验。

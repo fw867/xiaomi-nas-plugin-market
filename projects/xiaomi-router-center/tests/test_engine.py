@@ -361,6 +361,8 @@ class HttpTests(unittest.TestCase):
             mock.patch.object(engine, 'STATE_FILE', self.state),
             mock.patch.object(engine, 'TOKEN_FILE', self.token),
             mock.patch.object(engine, 'DEFAULT_TARGET', 'http://192.168.1.1:9958/'),
+            mock.patch.object(engine, 'REGISTRY_ROOT', root / 'registry'),
+            mock.patch.object(engine, 'HOME_ROOT', root / 'home'),
             mock.patch.object(server, 'STATIC_DIR', static),
         ]
         for patcher in self.patchers:
@@ -498,6 +500,17 @@ class HttpTests(unittest.TestCase):
         """注入是插件服务端自己读文件做的：没有客户端证书也照样注入 sc_token。"""
         engine.save_router_token('s3cret-router-token')
         status, body = self.request('/root/', headers={'X-Plugin-Prefix': '/plugin/3943892/rtrcenter'})
+        self.assertEqual(status, 200)
+        self.assertIn('localStorage.setItem("sc_token","s3cret-router-token")', body.decode('utf-8'))
+
+    def test_page_injection_also_works_for_verified_client_certificate(self) -> None:
+        """小米客户端（带证书）打开同一个页面：注入结果一样。"""
+        engine.save_router_token('s3cret-router-token')
+        status, body = self.request('/root/', headers={
+            'X-Plugin-Prefix': '/plugin/3943892/rtrcenter',
+            'X-Xiaomi-Client-Verify': 'SUCCESS',
+            'X-Xiaomi-Client-DN': 'CN=nas.3943892.test.2',
+        })
         self.assertEqual(status, 200)
         self.assertIn('localStorage.setItem("sc_token","s3cret-router-token")', body.decode('utf-8'))
 
@@ -756,6 +769,163 @@ class PageInjectionEntryTests(unittest.TestCase):
         self.assertNotIn('sc_token', self.fetch('/root/', {'X-Plugin-Prefix': '/plugin/u/rtrcenter'}))
 
 
+class TokenVisibilityTests(unittest.TestCase):
+    """明文 AdminToken 只给"设备所有者的小米客户端"：同一个接口，三种入口返回不同。
+
+    判别依据是客户端证书（`$ssl_client_verify` + `$ssl_client_s_dn`），不是
+    `X-Console-Entry` —— 后者是插件 nginx 对所有请求都加的头，控制台那一跳也带着。
+    """
+
+    def setUp(self) -> None:
+        import tempfile
+
+        import server
+
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        static = root / 'web'
+        static.mkdir()
+        (static / 'index.html').write_text('<html><body>shell</body></html>', encoding='utf-8')
+        self.user = mock.patch.dict(os.environ, {'NAS_USER_ID': 'u3943892'})
+        self.user.start()
+        self.patchers = [
+            mock.patch.object(engine, 'STATE_FILE', root / 'settings.json'),
+            mock.patch.object(engine, 'TOKEN_FILE', root / 'router-token'),
+            mock.patch.object(engine, 'DEFAULT_TARGET', 'http://192.168.1.1:9958/'),
+            mock.patch.object(engine, 'REGISTRY_ROOT', root / 'registry'),
+            mock.patch.object(engine, 'HOME_ROOT', root / 'home'),
+            mock.patch.object(server, 'STATIC_DIR', static),
+        ]
+        for patcher in self.patchers:
+            patcher.start()
+        handler = type('BoundHandler', (server.Handler,), {'app': server.RouterCenter(18101)})
+        self.httpd = ThreadingHTTPServer(('127.0.0.1', 0), handler)
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.port = self.httpd.server_address[1]
+
+    def tearDown(self) -> None:
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.user.stop()
+        for patcher in self.patchers:
+            patcher.stop()
+        self.temp.cleanup()
+
+    def settings(self, headers: dict | None = None) -> tuple[int, str]:
+        import urllib.error
+        import urllib.request
+
+        request = urllib.request.Request(f'http://127.0.0.1:{self.port}/api/settings')
+        for name, value in (headers or {}).items():
+            request.add_header(name, value)
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                return response.status, response.read().decode('utf-8')
+        except urllib.error.HTTPError as error:
+            return error.code, error.read().decode('utf-8')
+
+    def test_verified_xiaomi_client_gets_plaintext(self) -> None:
+        engine.save_router_token('good-token')
+        _, text = self.settings({'X-Xiaomi-Client-Verify': 'SUCCESS',
+                                 'X-Xiaomi-Client-DN': 'CN=nas.3943892.test.2,OU=devices',
+                                 'X-Console-Entry': 'xiaomi'})
+        self.assertEqual(json.loads(text)['token'], 'good-token')
+        self.assertTrue(json.loads(text)['token_visible'])
+
+    def test_console_entry_without_client_certificate_gets_hint(self) -> None:
+        engine.save_router_token('s3cret-router-token')
+        _, text = self.settings({'X-Console-Entry': 'xiaomi',
+                                 'Authorization': engine.CONSOLE_PLACEHOLDER_AUTHORIZATION})
+        payload = json.loads(text)
+        self.assertEqual(payload['token'], '')
+        self.assertFalse(payload['token_visible'])
+        self.assertEqual(payload['token_hint'], 's3cr…en')
+        self.assertNotIn('s3cret-router-token', text)
+
+    def test_loopback_without_headers_gets_hint(self) -> None:
+        engine.save_router_token('s3cret-router-token')
+        _, text = self.settings()
+        self.assertEqual(json.loads(text)['token'], '')
+        self.assertNotIn('s3cret-router-token', text)
+        self.assertIn('s3cr…en', text)
+
+    def test_engine_judgement_covers_verify_and_dn(self) -> None:
+        cases = {
+            ('SUCCESS', 'CN=nas.3943892.test.2,OU=devices', 'u3943892'): True,
+            ('success', 'CN=nas.3943892.test.2', '3943892'): True,       # 验签值/用户名写法都容错
+            ('SUCCESS', 'CN=nas.999999.test.2', 'u3943892'): False,      # 别人的证书
+            ('NONE', 'CN=nas.3943892.test.2', 'u3943892'): False,        # 没有客户端证书（控制台/浏览器）
+            ('FAILED', 'CN=nas.3943892.test.2', 'u3943892'): False,      # 验签失败
+            ('SUCCESS', '', 'u3943892'): False,                          # 没有 DN
+            ('SUCCESS', 'CN=nas.3943892.test.2', ''): False,             # 不知道用户号就不猜
+        }
+        for (verify, dn, user), expected in cases.items():
+            with self.subTest(verify=verify, dn=dn, user=user):
+                self.assertEqual(engine.client_certificate_owner(verify, dn, user), expected)
+
+    def test_nginx_template_forwards_client_certificate_headers(self) -> None:
+        """判据依赖 nginx 透传证书信息：页面与 ctl 两个 location 都得带上。"""
+        conf = (PROJECT / 'deploy' / 'xiaomi-router-center.nginx.conf').read_text(encoding='utf-8')
+        self.assertGreaterEqual(conf.count('proxy_set_header X-Xiaomi-Client-Verify $ssl_client_verify;'), 2)
+        self.assertGreaterEqual(conf.count('proxy_set_header X-Xiaomi-Client-DN $ssl_client_s_dn;'), 2)
+
+
+class PluginOwnerTests(unittest.TestCase):
+    """单元文件没渲染 NAS_USER_ID 时的兜底：从注册表/插件目录反推用户号。"""
+
+    def setUp(self) -> None:
+        import tempfile
+
+        self.temp = tempfile.TemporaryDirectory()
+        root = Path(self.temp.name)
+        self.registry = root / 'registry'
+        self.registry.mkdir()
+        self.home = root / 'home'
+        self.home.mkdir()
+        self.env = mock.patch.dict(os.environ, {}, clear=False)
+        self.env.start()
+        os.environ.pop('NAS_USER_ID', None)
+        self.patchers = [
+            mock.patch.object(engine, 'REGISTRY_ROOT', self.registry),
+            mock.patch.object(engine, 'HOME_ROOT', self.home),
+        ]
+        for patcher in self.patchers:
+            patcher.start()
+
+    def tearDown(self) -> None:
+        for patcher in self.patchers:
+            patcher.stop()
+        self.env.stop()
+        self.temp.cleanup()
+
+    def test_env_var_wins(self) -> None:
+        os.environ['NAS_USER_ID'] = 'u111111'
+        self.assertEqual(engine.plugin_owner(), 'u111111')
+
+    def test_unrendered_placeholder_falls_back_to_registry(self) -> None:
+        """单元文件里占位符没被渲染时，不能拿它当用户号去比对证书。"""
+        os.environ['NAS_USER_ID'] = '__NAS_USER_ID__'
+        (self.registry / 'u3943892.list').write_text(
+            json.dumps({'rtrcenter': {'info': {'id': 11021}}}), encoding='utf-8')
+        self.assertEqual(engine.plugin_owner(), 'u3943892')
+
+    def test_registry_entry_of_other_plugin_is_ignored(self) -> None:
+        (self.registry / 'u111111.list').write_text(json.dumps({'jellyfin': {}}), encoding='utf-8')
+        (self.registry / 'u222222.list').write_text(json.dumps({'rtrcenter': {}}), encoding='utf-8')
+        self.assertEqual(engine.plugin_owner(), 'u222222')
+
+    def test_falls_back_to_home_directory(self) -> None:
+        (self.home / 'u333333' / 'plugin' / 'rtrcenter').mkdir(parents=True)
+        self.assertEqual(engine.plugin_owner(), 'u333333')
+
+    def test_unknown_owner_is_empty(self) -> None:
+        """注册表与 /home 都没有 → 空串（调用方按"不给明文"处理）。"""
+        self.assertEqual(engine.plugin_owner(), '')
+        (self.home / 'u111111' / 'plugin' / 'rtrcenter').mkdir(parents=True)
+        (self.home / 'u222222' / 'plugin' / 'rtrcenter').mkdir(parents=True)
+        self.assertEqual(engine.plugin_owner(), '')           # 多个用户不猜
+
+
 class FrontendTests(unittest.TestCase):
     def test_panel_js_syntax_and_ids(self) -> None:
         import re
@@ -781,6 +951,14 @@ class FrontendTests(unittest.TestCase):
         self.assertNotIn('style="', panel_html, '内联 style 会被严格 CSP 拦掉')
         self.assertNotIn("'/api/", app_js, '前端必须用相对接口基址（ctl/...）')
         self.assertIn("const API = 'ctl'", app_js)
+        # 明文令牌只有小米客户端拿得到，设置页必须区分"明文"和"提示"，绝不能把提示当令牌：
+        # 输入框永远不预填（value 只清空）、payload.token 只在用户真的输入时才带
+        self.assertIn("$('tokenInput').value = ''", app_js)
+        self.assertIn("if ($('tokenInput').value.trim()) payload.token", app_js)
+        self.assertIn('token_visible', app_js)
+        self.assertIn('settings.token_hint', app_js)
+        self.assertIn("$('tokenHint')", app_js)
+        self.assertIn('id="tokenHint"', panel_html)
         self.assertIn('assets/close.js', (project / 'web' / 'panel.html').read_text(encoding='utf-8'))
         # 软件中心页面不再套 iframe（厂商插件里没有一个用 iframe，实测在 App 里不可靠）
         self.assertNotIn('<iframe', panel_html)
@@ -809,10 +987,15 @@ class FrontendTests(unittest.TestCase):
         self.assertIn('__[A-Z_]+__', script)                  # 渲染后残留占位符的硬校验
         # 商店是原样安装这些文件的，所以它们一个占位符都不能有
         # （踩过：nginx 配置里的 __PLUGIN_PORT__ 让 nginx -t 直接失败、插件更新报错）
-        for name in ('xiaomi-router-center.nginx.conf', 'xiaomi-router-center.service',
-                     'plugin-meta.json', 'control'):
+        for name in ('xiaomi-router-center.nginx.conf', 'plugin-meta.json', 'control'):
             text = (PROJECT / 'deploy' / name).read_text(encoding='utf-8')
             self.assertIsNone(re.search(r'__[A-Z_]+__', text), f'{name} 里不能有占位符')
+        # 单元文件是例外：它必须带上 NAS_USER_ID（核对客户端证书用），由安装脚本 sed 渲染。
+        # 这一点跟 jellyfin/transmission 等插件的单元文件做法一致；万一没渲染，插件会
+        # 退回从注册表反推用户号（engine.plugin_owner），拿不到就只给提示、不给明文。
+        unit = (PROJECT / 'deploy' / 'xiaomi-router-center.service').read_text(encoding='utf-8')
+        self.assertIn('NAS_USER_ID=__NAS_USER_ID__', unit)
+        self.assertIn('__NAS_USER_ID__', script)              # 安装脚本确实会替换它
 
 
 class VersionTests(unittest.TestCase):

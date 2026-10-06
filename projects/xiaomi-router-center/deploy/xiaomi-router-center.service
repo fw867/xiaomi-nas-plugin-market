@@ -10,8 +10,10 @@ WorkingDirectory=/data/plugin/router-center/current
 Environment=PYTHONUNBUFFERED=1
 Environment=HOST=127.0.0.1
 Environment=PORT=18101
-# 刻意不设 NAS_USER_ID：商店安装是把这个单元文件原样装上去的，带占位符会留下字面量；
-# 插件本身也不依赖它（版本号优先取安装目录名，其次包内 VERSION 文件）。
+# NAS_USER_ID 用来核对客户端证书里的用户号（GET /api/settings 只对设备所有者的小米客户端
+# 回明文 AdminToken）。这里的占位符由安装脚本/商店渲染；万一没渲染，插件会退回从注册表
+# /data/plugin/<用户>.list 反推（engine.plugin_owner），拿不到就只给提示、不给明文。
+Environment=NAS_USER_ID=__NAS_USER_ID__
 Environment=STATIC_DIR=/data/plugin/router-center/current/web
 Environment=PLUGIN_ROOT=/data/plugin/router-center
 Environment=STATE_FILE=/data/plugin/router-center/settings.json

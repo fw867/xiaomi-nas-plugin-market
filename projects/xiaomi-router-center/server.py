@@ -66,7 +66,9 @@ class Handler(BaseHTTPRequestHandler):
         return (self.headers.get('X-Console-Entry') or '').strip().lower() or LOCAL_ENTRY
 
     def user_id(self) -> str:
-        return os.environ.get('NAS_USER_ID', '')
+        """环境变量里的用户号；占位符没被渲染时当没有（由 engine.plugin_owner 反推）。"""
+        value = os.environ.get('NAS_USER_ID', '').strip()
+        return '' if '__' in value else value
 
     def client_certificate_owner(self) -> bool:
         """请求是否真的来自"设备所有者的小米客户端"（看客户端证书，不看 X-Console-Entry）。
@@ -74,11 +76,13 @@ class Handler(BaseHTTPRequestHandler):
         插件的 nginx 对所有请求都写死了 `X-Console-Entry: xiaomi`，控制台那一跳也会带上，
         所以那个头区分不出"真小米客户端"和"局域网里的 curl"；只有 `$ssl_client_verify`
         与 `$ssl_client_s_dn` 透传过来的这两条能区分。拿不到就不认（失败关闭）。
+        用户号优先用环境变量；这个单元文件刻意无占位符，所以拿不到时由 engine.plugin_owner
+        从注册表/插件目录反推。
         """
         return engine.client_certificate_owner(
             self.headers.get('X-Xiaomi-Client-Verify') or '',
             self.headers.get('X-Xiaomi-Client-DN') or '',
-            self.user_id())
+            self.user_id() or engine.plugin_owner())
 
     def settings_payload(self) -> dict[str, object]:
         """`GET /api/settings` 的返回：明文令牌只给设备所有者的小米客户端。
