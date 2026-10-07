@@ -214,6 +214,10 @@ class Sandbox:
             target.write_text(text, encoding='utf-8')
         # 假的 3702 占用者：兜底 kill 之后才算释放
         self.wsd_processes = ['1234']
+        # 身份自动获取的两个来源：测试给稳定值（改了属性立刻生效），
+        # 不依赖跑测试这台机器真的叫什么名字、IP 是多少
+        self.system_hostname = 'SmartStorage'
+        self.lan_ip = '192.168.1.8'
         self.patches = [
             patch.object(engine, 'APP_ROOT', self.root / 'etc'),
             patch.object(engine, 'VAR_ETC', self.root / 'var' / 'etc'),
@@ -225,6 +229,8 @@ class Sandbox:
             patch.object(engine, 'path_realpath', self.path_realpath),
             patch.object(engine, 'path_listdir', self.path_listdir),
             patch.object(engine, 'path_islink', self.path_islink),
+            patch.object(engine, 'path_gethostname', lambda: self.system_hostname),
+            patch.object(engine, 'probe_lan_address', lambda: self.lan_ip),
             patch.object(engine, 'SAMBASHARE_CONFIG', self.root / 'etc' / 'config' / 'sambashare'),
             patch.object(engine, 'SAMBAUSER_CONFIG', self.root / 'etc' / 'config' / 'sambauser'),
             patch.object(engine, 'SAMBA_CONFIG', self.root / 'etc' / 'config' / 'samba'),
@@ -343,10 +349,17 @@ def successful_manager(sandbox, wsd_running=True):
     - `add_dir` 往 sambashare 追加一段（段 id = argv 里的 name、display = share point）、
       往 smb.conf 追加一个以**显示名**为名的 section；
     - `del_dir` 反向删除；
-    - `init_config` 按当前 sambashare 重新生成 smb.conf 的 section 列表；
+    - `init_config` 按当前 sambashare 重新生成 smb.conf 的 section 列表，
+      `netbios name` 也照真脚本那样从 `/etc/config/samba` 的 `option name` 抄过来
+      （「恢复为系统主机名」要回读校验它）；
     - `systemctl show -p UnitFileState` 回答单元状态；
     - 3702 的占用状态：兜底 kill 生效或 drop-in 写好之后才算释放。
     """
+
+    def netbios_line():
+        """真 smb_mgr.sh 写进 smb.conf 的 `netbios name`（来自 samba 配置的 option name）。"""
+        name = engine.config_option(sandbox.root / 'etc' / 'config' / 'samba', 'samba', 'name', '')
+        return '\tnetbios name = %s\n' % name if name else ''
 
     def handler(runner, key, _timeout):
         if 'add_dir' in key:
@@ -376,7 +389,8 @@ def successful_manager(sandbox, wsd_running=True):
                 if line.startswith('option name '):
                     displays.append(line.split("'")[1])
             sandbox.smb_conf.write_text(
-                '[global]\n' + ''.join('[%s]\n' % item for item in displays), encoding='utf-8')
+                '[global]\n' + netbios_line()
+                + ''.join('[%s]\n' % item for item in displays), encoding='utf-8')
             return Result(0, 'ok\n', '')
         if 'init_config' in key:
             names = []
@@ -385,7 +399,8 @@ def successful_manager(sandbox, wsd_running=True):
                 if line.startswith('option name '):
                     names.append(line.split("'")[1])
             sandbox.smb_conf.write_text(
-                '[global]\n' + ''.join('[%s]\n' % name for name in names), encoding='utf-8')
+                '[global]\n' + netbios_line()
+                + ''.join('[%s]\n' % name for name in names), encoding='utf-8')
             return Result(0, 'init_config ok\n', '')
         if 'killall' in key or 'pkill' in key:
             sandbox.wsd_processes.clear()
@@ -1849,22 +1864,22 @@ class SambaIdentityAndHostnameTests(unittest.TestCase):
                     engine.validate_hostname(bad)
                 self.assertIn(needle, str(caught.exception))
 
-    def test_hostname_precedence_settings_then_samba_then_default(self):
-        """优先 settings['hostname'] > /etc/config/samba 的 option name > SmartStorage。"""
+    def test_resolve_hostname_ignores_any_stored_settings(self):
+        """插件不再接受/不再存用户提供的名字：宣告名只跟 `/etc/config/samba` 走。"""
         with tempfile.TemporaryDirectory() as tmp:
             sandbox = Sandbox(tmp)
             self.addCleanup(sandbox.close)
             samba = sandbox.root / 'etc' / 'config' / 'samba'
             engine_obj = sandbox.engine
-            # 1) 没有落盘设置：用 /etc/config/samba 里的名字
+            # 1) 用 /etc/config/samba 里的名字（读不到才是内置默认值）
             self.assertEqual(engine_obj._resolve_hostname(), 'SmartStorage')
             samba.write_text("config samba 'global'\n\toption name 'MyNAS'\n", encoding='utf-8')
             self.assertEqual(engine_obj._resolve_hostname(), 'MyNAS')
-            # 2) 落盘设置优先
-            engine_obj.explicit_hostname = 'Custom1'
-            self.assertEqual(engine_obj._resolve_hostname(), 'Custom1')
-            # 3) 落盘设置被清掉后回到 Samba 的名字
-            engine_obj.explicit_hostname = ''
+            # 2) 旧版本落盘的 hostname 一律忽略，也不会写回设置里
+            engine.save_settings({**engine_obj.settings, 'hostname': 'Custom1'},
+                                 sandbox.data / 'settings.json')
+            reloaded = engine.load_settings(sandbox.data / 'settings.json')
+            self.assertNotIn('hostname', reloaded)
             self.assertEqual(engine_obj._resolve_hostname(), 'MyNAS')
 
 
@@ -1874,7 +1889,8 @@ class DiscoveryToggleTests(EngineHarness):
     def test_settings_default_to_enabled(self):
         self.build()
         data = self.engine.status()
-        self.assertEqual(data['settings'], {'discoveryEnabled': True, 'hostname': 'SmartStorage'})
+        # 设置里只剩「网络发现」开关：主机名已改成只读展示（identity 里自动获取）
+        self.assertEqual(data['settings'], {'discoveryEnabled': True})
         self.assertTrue(data['discovery']['enabled'])
         self.assertTrue(self.engine.discovery['enabled'])
 
@@ -1893,10 +1909,10 @@ class DiscoveryToggleTests(EngineHarness):
         self.assertFalse(self.sandbox.dropin.exists())          # drop-in 被删掉
         self.assertIsNone(self.engine.responder)
 
-        # 落盘：settings.json 里 discoveryEnabled = false
+        # 落盘：settings.json 里 discoveryEnabled = false，且不再有 hostname 键
         saved = json.loads((self.sandbox.data / 'settings.json').read_text(encoding='utf-8'))
         self.assertIs(saved['discoveryEnabled'], False)
-        self.assertTrue(saved['hostname'] == '')
+        self.assertNotIn('hostname', saved)
 
         # 重启（新 Engine 走同一个 DATA_DIR / 同一个 runner）：关闭状态不自动接管
         self.runner.calls.clear()
@@ -1959,114 +1975,248 @@ class DiscoveryToggleTests(EngineHarness):
         self.assertTrue(self.engine.responder.started)
 
 
-class SetHostnameTests(EngineHarness):
-    """主机名保存：校验 → 落盘 → 重建回应器 + 重发 Hello。"""
+class SystemHostnameTests(unittest.TestCase):
+    """身份自动获取的纯函数：系统主机名 / SMB 名 / IP / 访问提示 / uci 文本改写。"""
 
-    def test_saves_name_and_rebuilds_responder_with_hello(self):
+    def test_system_hostname_prefers_uci_then_command_then_samba(self):
+        """优先级：uci system 主机名 → 系统调用 hostname → samba 的 option name。"""
+        with patch.object(engine, 'uci_option', lambda name: 'nas-uci' if name else ''), \
+                patch.object(engine, 'path_gethostname', lambda: 'minasc71ab1'), \
+                patch.object(engine, 'samba_config_value', lambda option, default='': 'SmartStorage'):
+            self.assertEqual(engine.resolve_system_hostname(), 'nas-uci')
+        with patch.object(engine, 'uci_option', lambda name: ''), \
+                patch.object(engine, 'path_gethostname', lambda: 'minasc71ab1'), \
+                patch.object(engine, 'samba_config_value', lambda option, default='': 'SmartStorage'):
+            self.assertEqual(engine.resolve_system_hostname(), 'minasc71ab1')
+        with patch.object(engine, 'uci_option', lambda name: ''), \
+                patch.object(engine, 'path_gethostname', lambda: ''), \
+                patch.object(engine, 'samba_config_value', lambda option, default='': 'SmartStorage'):
+            self.assertEqual(engine.resolve_system_hostname(), 'SmartStorage')
+        with patch.object(engine, 'uci_option', lambda name: ''), \
+                patch.object(engine, 'path_gethostname', lambda: ''), \
+                patch.object(engine, 'samba_config_value', lambda option, default='': ''):
+            self.assertEqual(engine.resolve_system_hostname(), engine.DEFAULT_HOSTNAME)
+
+    def test_netbios_name_is_read_from_smb_conf(self):
+        text = ("[global]\n\tworkgroup = WORKGROUP\n\tnetbios name = minasc71ab1\n"
+                "\tnetbios name = ignored\n[share]\n")
+        self.assertEqual(engine.smb_conf_netbios_name(text, 'fallback'), 'minasc71ab1')
+        self.assertEqual(engine.smb_conf_netbios_name('NetBIOS Name = "Quoted"\n', 'x'), 'Quoted')
+        # 读不到就回退（samba 配置里的 option name）
+        self.assertEqual(engine.smb_conf_netbios_name('[global]\n', 'SmartStorage'), 'SmartStorage')
+        self.assertEqual(engine.smb_conf_netbios_name('', ''), '')
+
+    def test_parse_ip_route_src(self):
+        self.assertEqual(engine.parse_ip_route_src(
+            '223.5.5.5 via 192.168.1.1 dev eth0 src 192.168.1.8 uid 0\n'), '192.168.1.8')
+        self.assertEqual(engine.parse_ip_route_src('RTNETLINK answers: Network is unreachable'),
+                         '')
+
+    def test_access_hint_uses_the_auto_values(self):
+        """提示用 SMB 名 + IP 现拼（两个值都自动获取），**不带**括号里的说明。"""
+        self.assertEqual(engine.access_hint('minasc71ab1', '192.168.1.8'),
+                         'Windows 里用 \\\\minasc71ab1 或 \\\\192.168.1.8 访问')
+        self.assertNotIn('（', engine.access_hint('minasc71ab1', '192.168.1.8'))
+        # 没有 IP 时只给名字那一半
+        self.assertEqual(engine.access_hint('minasc71ab1', ''),
+                         'Windows 里用 \\\\minasc71ab1 访问')
+        # 名字都拿不到：不显示提示（页面拿到空串就不渲染）
+        self.assertEqual(engine.access_hint('', '192.168.1.8'), '')
+        self.assertEqual(engine.access_hint('', ''), '')
+
+    def test_set_uci_option_replaces_inserts_and_appends(self):
+        text = ("config samba 'global'\n\toption workgroup 'WORKGROUP'\n"
+                "\toption name 'SmartStorage'\n\nconfig sambashare 'x'\n\toption path '/a'\n")
+        updated = engine.set_uci_option(text, 'samba', 'name', 'minasc71ab1')
+        self.assertIn("option name 'minasc71ab1'", updated)
+        self.assertNotIn('SmartStorage', updated)
+        self.assertIn("option workgroup 'WORKGROUP'", updated)     # 其它行原样保留
+        self.assertIn("config sambashare 'x'", updated)
+        self.assertIn("option path '/a'", updated)                 # 别的 section 没被动
+        # option 不存在：插在 section 头之后
+        inserted = engine.set_uci_option("config samba 'global'\n\toption workgroup 'W'\n",
+                                         'samba', 'name', 'nas1')
+        self.assertIn("\toption name 'nas1'", inserted)
+        self.assertLess(inserted.index('config samba'), inserted.index("option name 'nas1'"))
+        # section 不存在：追加一段
+        appended = engine.set_uci_option("config foo 'bar'\n", 'samba', 'name', 'nas1')
+        self.assertIn("config samba\n\toption name 'nas1'", appended)
+        self.assertIn("config foo 'bar'", appended)
+
+
+class IdentitySnapshotTests(EngineHarness):
+    """页面只读展示的身份：值必须来自**自动获取**，不能写死。"""
+
+    def test_matched_names_have_no_warning(self):
+        self.build()
+        self.sandbox.system_hostname = 'minasc71ab1'
+        self.sandbox.lan_ip = '192.168.1.8'
+        (self.root / 'etc' / 'config' / 'samba').write_text(
+            "config samba 'global'\n\toption name 'minasc71ab1'\n", encoding='utf-8')
+        self.sandbox.smb_conf.write_text('[global]\n\tnetbios name = minasc71ab1\n',
+                                        encoding='utf-8')
+
+        identity = self.engine.identity_snapshot()
+
+        self.assertEqual(identity['systemName'], 'minasc71ab1')      # 来自桩，不是写死的
+        self.assertEqual(identity['netbiosName'], 'minasc71ab1')
+        self.assertTrue(identity['matched'])
+        self.assertEqual(identity['warning'], '')
+        self.assertEqual(identity['address'], '192.168.1.8')
+        self.assertIn('\\\\minasc71ab1', identity['hint'])
+        self.assertIn('\\\\192.168.1.8', identity['hint'])
+
+    def test_mismatch_reports_warning_and_hint_uses_the_smb_name(self):
+        self.build()
+        self.sandbox.system_hostname = 'minasc71ab1'
+        self.sandbox.lan_ip = '10.0.0.5'
+        # /etc/config/samba 还是旧名字（真机上就是这个状态：Windows 连不上）
+        (self.root / 'etc' / 'config' / 'samba').write_text(
+            "config samba 'global'\n\toption name 'SmartStorage'\n", encoding='utf-8')
+        self.sandbox.smb_conf.write_text('[global]\n\tnetbios name = SmartStorage\n',
+                                        encoding='utf-8')
+
+        identity = self.engine.identity_snapshot()
+
+        # 系统主机名只在服务端当判据（页面不展示它）
+        self.assertEqual(identity['systemName'], 'minasc71ab1')
+        self.assertEqual(identity['netbiosName'], 'SmartStorage')
+        self.assertFalse(identity['matched'])
+        self.assertIn('不一致', identity['warning'])
+        self.assertIn('系统主机名', identity['warning'])
+        self.assertIn('恢复为系统主机名', identity['warning'])
+        # 提示里用的是**页面上展示的那个名字**（SMB 名）+ IP
+        self.assertEqual(identity['hint'], 'Windows 里用 \\\\SmartStorage 或 \\\\10.0.0.5 访问')
+        self.assertNotIn('minasc71ab1', identity['hint'])
+        self.assertNotIn('（', identity['hint'])                    # 括号说明已删掉
+
+    def test_netbios_falls_back_to_the_samba_option_name(self):
+        self.build()
+        self.sandbox.system_hostname = 'minasc71ab1'
+        (self.root / 'etc' / 'config' / 'samba').write_text(
+            "config samba 'global'\n\toption name 'minasc71ab1'\n", encoding='utf-8')
+        self.sandbox.smb_conf.write_text('[global]\n', encoding='utf-8')   # 没有 netbios name
+
+        identity = self.engine.identity_snapshot()
+        self.assertEqual(identity['netbiosName'], 'minasc71ab1')
+        self.assertTrue(identity['matched'])
+
+    def test_hint_without_an_address(self):
+        self.build()
+        self.sandbox.system_hostname = 'minasc71ab1'
+        self.sandbox.lan_ip = ''
+        (self.root / 'etc' / 'config' / 'samba').write_text(
+            "config samba 'global'\n\toption name 'minasc71ab1'\n", encoding='utf-8')
+        identity = self.engine.identity_snapshot()
+        self.assertEqual(identity['address'], '')
+        self.assertEqual(identity['hint'], 'Windows 里用 \\\\minasc71ab1 访问')
+        self.assertNotIn('或 \\\\', identity['hint'])
+
+    def test_status_exposes_identity_for_the_page(self):
+        self.build()
+        self.sandbox.system_hostname = 'minasc71ab1'
+        self.sandbox.lan_ip = '192.168.1.8'
+        (self.root / 'etc' / 'config' / 'samba').write_text(
+            "config samba 'global'\n\toption name 'minasc71ab1'\n", encoding='utf-8')
+        data = self.engine.status()
+        self.assertEqual(data['identity']['systemName'], 'minasc71ab1')   # 内部判据仍在
+        self.assertEqual(data['identity']['netbiosName'], 'minasc71ab1')
+        self.assertEqual(data['identity']['address'], '192.168.1.8')
+        self.assertEqual(data['identity']['hint'],
+                         'Windows 里用 \\\\minasc71ab1 或 \\\\192.168.1.8 访问')
+
+
+class RestoreSmbNameTests(EngineHarness):
+    """「恢复为系统主机名」：写 option name → init_config → restart 三个服务 → 回读校验。"""
+
+    def prepare(self, system_name='minasc71ab1', samba_name='SmartStorage'):
         self.build()
         self.manager()
-        self.engine.start()
-        first = self.engine.responder
-        self.assertEqual(first.hostname, 'SmartStorage')
+        self.sandbox.system_hostname = system_name
+        (self.root / 'etc' / 'config' / 'samba').write_text(
+            "config samba 'global'\n\toption name '%s'\n" % samba_name, encoding='utf-8')
+        self.sandbox.smb_conf.write_text('[global]\n\tnetbios name = %s\n' % samba_name,
+                                        encoding='utf-8')
+        return self.engine
 
-        snapshot = self.engine.set_hostname('XiaoMiNAS')
+    def test_restore_writes_the_system_name_then_restarts_and_verifies(self):
+        engine_obj = self.prepare()
+        result = engine_obj.restore_smb_hostname()
 
-        self.assertTrue(first.stopped)                          # 旧的先发 Bye
-        rebuilt = self.engine.responder
-        self.assertIsNot(rebuilt, first)
-        self.assertEqual(rebuilt.hostname, 'XiaoMiNAS')         # 新名字立刻生效
-        self.assertEqual(rebuilt.hellos, [2])                   # 重发 Hello
-        self.assertEqual(snapshot['settings']['hostname'], 'XiaoMiNAS')
-        self.assertEqual(snapshot['discovery']['hostname'], 'XiaoMiNAS')
-        self.assertTrue(snapshot['discovery']['running'])
-        saved = json.loads((self.sandbox.data / 'settings.json').read_text(encoding='utf-8'))
-        self.assertEqual(saved['hostname'], 'XiaoMiNAS')
-        self.assertEqual(self.engine.new_responder().hostname, 'XiaoMiNAS')
+        self.assertEqual(result['name'], 'minasc71ab1')
+        self.assertTrue(result['verified'])
+        self.assertEqual(result['netbiosName'], 'minasc71ab1')
+        self.assertEqual(result['units'], ['smb', 'nmb', 'wsdd'])
+        self.assertEqual(result['errors'], [])
+        # 写的是系统主机名（用户输入的名字一律不写）
+        samba = (self.root / 'etc' / 'config' / 'samba').read_text(encoding='utf-8')
+        self.assertIn("option name 'minasc71ab1'", samba)
+        self.assertNotIn('SmartStorage', samba)
+        # 调用顺序：init_config → restart smb nmb wsdd（不是 reload）
+        calls = [call for call in self.runner.calls if 'init_config' in call or 'restart' in call]
+        self.assertIn('init_config', calls[0])
+        self.assertEqual(calls[1], ['/bin/systemctl', 'restart', 'smb', 'nmb', 'wsdd'])
+        self.assertFalse(any('reload' in call for call in self.runner.calls))
+        # 回读的是 smb.conf（真脚本由 option name 生成 netbios name）
+        self.assertEqual(engine_obj.smb_netbios_name(), 'minasc71ab1')
 
-    def test_priority_beats_samba_name_after_save(self):
-        self.build()
-        self.manager()
-        self.engine.start()
-        self.assertEqual(self.engine.hostname, 'SmartStorage')
-        self.engine.set_hostname('Custom01')
-        self.assertEqual(self.engine.hostname, 'Custom01')
-        # 即使 /etc/config/samba 里的名字变了，落盘的设置仍然优先
-        (self.sandbox.root / 'etc' / 'config' / 'samba').write_text(
-            "config samba 'global'\n\toption name 'MyNAS'\n", encoding='utf-8')
-        self.assertEqual(self.engine._resolve_hostname(), 'Custom01')
+    def test_restore_reports_when_the_readback_still_shows_the_old_name(self):
+        engine_obj = self.prepare()
+        original = self.runner.handler
 
-    def test_invalid_name_is_rejected_and_nothing_changes(self):
-        self.build()
-        self.manager()
-        self.engine.start()
-        responder = self.engine.responder
-        for bad in ['', 'a' * 16, '-bad', 'bad name', '存储']:
-            with self.subTest(bad=bad), self.assertRaises(Error):
-                self.engine.set_hostname(bad)
-        self.assertIs(self.engine.responder, responder)         # 没有重建
-        self.assertFalse(responder.stopped)
-        self.assertEqual(self.engine.hostname, 'SmartStorage')
-        self.assertFalse((self.sandbox.data / 'settings.json').exists())
+        def handler(runner, key, timeout):
+            if 'init_config' in key:
+                # 故意不更新 smb.conf 的 netbios name：回读校验必须如实报失败
+                return Result(0, 'ok\n', '')
+            return original(runner, key, timeout)
 
-    def test_saved_while_discovery_is_off_starts_no_responder(self):
-        self.build()
-        self.manager()
-        self.engine.set_discovery_enabled(False)
-        snapshot = self.engine.set_hostname('OffMode01')
-        self.assertIsNone(self.engine.responder)                # 关闭状态下不起回应器
-        self.assertFalse(snapshot['discovery']['running'])
-        self.assertEqual(snapshot['settings']['hostname'], 'OffMode01')
-        # 重新打开后用的是落盘的新名字
-        self.engine.set_discovery_enabled(True)
-        self.assertEqual(self.engine.hostname, 'OffMode01')
-        self.assertEqual(self.engine.responder.hostname, 'OffMode01')
+        self.runner.handler = handler
+        result = engine_obj.restore_smb_hostname()
 
-    def test_reset_clears_saved_name_and_falls_back_to_samba(self):
-        """恢复默认 = 清掉落盘值，回到 `/etc/config/samba` 里的名字。"""
-        self.build()
-        self.manager()
-        self.engine.start()
-        self.engine.set_hostname('XiaoMiNAS')
-        self.assertEqual(self.engine.hostname, 'XiaoMiNAS')
+        self.assertFalse(result['verified'])
+        self.assertEqual(result['netbiosName'], 'SmartStorage')
+        self.assertTrue(any('netbios name' in item for item in result['errors']))
+        self.assertIn('init_config', result['output'])          # 原始命令输出也带回去
 
-        snapshot = self.engine.set_hostname(reset=True)
+    def test_restore_restarts_even_when_the_config_already_matches(self):
+        """配置里名字对、但 smb.conf 还是旧的：照样 init_config + restart 修好它。"""
+        engine_obj = self.prepare(samba_name='minasc71ab1')
+        result = engine_obj.restore_smb_hostname()
+        self.assertTrue(result['verified'])
+        self.assertEqual(self.runner.count('init_config'), 1)
+        self.assertEqual(
+            self.runner.calls.count(['/bin/systemctl', 'restart', 'smb', 'nmb', 'wsdd']), 1)
 
-        # 快照给的是**生效**的名字（回退到 samba 配置里的 SmartStorage），落盘值才是被清掉的那个
-        self.assertEqual(snapshot['settings']['hostname'], 'SmartStorage')
-        self.assertEqual(snapshot['discovery']['hostname'], 'SmartStorage')
-        self.assertEqual(self.engine.responder.hostname, 'SmartStorage')  # 立刻生效
-        self.assertEqual(self.engine.responder.hellos, [2])               # 重发 Hello
-        self.assertIn('恢复默认', snapshot['discovery']['message'])
-        saved = json.loads((self.sandbox.data / 'settings.json').read_text(encoding='utf-8'))
-        self.assertEqual(saved['hostname'], '')                           # 落盘值已清空
-        self.assertEqual(self.engine.new_responder().hostname, 'SmartStorage')
+    def test_restore_rejects_a_system_name_that_cannot_be_an_smb_name(self):
+        engine_obj = self.prepare(system_name='bad name')
+        with self.assertRaises(Error) as caught:
+            engine_obj.restore_smb_hostname()
+        self.assertIn('不能作为 SMB 名', str(caught.exception))
+        # 什么都没动：没有命令、配置没被改写
+        self.assertIsNone(self.runner.argv_for('init_config'))
+        self.assertFalse(any('restart' in call for call in self.runner.calls))
+        self.assertIn('SmartStorage',
+                      (self.root / 'etc' / 'config' / 'samba').read_text(encoding='utf-8'))
 
-    def test_reset_follows_a_changed_samba_name(self):
-        """恢复默认之后，名字跟着系统配置走（不再是插件里那个）。"""
-        self.build()
-        self.manager()
-        self.engine.start()
-        self.engine.set_hostname('XiaoMiNAS')
-        (self.sandbox.root / 'etc' / 'config' / 'samba').write_text(
-            "config samba 'global'\n\toption name 'MyNAS'\n", encoding='utf-8')
-        self.assertEqual(self.engine._resolve_hostname(), 'XiaoMiNAS')    # 落盘值仍优先
+    def test_restore_rebuilds_a_running_responder_with_the_system_name(self):
+        engine_obj = self.prepare()
+        engine_obj.start()                                  # 接管 + 起回应器
+        first = engine_obj.responder
+        self.assertEqual(first.hostname, 'SmartStorage')    # 接管时用的是 samba 旧名字
 
-        snapshot = self.engine.set_hostname(reset=True)
+        result = engine_obj.restore_smb_hostname()
 
-        self.assertEqual(snapshot['discovery']['hostname'], 'MyNAS')
-        self.assertEqual(self.engine.responder.hostname, 'MyNAS')
+        self.assertTrue(result['verified'])
+        self.assertTrue(first.stopped)                      # 旧的先发 Bye
+        self.assertEqual(engine_obj.responder.hostname, 'minasc71ab1')
+        self.assertTrue(engine_obj.discovery['running'])
 
-    def test_reset_while_discovery_is_off_starts_no_responder(self):
-        self.build()
-        self.manager()
-        self.engine.set_discovery_enabled(False)
-        snapshot = self.engine.set_hostname(reset=True)
-        self.assertIsNone(self.engine.responder)
-        self.assertEqual(snapshot['settings']['hostname'], 'SmartStorage')   # 生效名
-        saved = json.loads((self.sandbox.data / 'settings.json').read_text(encoding='utf-8'))
-        self.assertEqual(saved['hostname'], '')                               # 落盘值已清空
-        self.engine.set_discovery_enabled(True)
-        self.assertEqual(self.engine.responder.hostname, 'SmartStorage')
+    def test_restore_does_not_touch_a_stopped_responder(self):
+        engine_obj = self.prepare()
+        engine_obj.set_discovery_enabled(False)
+        result = engine_obj.restore_smb_hostname()
+        self.assertTrue(result['verified'])
+        self.assertIsNone(engine_obj.responder)             # 关闭状态不悄悄起回应器
 
 
 class AccountDataRootTests(EngineHarness):

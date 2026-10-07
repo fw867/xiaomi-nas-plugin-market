@@ -24,6 +24,10 @@
 
 * { box-sizing: border-box; }
 
+/* `hidden` 属性必须能压过 `.btn.block { display: block }` 这类规则：
+   否则「恢复为系统主机名」在不一致消失后仍然显示（实测踩过）。 */
+[hidden] { display: none !important; }
+
 html {
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
@@ -159,21 +163,33 @@ main {
 .status-dot.off { background: #b9c2cf; box-shadow: 0 0 0 4px rgba(185, 194, 207, .18); }
 #serviceState { font-size: 14.5px; font-weight: 600; }
 
-/* 主机名：输入框 + 保存 + 恢复默认，固定一行（窄屏靠压缩按钮内边距，不换行） */
-.host-row { display: flex; flex-wrap: nowrap; gap: 6px; margin-top: 10px; }
-.host-row input[type="text"] {
-  flex: 1 1 auto;
-  min-width: 0;
-  min-height: var(--tap);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 10px 10px;
-  font-size: 16px;
-  font-family: inherit;
-  background: #fff;
-  color: var(--ink);
+/* 主机名 / SMB 名：**只读**标签（名字由服务端自动获取，页面没有输入框） */
+.identity-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-height: 32px;
+  margin-top: 10px;
 }
-.host-row .btn { flex: 0 0 auto; padding: 10px 12px; font-size: 14px; }
+.identity-label { flex: 0 0 auto; width: 62px; color: var(--muted); font-size: 13px; }
+.identity-value { flex: 1 1 auto; min-width: 0; font-size: 14.5px; font-weight: 600; overflow-wrap: anywhere; }
+
+/* 两个名字不一致时的黄色警告（一致时整个元素 hidden） */
+.name-warning {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border-left: 3px solid #d9a441;
+  border-radius: 10px;
+  background: #fff8e6;
+  color: #8a6212;
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* 访问提示：`\\主机名` / `\\IP` 都由服务端自动获取 */
+.access-hint { margin: 10px 0 0; color: var(--muted); font-size: 12.5px; overflow-wrap: anywhere; }
 
 /* 按钮 */
 .btn {
@@ -382,9 +398,10 @@ footer { text-align: center; color: var(--muted); font-size: 12.5px; margin-top:
   body { background: var(--bg); }
   .topbar { background: rgba(27, 35, 48, .94); }
   .icon-button:active { background: #232d3b; }
-  .btn, .host-row input[type="text"], .path-row input[type="text"] { background: #1b2330; color: var(--ink); border-color: #333f4f; }
+  .btn, .path-row input[type="text"] { background: #1b2330; color: var(--ink); border-color: #333f4f; }
   .btn:active { background: #232d3b; }
   .btn.primary { background: var(--blue); border-color: var(--blue); color: #fff; }
+  .name-warning { border-left-color: #b98a2e; background: #2b2517; color: #e6c98a; }
   .folder-row:active { background: #232d3b; }
   .roots button { background: #1b2330; border-color: #333f4f; color: #cfd8e3; }
   .roots button:active { background: #232d3b; }

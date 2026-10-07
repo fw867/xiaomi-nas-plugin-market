@@ -155,12 +155,13 @@ $ net view \\192.168.1.8          # 同一账号下出现两个共享
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/healthz` | `{"ok": true, "version": "0.1.0"}` |
-| GET | `/api/status` | 设置（开关/主机名）、发现服务状态、账号与共享列表；工作组、XAddrs、官方 wsdd 状态、最近取元数据时间仍在返回里（便于排查），页面不显示 |
+| GET | `/api/status` | 设置（`discoveryEnabled`）、只读身份 `identity`（`systemName`/`netbiosName`/`matched`/`address`/`hint`/`warning`）、发现服务状态、账号与共享列表；工作组、XAddrs、官方 wsdd 状态、最近取元数据时间仍在返回里（便于排查），页面不显示 |
 | GET | `/api/log` | 最近日志 |
 | GET | `/api/browse?account=fw867&root=0&path=照片` | 目录浏览器：`root` 是位置序号（0 = 存储池 = 账号数据根，其余 = `EXTRA_ROOTS`，默认 `/nas/mnt` 显示为「外接存储」），`path` 是**相对该位置**的路径（空 = 位置根目录）。返回 `locations`（`{index,label,path,exists}`）、`path`/`absolute`（当前目录）与 `items`（一层子目录：`{name,path,absolute,shared}`，跳过隐藏目录与符号链接）。越界（`..`/绝对路径）、位置无效、目录不存在都返回 400 + 中文原因 |
 | GET | `/api/dirs?account=fw867` | 老接口（保留行为与结构）：账号数据根目录下的子目录；每项带 `shared`、`shareName`/`display` 与 `deletable`，另有 `locations` 分组（`{label, root, available, dirs}`） |
 | POST | `/api/discovery` | `{"enabled": true\|false}`：开 = 接管官方 wsdd + 起回应器；关 = 发 Bye + 还原官方 wsdd（幂等） |
-| POST | `/api/hostname` | `{"hostname": "..."}`：校验 → 落盘 → 重建回应器并重发 Hello；`{"reset": true}` 为**恢复默认**（清掉落盘值，回到 `/etc/config/samba` 的 `option name`，页面上是「恢复默认」按钮） |
+| POST | `/api/hostname` | **已废弃**：主机名改成只读展示（服务端自动获取），这里一律返回 400「主机名不可修改」，不写任何配置 |
+| POST | `/api/hostname/restore` | 「恢复为系统主机名」：写 `option name` = 系统主机名 → `smb_mgr.sh init_config` → `systemctl restart smb nmb wsdd` → 回读 `smb.conf` 的 `netbios name` 校验，返回 `{name, netbiosName, verified, restartReturncode, units, errors, output}` |
 | POST | `/api/share/add` | `{"account","path","sharePoint"}`（单个，目录浏览器提交的就是**绝对路径**；兼容旧版）或 `{"account","paths":[...]}`（多选；所有 `add_dir` 之后只跑一次 `init_config` + reload） |
 | POST | `/api/share/delete` | 删除插件自建的共享：`{"shareName": "<账号>_nb_<序号>"}`（单个，返回结构同旧版；页面上行尾 `-` 用的就是它）或 `{"shareNames": [...]}`（批量；所有 `del_dir` 之后只跑一次 `init_config` + reload，返回 `removed/verified/errors/initReturncode/reloadReturncode`）。**含受保护共享（`public` 等）时整批拒绝、一条命令都不跑** |
 | POST | `/api/detect/restart` | 重启回应器并重发 Hello（排查用，页面上没有按钮） |
@@ -180,20 +181,34 @@ node --check web/app.js
 python3 -m unittest tests.test_web -v
 ```
 
-### 主机名：改的是 Windows「网络」里显示的名字
+### SMB 名：只读展示（不再提供改名）
 
-页面上的主机名保存后写进 `<DATA_DIR>/settings.json`（`settings['hostname']`），
-优先级是 `settings['hostname']` > `/etc/config/samba` 的 `option name` > `SmartStorage`。
-**这里改的只是 WSD 宣告的名字**（Windows 资源管理器「网络」里显示的那一个），
-SMB 服务名仍然由官方共享 app 的配置决定，改这里不会动 `smb.conf` 里的 `netbios name`。
+真机踩过的坑：插件原来让用户改的是 **Samba 的 NetBIOS 名**（写 `/etc/config/samba` 的
+`option name` → `netbios name`），但 Windows 11 是靠 **WSD/mDNS/DNS**（也就是**系统主机名**）
+发现设备的；两者不一致时用户改成任何新名字都连不上，而且 `netbios name` 只 `reload smb nmb`
+也不生效（必须 `restart`）。**所以插件不再提供改名能力**：页面只读展示一行 SMB 名，
+系统主机名只在服务端作为「两名是否一致」的内部判据（页面不展示）。
 
-校验：长度 1–15，`[A-Za-z0-9][A-Za-z0-9._-]*`（NetBIOS 友好；对外宣告时按
-`wsd.py` 现有实现大写化）；非法输入返回 400 + 中文原因。
+| 页面显示 | 取值来源（全部服务端自动获取） |
+| --- | --- |
+| SMB 名 | `/var/etc/smb.conf` 的 `netbios name` → `/etc/config/samba` 的 `option name` |
+| 访问提示 | SMB 名 + 局域网 IP 现拼：`Windows 里用 \\<SMB名> 或 \\<局域网IP> 访问` |
+| （内部判据）系统主机名 | `uci -q get system.@system[0].hostname` → 系统调用 `hostname` → `/etc/config/samba` 的 `option name` → 内置默认值 |
 
-「恢复默认」按钮 = `POST /api/hostname {"reset": true}`：把落盘的 `hostname` 清空，名字
-回退到系统配置里的那个（`/etc/config/samba` 的 `option name`，读不到才是内置 `SmartStorage`），
-同样会重建回应器并重发 Hello。注意 `/api/status` 的 `settings.hostname` 给的是**生效**的名字，
-「是否被插件改过」看 `<DATA_DIR>/settings.json` 里的值（清空后是空串）。
+IP 由 `ip route get 223.5.5.5` 的 `src` 探测（拿不到就退到 `wsd.lan_address()` 的默认路由探测）；
+IP 取不到时提示只给 `\\<SMB名>` 那一半，名字也读不到就不显示提示。
+
+两个名字不一致（大小写不敏感）时，页面在 SMB 名下方显示**黄色警告**并给出「恢复为系统主机名」按钮：
+
+```
+写 /etc/config/samba 的 option name = 系统主机名
+  → smb_mgr.sh init_config
+  → systemctl restart smb nmb wsdd     # 不是 reload：netbios name 只 reload 不生效
+  → 回读 smb.conf 的 netbios name 校验（结果与失败原因都提示在页面上）
+```
+
+页面没有任何主机名输入框；`POST /api/hostname` 一律返回 400「主机名不可修改」，
+`settings.json` 里旧版本的 `hostname` 键也不再读写（升级后第一次保存会自然丢掉它）。
 
 「网络发现」开关的状态同样落盘在 `settings.json`：关闭后服务重启**不会**自动接管，
 直到用户在页面上重新打开。

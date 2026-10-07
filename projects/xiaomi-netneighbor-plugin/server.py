@@ -291,13 +291,16 @@ class Handler(BaseHTTPRequestHandler):
                 snapshot = self.server.engine.set_discovery_enabled(body.get('enabled'))
                 self.json_out(200, {'ok': True, 'status': snapshot})
             elif path == '/api/hostname':
-                # 改 Windows「网络」里显示的名字：落盘 + 重建回应器 + 重发 Hello；
-                # {"reset": true} 是恢复默认（清掉落盘值，回退到 samba 配置里的名字）
-                if body.get('reset'):
-                    snapshot = self.server.engine.set_hostname(reset=True)
-                else:
-                    snapshot = self.server.engine.set_hostname(body.get('hostname', ''))
-                self.json_out(200, {'ok': True, 'status': snapshot})
+                # 主机名已改为**只读展示**（服务端自动获取系统主机名）：这里一律拒绝，
+                # 绝不把用户提供的名字写进任何配置（旧版页面会发 {"hostname": ...}）
+                self.fail(400, '主机名不可修改：页面只读展示自动获取的系统主机名；'
+                               '若与 SMB 名不一致，请点「恢复为系统主机名」')
+            elif path == '/api/hostname/restore':
+                # 「恢复为系统主机名」：写 option name = 系统主机名 →
+                # smb_mgr.sh init_config → systemctl restart smb nmb wsdd → 回读校验
+                result = self.server.engine.restore_smb_hostname()
+                self.json_out(200, {'ok': True, 'result': result,
+                                    'status': self.server.engine.snapshot()})
             elif path == '/api/detect/restart':
                 # 重新宣告：重建回应器 + 重发 Hello，同步做完再回（几百毫秒量级）
                 snapshot = self.server.engine.restart_responder(times=2)

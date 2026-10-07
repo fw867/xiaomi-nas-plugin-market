@@ -87,13 +87,6 @@ function element(tag, className, text) {
   return node;
 }
 
-// 每 15 秒会重新渲染一次：正在编辑的输入框不能被后台刷新覆盖
-function setValue(id, value) {
-  const node = $(id);
-  if (!node || document.activeElement === node) return;
-  node.value = value === undefined || value === null ? '' : String(value);
-}
-
 // ---------------------------------------------------------------------------
 // 渲染
 // ---------------------------------------------------------------------------
@@ -114,9 +107,25 @@ function renderDiscovery(data) {
     $('serviceState').textContent = discovery.message || '发现服务未运行';
   }
 
-  const toggle = $('discoverySwitch');
-  toggle.checked = enabled;
-  setValue('hostnameInput', settings.hostname || discovery.hostname || '');
+  $('discoverySwitch').checked = enabled;
+}
+
+// SMB 名：**只读展示**服务端自动获取的值（页面不给改，也没有输入框）。
+// 系统主机名只在服务端作为「两名是否一致」的判据，页面不展示；
+// 不一致时显示黄色警告与「恢复为系统主机名」按钮。
+function renderIdentity(data) {
+  const identity = data.identity || {};
+  $('netbiosName').textContent = identity.netbiosName || '—';
+  $('accessHint').textContent = identity.hint || '';
+
+  const mismatch = identity.matched === false;
+  const warning = $('nameWarning');
+  warning.textContent = mismatch
+    ? (identity.warning || 'SMB 名与系统主机名不一致，Windows 可能连不上') : '';
+  warning.hidden = !mismatch;
+  const restore = $('nameRestore');
+  restore.hidden = !mismatch;
+  restore.disabled = false;
 }
 
 function removeBlockedReason(share) {
@@ -178,6 +187,7 @@ function renderShares(accounts) {
 function render(data) {
   state = data;
   renderDiscovery(data);
+  renderIdentity(data);
   renderShares(data.accounts || []);
   $('version').textContent = data.version || '—';
   if (data.sambaMgrFound === false) {
@@ -219,41 +229,29 @@ async function toggleDiscovery(enabled) {
 }
 
 // ---------------------------------------------------------------------------
-// 主机名
+// 主机名：只读展示 + 「恢复为系统主机名」
 // ---------------------------------------------------------------------------
 
-async function saveHostname() {
-  const button = $('hostnameSave');
-  const hostname = $('hostnameInput').value.trim();
-  if (!hostname) { toast('请填写主机名'); return; }
+// 页面不给改名字（写入口也已被服务端拒绝）：只在两个名字不一致时提供一键恢复，
+// 由服务端写 option name = 系统主机名 → init_config → restart smb nmb wsdd → 回读校验。
+async function restoreHostname() {
+  const button = $('nameRestore');
   button.disabled = true;
   busy = true;
   try {
-    const data = await call('hostname', { hostname });
-    render(data.status);
-    toast(`主机名已改为 ${hostname}`);
-    showError('');
-  } catch (error) {
-    showError(error.message);
-    toast('保存失败');
-  } finally {
-    busy = false;
-    button.disabled = false;
-  }
-}
-
-// 恢复默认：清掉插件里存的名字，回到系统配置（/etc/config/samba 的 option name）里的名字
-async function resetHostname() {
-  const button = $('hostnameReset');
-  button.disabled = true;
-  busy = true;
-  try {
-    const data = await call('hostname', { reset: true });
-    render(data.status);
-    const settings = data.status.settings || {};
-    const discovery = data.status.discovery || {};
-    toast(`已恢复默认主机名 ${settings.hostname || discovery.hostname || ''}`.trim());
-    showError('');
+    const data = await call('hostname/restore', {});
+    if (data.status) render(data.status);
+    const result = data.result || {};
+    if (result.verified) {
+      toast(`已恢复为系统主机名 ${result.name}`);
+      showError('');
+    } else {
+      // 回读校验没过：把服务端的原始输出贴出来，别让用户以为改好了
+      const notes = (result.errors || []).join('；') || '回读校验未通过';
+      showError(`恢复后 smb.conf 里的 netbios name 仍是 ${result.netbiosName || '（空）'}：${notes}`
+        + (result.output ? `\n${result.output}` : ''));
+      toast('恢复后校验未通过');
+    }
   } catch (error) {
     showError(error.message);
     toast('恢复失败');
@@ -427,11 +425,8 @@ $('refresh').onclick = () => { refresh(); };
 $('discoverySwitch').addEventListener('change', (event) => {
   toggleDiscovery(event.target.checked);
 });
-$('hostnameSave').onclick = saveHostname;
-$('hostnameReset').onclick = resetHostname;
-$('hostnameInput').addEventListener('keydown', (event) => {
-  if (event.key === 'Enter') { event.preventDefault(); saveHostname(); }
-});
+// 名字不一致时的「恢复为系统主机名」（一致时按钮是 hidden 的，点不到）
+$('nameRestore').onclick = restoreHostname;
 $('addShare').onclick = openBrowse;
 $('browseCancel').onclick = () => { $('browseDialog').close(); };
 $('browseUp').onclick = () => {

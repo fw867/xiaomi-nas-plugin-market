@@ -35,6 +35,63 @@ class WebIdConsistencyTests(unittest.TestCase):
         self.assertEqual(missing, [], 'app.js 引用了 index.html 里不存在的 id：%s' % missing)
 
 
+class HostnameReadOnlyTests(unittest.TestCase):
+    """只读展示 SMB 名（自动获取）+ 不一致时的警告与恢复按钮。"""
+
+    def test_there_is_no_hostname_input_anywhere(self):
+        """旧的输入框 / 保存 / 恢复默认按钮要彻底删掉。"""
+        for leftover in ('hostnameInput', 'hostnameSave', 'hostnameReset',
+                         '保存主机名', 'saveHostname', 'resetHostname', 'setValue'):
+            with self.subTest(leftover=leftover):
+                self.assertNotIn(leftover, HTML)
+                self.assertNotIn(leftover, JS)
+        self.assertNotIn('.host-row', CSS)
+
+    def test_only_the_smb_name_is_shown(self):
+        """页面上只有「SMB 名」一行；系统主机名不再展示（仍由服务端当判据）。"""
+        self.assertIn('id="netbiosName"', HTML)
+        self.assertIn('SMB 名', HTML)
+        self.assertNotIn('systemName', HTML)                 # 标签与 id 都删掉了
+        self.assertNotIn('systemName', JS)
+        self.assertNotIn('>主机名<', HTML)
+        # 标签是 span，不是 input（不给改）
+        self.assertIn('<span id="netbiosName" class="identity-value">', HTML)
+        self.assertIn('.identity-value', CSS)
+        self.assertIn("$('netbiosName').textContent = identity.netbiosName", JS)
+
+    def test_access_hint_comes_from_the_server(self):
+        """提示必须用服务端自动获取的 SMB 名/IP 渲染，页面不拼字符串、也不带括号说明。"""
+        self.assertIn('id="accessHint"', HTML)
+        self.assertIn("$('accessHint').textContent = identity.hint", JS)
+        self.assertIn('.access-hint', CSS)
+        self.assertNotIn('\\\\minasc71ab1', HTML + JS)       # 不写死任何具体名字
+        for dropped in ('主机名每台设备不同', '此处为自动获取'):
+            with self.subTest(dropped=dropped):              # 括号里的说明整段删掉了
+                self.assertNotIn(dropped, HTML)
+                self.assertNotIn(dropped, JS)
+
+    def test_mismatch_shows_warning_and_restore_button(self):
+        self.assertIn('id="nameWarning"', HTML)
+        self.assertIn('id="nameRestore"', HTML)
+        self.assertIn('class="name-warning"', HTML)
+        self.assertIn('.name-warning', CSS)                  # 黄色警告样式
+        self.assertIn('identity.matched === false', JS)
+        self.assertIn('warning.hidden = !mismatch', JS)
+        self.assertIn('restore.hidden = !mismatch', JS)
+        self.assertIn('恢复为系统主机名', HTML)
+
+    def test_restore_button_calls_the_read_only_endpoint(self):
+        self.assertIn("$('nameRestore').onclick = restoreHostname", JS)
+        self.assertIn("call('hostname/restore', {})", JS)
+        self.assertIn("result.verified", JS)                 # 回读校验结果要提示
+        self.assertIn('showError(error.message)', JS)
+
+    def test_hidden_attribute_wins_over_button_display(self):
+        """`hidden` 必须能藏住 `.btn.block`：否则名字一致后恢复按钮还在（实测踩过）。"""
+        self.assertIn('[hidden] { display: none !important; }', CSS)
+        self.assertIn('.btn.block', CSS)                     # 确实有会压过 hidden 的规则
+
+
 class ShareCardLayoutTests(unittest.TestCase):
     """共享目录卡片：上部「添加共享」按钮 + 下部「已共享的目录」列表。"""
 

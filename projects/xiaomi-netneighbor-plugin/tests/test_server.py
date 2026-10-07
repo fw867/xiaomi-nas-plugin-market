@@ -330,8 +330,8 @@ class DiscoveryApiTests(ServerHarness):
     def test_status_exposes_settings(self):
         status, data = self.json_request('GET', '/api/status', headers=self.auth())
         self.assertEqual(status, 200)
-        self.assertEqual(data['settings'],
-                         {'discoveryEnabled': True, 'hostname': 'SmartStorage'})
+        # 设置里只剩「网络发现」开关：主机名改成只读展示（identity 里自动获取）
+        self.assertEqual(data['settings'], {'discoveryEnabled': True})
         self.assertTrue(data['discovery']['enabled'])
 
     def test_disabling_returns_the_new_status(self):
@@ -370,50 +370,82 @@ class DiscoveryApiTests(ServerHarness):
 
 
 class HostnameApiTests(ServerHarness):
-    """`POST /api/hostname`：校验 → 落盘 → 重建回应器 + 重发 Hello。"""
+    """主机名只读：写入口一律拒绝；「恢复为系统主机名」走 `/api/hostname/restore`。"""
 
-    def test_saves_name_and_announces(self):
-        self.engine.start()
-        first = self.engine.responder
-        status, data = self.json_request('POST', '/api/hostname', {'hostname': 'XiaoMiNAS'},
-                                         self.auth(write=True))
+    def setUp(self):
+        super().setUp()
+        # 身份自动获取的来源在测试里给稳定值（真机是 uci/hostname 与默认路由探测）
+        self.sandbox.system_hostname = 'minasc71ab1'
+        self.sandbox.lan_ip = '192.168.1.8'
+        (self.sandbox.root / 'etc' / 'config' / 'samba').write_text(
+            "config samba 'global'\n\toption name 'SmartStorage'\n", encoding='utf-8')
+        self.sandbox.smb_conf.write_text('[global]\n\tnetbios name = SmartStorage\n',
+                                         encoding='utf-8')
+
+    def test_status_renders_auto_detected_names_and_hint(self):
+        status, data = self.json_request('GET', '/api/status', headers=self.auth())
         self.assertEqual(status, 200)
-        self.assertTrue(data['ok'])
-        self.assertEqual(data['status']['settings']['hostname'], 'XiaoMiNAS')
-        self.assertEqual(data['status']['discovery']['hostname'], 'XiaoMiNAS')
-        self.assertTrue(first.stopped)
-        self.assertEqual(self.engine.responder.hostname, 'XiaoMiNAS')
-        self.assertEqual(self.engine.responder.hellos, [2])
-        saved = json.loads((self.sandbox.data / 'settings.json').read_text(encoding='utf-8'))
-        self.assertEqual(saved['hostname'], 'XiaoMiNAS')
+        identity = data['identity']
+        self.assertEqual(identity['systemName'], 'minasc71ab1')      # 只当判据，页面不展示
+        self.assertEqual(identity['netbiosName'], 'SmartStorage')    # 页面展示的就是它
+        self.assertFalse(identity['matched'])
+        # 提示用 SMB 名 + IP（都自动获取），不带括号说明
+        self.assertEqual(identity['hint'], 'Windows 里用 \\\\SmartStorage 或 \\\\192.168.1.8 访问')
+        self.assertIn('不一致', identity['warning'])
+        # settings 里不再有 hostname
+        self.assertNotIn('hostname', data['settings'])
 
-    def test_reset_clears_saved_name_and_falls_back_to_default(self):
-        self.engine.start()
-        self.engine.set_hostname('XiaoMiNAS')
-        status, data = self.json_request('POST', '/api/hostname', {'reset': True},
-                                         self.auth(write=True))
-        self.assertEqual(status, 200)
-        self.assertTrue(data['ok'])
-        # 生效名回到 samba 配置里的那个；落盘值被清空（见下面的文件断言）
-        self.assertEqual(data['status']['settings']['hostname'], 'SmartStorage')
-        self.assertEqual(data['status']['discovery']['hostname'], 'SmartStorage')
-        self.assertEqual(self.engine.responder.hostname, 'SmartStorage')
-        self.assertIn('恢复默认', data['status']['discovery']['message'])
-        saved = json.loads((self.sandbox.data / 'settings.json').read_text(encoding='utf-8'))
-        self.assertEqual(saved['hostname'], '')
-
-    def test_invalid_names_are_rejected_in_chinese(self):
+    def test_post_hostname_is_rejected_and_writes_nothing(self):
         self.engine.start()
         responder = self.engine.responder
-        for bad, needle in [('', '请填写主机名'), ('a' * 16, '最长 15 个字符'),
-                            ('-bad', '字母或数字开头'), ('bad name', '只能包含')]:
-            with self.subTest(bad=bad):
-                status, data = self.json_request('POST', '/api/hostname', {'hostname': bad},
-                                                 self.auth(write=True))
-                self.assertEqual(status, 400)
+        samba_before = (self.sandbox.root / 'etc' / 'config' / 'samba').read_text(encoding='utf-8')
+        self.runner.calls.clear()
+
+        status, data = self.json_request('POST', '/api/hostname', {'hostname': 'XiaoMiNAS'},
+                                         self.auth(write=True))
+
+        self.assertEqual(status, 400)                                 # 明确拒绝，不是 500
+        self.assertFalse(data['ok'])
+        self.assertIn('不可修改', data['error'])
+        # 没有写配置、没有重启服务、没有重建回应器、没有落盘
+        self.assertEqual((self.sandbox.root / 'etc' / 'config' / 'samba').read_text(
+            encoding='utf-8'), samba_before)
+        self.assertFalse(any('restart' in call for call in self.runner.calls))
+        self.assertIs(self.engine.responder, responder)
+        self.assertFalse((self.sandbox.data / 'settings.json').exists())
+
+    def test_post_hostname_reset_is_rejected_too(self):
+        status, data = self.json_request('POST', '/api/hostname', {'reset': True},
+                                         self.auth(write=True))
+        self.assertEqual(status, 400)
+        self.assertIn('不可修改', data['error'])
+
+    def test_restore_endpoint_runs_init_config_then_restart_and_verifies(self):
+        status, data = self.json_request('POST', '/api/hostname/restore', {},
+                                         self.auth(write=True))
+        self.assertEqual(status, 200)
+        self.assertTrue(data['ok'])
+        result = data['result']
+        self.assertEqual(result['name'], 'minasc71ab1')
+        self.assertTrue(result['verified'])
+        self.assertEqual(
+            self.runner.calls.count(['/bin/systemctl', 'restart', 'smb', 'nmb', 'wsdd']), 1)
+        self.assertFalse(any('reload' in call for call in self.runner.calls))
+        # 页面拿到的状态里两个名字已经一致、警告清空
+        identity = data['status']['identity']
+        self.assertEqual(identity['netbiosName'], 'minasc71ab1')
+        self.assertTrue(identity['matched'])
+        self.assertEqual(identity['warning'], '')
+        self.assertIn("option name 'minasc71ab1'",
+                      (self.sandbox.root / 'etc' / 'config' / 'samba').read_text(encoding='utf-8'))
+
+    def test_restore_requires_a_session_and_csrf(self):
+        for headers in ({'X-NN-Session': self.token, 'Content-Type': 'application/json'},
+                        {'X-CSRF-Token': self.csrf, 'Content-Type': 'application/json'}):
+            with self.subTest(headers=sorted(headers)):
+                status, data = self.json_request('POST', '/api/hostname/restore', {}, headers)
+                self.assertIn(status, (401, 403))
                 self.assertFalse(data['ok'])
-                self.assertIn(needle, data['error'])
-        self.assertIs(self.engine.responder, responder)          # 没有重建回应器
 
 
 class DirsApiTests(ServerHarness):

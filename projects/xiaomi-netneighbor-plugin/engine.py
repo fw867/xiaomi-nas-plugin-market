@@ -46,6 +46,7 @@ import os
 import posixpath
 import re
 import shutil
+import socket
 import subprocess
 import threading
 import time
@@ -107,6 +108,14 @@ HELLO_INTERVAL = int(os.environ.get('WSD_HELLO_INTERVAL', '900'))
 
 DEFAULT_HOSTNAME = os.environ.get('DEFAULT_HOSTNAME', 'SmartStorage')
 DEFAULT_WORKGROUP = os.environ.get('DEFAULT_WORKGROUP', 'WORKGROUP')
+
+# 系统主机名（Windows 11 靠 WSD/mDNS/DNS 发现设备时用的就是它）在 uci 里的位置。
+# Samba 的 `netbios name`（= /etc/config/samba 的 `option name`）只影响老式 NetBIOS 浏览，
+# 两者不一致时用户用哪个名字都可能连不上——所以页面只读展示这两个名字，不再提供改名。
+SYSTEM_HOSTNAME_OPTION = os.environ.get('SYSTEM_HOSTNAME_OPTION', 'system.@system[0].hostname')
+SMB_NETBIOS_OPTION = 'netbios name'
+# 「恢复为系统主机名」要重启的服务：`netbios name` 只 reload 不生效，必须 restart
+SMB_RESTART_UNITS = tuple(os.environ.get('SMB_RESTART_UNITS', 'smb nmb wsdd').split())
 
 # 允许作为共享根的目录白名单 == 用户自己已有共享所在的根 + 兜底挂载点。
 #   /home/<uXXXX>/pool0/data  —— 用户数据目录（实测 /home/u3943892/pool0/data）
@@ -271,18 +280,20 @@ def normalize_discovery_enabled(value, default: bool = True) -> bool:
 
 
 def load_settings(path=None) -> dict:
-    """插件自己的设置（元数据端口、Hello 周期、发现开关、主机名）。
+    """插件自己的设置（元数据端口、Hello 周期、发现开关）。
 
     坏文件不该拖垮启动：每项都独立校验，读不懂的就回退到默认值。
     `path` 默认是模块级的 `STATE_FILE`；Engine 会传自己 `data_dir` 下的那份，
     这样单元测试的沙箱与真机数据目录不会互相影响。
+
+    **没有 hostname**：主机名改成只读展示（服务端自动获取），旧版本落盘的
+    `hostname` 键一律忽略（也不会再写回去）。
     """
     saved = read_json(Path(path) if path else STATE_FILE, {})
     settings = {
         'metadataPort': METADATA_PORT,
         'helloInterval': HELLO_INTERVAL,
         'discoveryEnabled': True,       # 默认接管（升级前的行为），关闭后重启也不会自动接管
-        'hostname': '',
     }
     if isinstance(saved, dict):
         for key in ('metadataPort', 'helloInterval'):
@@ -292,9 +303,6 @@ def load_settings(path=None) -> dict:
         if 'discoveryEnabled' in saved:
             settings['discoveryEnabled'] = normalize_discovery_enabled(
                 saved.get('discoveryEnabled'))
-        name = saved.get('hostname')
-        if isinstance(name, str) and hostname_valid(name):
-            settings['hostname'] = name.strip()
     settings['metadataPort'] = max(1, min(65535, int(settings['metadataPort'])))
     settings['helloInterval'] = max(0, int(settings['helloInterval']))
     return settings
@@ -527,6 +535,147 @@ def validate_hostname(name) -> str:
     if message:
         raise Error(message)
     return text
+
+
+# ---------------------------------------------------------------------------
+# 身份自动获取：系统主机名 / SMB(NetBIOS) 名 / 局域网地址 / 访问提示
+# ---------------------------------------------------------------------------
+
+def uci_option(name: str) -> str:
+    """`uci -q get <name>`：拿不到（没有 uci 命令/没这个配置）就返回空串，不抛异常。"""
+    uci = shutil.which('uci') or '/sbin/uci'
+    if not uci or not os.path.exists(uci):
+        return ''
+    try:
+        result = run([uci, '-q', 'get', name], timeout=UCI_TIMEOUT)
+    except Error:
+        return ''
+    return (result.stdout or '').strip() if result.ok else ''
+
+
+def path_gethostname() -> str:
+    """系统主机名（`hostname` 的系统调用版）。
+
+    与 `path_exists`/`path_isdir` 一样做成可注入钩子：单元测试整体替换，
+    不依赖跑测试这台机器真的叫什么名字。
+    """
+    try:
+        return socket.gethostname()
+    except OSError:
+        return ''
+
+
+def resolve_system_hostname() -> str:
+    """系统主机名（自动获取）：`uci system.@system[0].hostname` → `hostname` → samba 名 → 默认值。
+
+    Windows 11 靠 WSD/mDNS/DNS 发现设备，用的就是系统主机名；Samba 的 `netbios name`
+    只影响老式 NetBIOS 浏览。取不到就往下退，绝不抛错。
+    """
+    for candidate in (uci_option(SYSTEM_HOSTNAME_OPTION), path_gethostname(),
+                      samba_config_value('name', '')):
+        text = str(candidate or '').strip()
+        if text:
+            return text
+    return DEFAULT_HOSTNAME
+
+
+def smb_conf_netbios_name(text: str, fallback: str = '') -> str:
+    """`/var/etc/smb.conf` 里的 `netbios name = xxx`（取不到就用 `fallback`）。
+
+    smb.conf 的键名大小写不敏感，值可能带引号，都按实际写法兼容。
+    """
+    for raw in (text or '').splitlines():
+        line = raw.strip()
+        if not line or line.startswith(('#', ';')):
+            continue
+        key, _, value = line.partition('=')
+        if key.strip().lower() == SMB_NETBIOS_OPTION:
+            cleaned = _unquote(value.strip())
+            if cleaned:
+                return cleaned
+    return str(fallback or '').strip()
+
+
+def parse_ip_route_src(text: str) -> str:
+    """从 `ip route get 223.5.5.5` 的输出里取 `src <IP>`（取不到返回空串）。"""
+    match = re.search(r'\bsrc\s+(\d{1,3}(?:\.\d{1,3}){3})', str(text or ''))
+    return match.group(1) if match else ''
+
+
+def probe_lan_address() -> str:
+    """探测 NAS 的局域网地址：优先 `ip route get 223.5.5.5` 的 src，退到默认路由探测。
+
+    与其它系统交互一样做成可注入钩子（测试整体替换，不真的执行命令/开 socket）。
+    """
+    ip = shutil.which('ip') or '/sbin/ip'
+    if ip and os.path.exists(ip):
+        try:
+            result = run([ip, 'route', 'get', '223.5.5.5'], timeout=UCI_TIMEOUT)
+        except Error:
+            result = None
+        if result is not None and result.ok:
+            source = parse_ip_route_src(result.stdout)
+            if source:
+                return source
+    try:
+        return wsd.lan_address('')           # 已有的默认路由探测（不会错拿 docker0）
+    except OSError:
+        return ''
+
+
+def access_hint(smb_name: str, address: str = '') -> str:
+    """`\\\\<SMB名>` / `\\\\<IP>` 的访问提示（纯函数，便于单测）。
+
+    两个值都是**自动获取**的（每台设备不同，不能写死）；IP 拿不到就只给名字那一半，
+    名字也拿不到（smb.conf 与 samba 配置都读不到）就返回空串，页面自然不显示提示。
+    """
+    name = str(smb_name or '').strip()
+    if not name:
+        return ''
+    address = str(address or '').strip()
+    if address:
+        return 'Windows 里用 \\\\%s 或 \\\\%s 访问' % (name, address)
+    return 'Windows 里用 \\\\%s 访问' % name
+
+
+def set_uci_option(text: str, section_type: str, option: str, value: str) -> str:
+    """把 uci 文本里**第一个**该类型 section 的 option 改成 `value`，其余内容原样保留。
+
+    section 不存在就追加一段；option 行不存在就在 section 头后面插一行。只做文本替换
+    （真机 `/etc/config/samba` 就是这种简单 uci 文本），不依赖 uci 命令能不能 commit。
+    """
+    lines = str(text or '').splitlines()
+    start, end = -1, len(lines)
+    for index, raw in enumerate(lines):
+        stripped = raw.strip()
+        if not stripped.startswith('config '):
+            continue
+        parts = stripped.split()
+        kind = parts[1] if len(parts) > 1 else ''
+        if start < 0:
+            if kind == section_type:
+                start = index
+            continue
+        end = index                                # 下一个 section 开始 → 本段到此为止
+        break
+    quoted = "'%s'" % str(value)
+    if start < 0:                                  # 没有这个 section：追加一段
+        block = ['config %s' % section_type, '\toption %s %s' % (option, quoted)]
+        if lines and lines[-1].strip():
+            block.insert(0, '')
+        return '\n'.join(lines + block) + '\n'
+    for index in range(start + 1, end):
+        stripped = lines[index].strip()
+        if not stripped.startswith(('option ', 'list ')):
+            continue
+        parts = stripped.split(None, 2)
+        if len(parts) >= 2 and parts[1] == option:
+            indent = lines[index][:len(lines[index]) - len(lines[index].lstrip())]
+            lines[index] = '%s%s %s %s' % (indent, parts[0], option, quoted)
+            return '\n'.join(lines) + '\n'
+    indent = '\t'
+    lines.insert(start + 1, '%soption %s %s' % (indent, option, quoted))
+    return '\n'.join(lines) + '\n'
 
 
 def lan_xaddrs(address: str, port: int) -> list:
@@ -898,7 +1047,6 @@ class Engine:
             'enabled': True,
         }
         self.settings = load_settings(self.state_file)
-        self.explicit_hostname = str(self.settings.get('hostname') or '').strip()
         self.hostname, self.workgroup = samba_identity()
         self.hostname = self._resolve_hostname()
         self.discovery['enabled'] = bool(self.settings.get('discoveryEnabled', True))
@@ -906,6 +1054,8 @@ class Engine:
         self.share_cache: tuple = (0.0, None)
         # 白名单缓存：(时间戳, 值, 当时的追加根列表)——外接设备可插拔，见 allowed_roots()
         self.root_cache: tuple = (0.0, None, ())
+        # 局域网地址缓存：(时间戳, 地址)——页面每 15 秒拉一次状态，不必每次都去探测
+        self.address_cache: tuple = (0.0, '')
         self.on_log = on_log or (lambda message: None)
         self.responder = None
         if start_responder:
@@ -913,9 +1063,12 @@ class Engine:
 
     # ---- 身份（主机名 / 工作组）------------------------------------------
     def _resolve_hostname(self) -> str:
-        """主机名优先级：settings['hostname'] > `/etc/config/samba` 的 `option name` > 默认值。"""
-        if self.explicit_hostname:
-            return self.explicit_hostname
+        """WSD 宣告名：`/etc/config/samba` 的 `option name` > 默认值。
+
+        插件不再接受用户提供的名字（也**不再**往配置里写用户输入的名字）；
+        `option name` 与系统主机名不一致时，页面上给「恢复为系统主机名」按钮
+        （见 `restore_smb_hostname()`）。
+        """
         return samba_config_value('name', DEFAULT_HOSTNAME)
 
     # ---- 日志 -----------------------------------------------------------
@@ -2116,47 +2269,118 @@ class Engine:
                 self.log(self.discovery['msg'])
         return self.snapshot()
 
-    def set_hostname(self, name=None, reset: bool = False) -> dict:
-        """改 WSD 宣告的主机名：校验 → 落盘 → 重建回应器并重发 Hello。
+    # ---- 身份展示（只读）与「恢复为系统主机名」--------------------------
+    def system_hostname(self) -> str:
+        """系统主机名（自动获取，见 `resolve_system_hostname()`）。"""
+        return resolve_system_hostname()
 
-        `reset=True` 表示**恢复默认**：清掉 `settings['hostname']`，回退到从
-        `/etc/config/samba` 读到的名字（读不到才是内置默认值）。`name` 为空串仍然
-        按非法输入处理（页面上的「保存」会先挡住空输入）。
+    def smb_netbios_name(self) -> str:
+        """SMB / NetBIOS 名：`/var/etc/smb.conf` 的 `netbios name` → samba 的 `option name`。"""
+        fallback = samba_config_value('name', DEFAULT_HOSTNAME)
+        return smb_conf_netbios_name(self.read_config_soft('smb.conf'), fallback)
+
+    def lan_address(self, force: bool = False) -> str:
+        """NAS 的局域网地址（自动探测，缓存 30 秒）：取不到返回空串。"""
+        now = time.time()
+        stamp, cached = self.address_cache
+        if not force and cached and now - stamp < 30:
+            return cached
+        value = probe_lan_address()
+        self.address_cache = (now, value)
+        return value
+
+    def identity_snapshot(self, address: str = '') -> dict:
+        """页面只读展示的身份：SMB 名、局域网地址与访问提示（+ 内部判据）。
+
+        名字**全部自动获取**（不落盘、也不接受用户输入）：
+        `netbiosName` = smb.conf 的 `netbios name` → samba 的 `option name`（**页面只显示它**）；
+        `systemName` = uci/system 主机名 → samba 名，只用来判断两者是否一致（页面不显示）。
+        不一致时给 `warning`，页面据此显示黄色提示与「恢复为系统主机名」按钮。
+        `hint` 用 SMB 名 + 局域网 IP 拼（见 access_hint()）。
         """
-        if reset:
-            value = ''
-        else:
-            value = validate_hostname(name)
+        system_name = self.system_hostname()
+        netbios = self.smb_netbios_name()
+        address = str(address or '').strip() or self.lan_address()
+        matched = bool(system_name) and system_name.lower() == netbios.lower()
+        warning = ''
+        if not matched:
+            warning = ('SMB 名与系统主机名不一致：SMB 名 %s ≠ 系统主机名 %s。\n'
+                       'Windows 11 靠系统主机名（WSD/mDNS/DNS）发现设备，不一致时会连不上；'
+                       '点下面的「恢复为系统主机名」，插件会把 Samba 的名字改成系统主机名并重启服务。'
+                       % (netbios or '（读不到）', system_name or '（读不到）'))
+        return {
+            # 系统主机名只作为「两名是否一致」的判据，页面不再展示它
+            'systemName': system_name,
+            'netbiosName': netbios,
+            'matched': matched,
+            'address': address,
+            'hint': access_hint(netbios, address),
+            'warning': warning,
+        }
+
+    def restore_smb_hostname(self) -> dict:
+        """把 Samba 的 `option name`（→ `netbios name`）恢复成**系统主机名**。
+
+        名字只有一个来源：自动获取的系统主机名（**不接受**用户提供的名字）。
+        步骤：写 `/etc/config/samba` 的 `option name` → `smb_mgr.sh init_config`
+        → **`systemctl restart smb nmb wsdd`**（`netbios name` 只 reload 不生效，必须
+        restart）→ 回读 `smb.conf` 的 `netbios name` 校验；返回 `verified` 与失败原因，
+        由页面提示结果。发现服务在跑时顺带重建回应器（宣告名跟着配置走）。
+        """
+        name = self.system_hostname()
+        if not hostname_valid(name):
+            raise Error('系统主机名 %s 不能作为 SMB 名（1-15 位，字母/数字/点/下划线/短横线）'
+                        % (name or '（空）'))
+        commands = []
         with self.lock:
-            self.settings['hostname'] = value
-            save_settings(self.settings, self.state_file)
-            self.explicit_hostname = value
-            previous = self.hostname
-            self.hostname, self.workgroup = samba_identity()
-            self.hostname = self._resolve_hostname()
-        if not bool(self.settings.get('discoveryEnabled', True)):
-            # 关闭状态下不起回应器：名字已经落盘，下次打开时生效
-            self.log('主机名已保存为 %s（网络发现已关闭，下次打开时生效）'
-                     % (value or self.hostname))
-            return self.snapshot()
-        with self.lock:
-            self.stop_responder()                               # 先发 Bye，Windows 里的旧名字消失
-            if not self._start_responder_locked():
-                raise Error('主机名已保存为 %s，但回应器重建失败：%s'
-                            % (value or self.hostname, self.discovery['msg']))
-            responder = self.responder
+            path = self._config_path('samba')
             try:
-                responder.announce_hello(times=2)               # 用新名字立刻重新宣告
-            except Exception as error:                          # noqa: BLE001
-                self.log('重新宣告失败（主机名已生效）：%s' % error)
-            if reset:
-                self.discovery['msg'] = '已恢复默认主机名 %s' % self.hostname
-                self.log('主机名 %s → %s（恢复默认，已重建回应器并重发 Hello）'
-                         % (previous or '—', self.hostname))
-            else:
-                self.discovery['msg'] = '已切换到主机名 %s' % value
-                self.log('主机名 %s → %s（已重建回应器并重发 Hello）' % (previous or '—', value))
-        return self.snapshot()
+                text = self.read_config('samba')
+            except Error:
+                text = ''
+            updated = set_uci_option(text, 'samba', 'name', name)
+            if updated != text:
+                atomic_write(path, updated)
+                self.log('把 /etc/config/samba 的 option name 改成系统主机名 %s' % name)
+            result = self.exec(init_config_command(self.samba_mgr_path()), timeout=60)
+            commands.append(describe(init_config_command(self.samba_mgr_path()), result))
+            restart_command = [self.systemctl, 'restart', *SMB_RESTART_UNITS]
+            restart = self.exec(restart_command, timeout=90)
+            commands.append(describe(restart_command, restart))
+            # 回读校验：smb.conf 里的 netbios name 必须就是系统主机名
+            netbios = self.smb_netbios_name()
+            verified = netbios.lower() == name.lower()
+            errors = []
+            if not result.ok:
+                errors.append(translate_failure(
+                    '%s %s' % (result.stdout, result.stderr), '生成 smb.conf'))
+            if not restart.ok:
+                errors.append('重启服务返回非 0（exit %d），`netbios name` 可能还没生效'
+                              % restart.returncode)
+            if not verified:
+                errors.append('smb.conf 里的 netbios name 仍是 %s（期望 %s）'
+                              % (netbios or '（空）', name))
+            # 宣告名跟着配置走：重建回应器（官方 wsdd 已经是空操作，不会互相抢 3702）
+            if self.responder is not None and bool(self.discovery['running']):
+                self.hostname, self.workgroup = samba_identity()
+                self.hostname = self._resolve_hostname()
+                self.stop_responder()
+                self._start_responder_locked()
+            self.discovery['msg'] = ('已恢复为系统主机名 %s' % name if verified
+                                     else '恢复为系统主机名后校验未通过')
+        self.log('恢复为系统主机名 %s（netbios 回读 %s，restart %s）'
+                 % (name, netbios or '（空）', '成功' if restart.ok else '非 0'))
+        return {
+            'name': name,
+            'netbiosName': netbios,
+            'verified': bool(verified),
+            'matched': bool(verified),
+            'initReturncode': result.returncode,
+            'restartReturncode': restart.returncode,
+            'units': list(SMB_RESTART_UNITS),
+            'errors': errors,
+            'output': '\n'.join(commands),
+        }
 
     def shutdown(self) -> None:
         """服务停止：先发 Bye，再把官方 wsdd 放回去。"""
@@ -2165,10 +2389,9 @@ class Engine:
 
     # ---- 状态快照 -------------------------------------------------------
     def settings_snapshot(self) -> dict:
-        """页面要用的落盘设置：开关与主机名。"""
+        """页面要用的落盘设置：只剩「网络发现」开关（主机名已改为只读展示）。"""
         return {
             'discoveryEnabled': bool(self.settings.get('discoveryEnabled', True)),
-            'hostname': self.hostname,
         }
 
     def status(self) -> dict:
@@ -2213,9 +2436,10 @@ class Engine:
         return {
             'ok': True,
             'version': installed_version(),
-            # 页面只读 settings（开关 + 主机名）；discovery 里的工作组/地址/官方 wsdd 状态
-            # 等字段仍然返回，方便真机排查，只是页面不再显示。
+            # 页面只读 settings（只剩「网络发现」开关）；主机名/SMB 名走 identity（自动获取），
+            # discovery 里的工作组/地址/官方 wsdd 状态等字段仍然返回，方便真机排查。
             'settings': self.settings_snapshot(),
+            'identity': self.identity_snapshot(address),
             'discovery': discovery,
             'accounts': self.accounts(),
             'allowedRoots': self.allowed_roots(),

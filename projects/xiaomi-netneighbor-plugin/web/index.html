@@ -22,7 +22,7 @@
         <main>
             <p id="error" class="alert" role="alert" hidden></p>
 
-            <!-- 卡片一：网络发现开关 + 主机名 -->
+            <!-- 卡片一：网络发现开关 + 主机名/SMB 名（只读展示，名字由服务端自动获取） -->
             <section class="card">
                 <label class="switch-row" for="discoverySwitch">
                     <span class="switch-label">网络发现</span>
@@ -37,13 +37,16 @@
                     <strong id="serviceState" role="status">正在读取</strong>
                 </div>
 
-                <div class="host-row">
-                    <input id="hostnameInput" type="text" inputmode="text" autocomplete="off"
-                           spellcheck="false" maxlength="15" aria-label="主机名" placeholder="SmartStorage">
-                    <button id="hostnameSave" class="btn primary" type="button">保存</button>
-                    <button id="hostnameReset" class="btn" type="button"
-                            title="清掉插件里设置的名字，回到系统配置里的名字">恢复默认</button>
+                <!-- 只展示 SMB 名（自动获取）；系统主机名只作为「两名是否一致」的内部判据 -->
+                <div class="identity-row">
+                    <span class="identity-label">SMB 名</span>
+                    <span id="netbiosName" class="identity-value">—</span>
                 </div>
+                <!-- 两个名字不一致时的黄色警告 + 恢复按钮（一致时都隐藏） -->
+                <p id="nameWarning" class="name-warning" role="alert" hidden></p>
+                <button id="nameRestore" class="btn block" type="button" hidden>恢复为系统主机名</button>
+                <!-- 访问提示：SMB 名与 IP 都由服务端自动获取，这里只读渲染 -->
+                <p id="accessHint" class="access-hint"></p>
             </section>
 
             <!-- 卡片二：共享目录（上部「添加共享」按钮，下部已共享目录列表，行尾 `-` 删除） -->
