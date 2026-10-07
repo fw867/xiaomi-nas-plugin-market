@@ -26,6 +26,7 @@
 - 采集层刻意不打扰硬盘：高频轮询只读 `/proc` 与 `/sys`；硬盘电源状态用 `hdparm -C`（该查询不唤醒盘）；standby 时跳过 SMART 与盘温；SMART 缓存 5 分钟；文件视图不轮询。
 - 已在 192.168.1.8 实机验证：令牌登录、窗口管理、插件窗口、文件读写（含 64 KB 二进制上传与中文名文件）、回收站恢复与彻底删除、改端口与换令牌、严格 CSP 下浏览器无控制台报错；`plugin.sh verify` 摘要校验通过。
 - 尚未上架应用商店（缺少 apps.json 条目与发布 ZIP），目前用 `projects/xiaomi-nas-console/deploy/install-on-nas.sh` 安装。
+- 修掉清单里的端口撞号：**DPanel 声明的是 18160，与「硬盘休眠」撞号**（NAS 上实测 18160 是 `xiaomi-disk-sleep.service` 在监听，dpanel 并未安装），把 dpanel 的端口改成未占用的 **18110**（disksleep 保持 18160 不动）——`scripts/build_apps.py` 的清单声明与 `projects/xiaomi-dpanel-plugin` 自己的四处一起改：`deploy/xiaomi-dpanel.service`（`Environment=PORT=`）、`deploy/xiaomi-dpanel.nginx.conf`（`proxy_pass`）、`server.py`（默认端口）、`README.md`（文档），整个 dpanel 项目里已不再出现 18160；根 README 的 DPanel 行同步写明「面板端口 8807（插件服务端口 18110）」。
 
 ## v0.1.1-beta.1
 

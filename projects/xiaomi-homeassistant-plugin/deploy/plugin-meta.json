@@ -1,0 +1,16 @@
+{
+  "plugin": "homeassistant",
+  "name": "Home Assistant",
+  "id": 11022,
+  "desc": "开源家庭自动化平台；配置目录持久化，端口 8123 对局域网开放",
+  "tags": [
+    "tool",
+    "home"
+  ],
+  "developer": "community",
+  "publisher": "community",
+  "system": false,
+  "type": "standard",
+  "service": "xiaomi-homeassistant.service",
+  "uiKey": "homeassistant"
+}

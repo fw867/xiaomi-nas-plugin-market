@@ -24,7 +24,7 @@ DPanel 用于管理 Docker，容器**必须**挂载宿主机 `/var/run/docker.so
 | --- | --- |
 | 镜像 | `dpanel/dpanel:lite@sha256:befa4221aeebbeac9148cceca06f8b474f412b2de68b5f3968a68e04a0e632c1` |
 | 面板端口 | 宿主机 `8807` → 容器 `8080` |
-| 插件服务端口 | `18160`（仅回环 + 小米客户端证书） |
+| 插件服务端口 | `18110`（仅回环 + 小米客户端证书） |
 | 容器名 | `xiaomi-plugin-dpanel` |
 
 选择 **Lite** 版：不占用 80/443，不需要域名转发/证书功能时更适合 NAS。
@@ -44,7 +44,7 @@ python -m unittest discover -s tests -v
 python server.py --dev
 ```
 
-打开 `http://127.0.0.1:18160/`。预览模式不会操作 Docker。
+打开 `http://127.0.0.1:18110/`。预览模式不会操作 Docker。
 
 ## 上游
 

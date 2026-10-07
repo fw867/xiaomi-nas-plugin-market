@@ -2,6 +2,10 @@
 
 二进制随包分发到 bin/，首次初始化拷贝到插件数据目录后运行，
 这样 `fwclient -u` 自升级能写回同一路径。优先以 `-d` 守护方式启动。
+
+新版客户端默认把 pid / 日志 / 设备标识放到 Linux 规范路径（`/run`、`/var/log`），
+所以启动时用 `-dir <数据目录>/run` 把它们收回插件自己的目录（老版本不支持则不加），
+读日志时按「-dir → /var/log/fwclient → 二进制同目录」依次找候选文件。
 """
 from __future__ import annotations
 
@@ -70,6 +74,13 @@ def validate_username_like_unused():
 
 
 class Engine:
+    # 能力探测 `fwclient -h` 的最长执行时间；只跑本地帮助，不联网、不触发版本检查或升级
+    PROBE_TIMEOUT = 5
+    # 新版客户端默认日志路径（Linux 规范），插件未指定 -dir 时客户端会写这里
+    DEFAULT_LOG_FILE = Path('/var/log/fwclient/fwclient.log')
+    # 所有日志候选都不存在时的页面文案
+    LOG_MISSING = '未找到运行日志：fwclient 可能未运行，或日志路径与预期不同'
+
     def __init__(self, data, runtime, dev=False):
         self.data, self.runtime, self.dev = Path(data), Path(runtime), dev
         self.data.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -81,14 +92,35 @@ class Engine:
         self.config = load_json(self.cfgfile) if self.cfgfile.exists() else None
         if isinstance(self.config, dict) and not self.config.get('server'):
             self.config = None
+        self._help = None  # 缓存的 `fwclient -h` 帮助输出（探测成功才缓存）
 
     @property
     def binary(self):
         return self.data / 'fwclient'
 
     @property
+    def run_dir(self):
+        """新版客户端的运行数据目录（`-dir`）：pid / 日志 / 设备标识都放这一处。"""
+        return self.data / 'run'
+
+    @property
     def log_file(self):
+        """旧位置日志（二进制同目录），保留以兼容老版本。"""
         return self.data / 'fwclient.log'
+
+    def log_candidates(self):
+        """运行日志候选顺序：插件 -dir → 新默认 → 旧位置（二进制同目录）。"""
+        return [
+            self.run_dir / 'fwclient.log',
+            self.DEFAULT_LOG_FILE,
+            self.log_file,
+        ]
+
+    def ensure_run_dir(self):
+        """创建运行数据目录并收紧权限，风格与数据目录一致。"""
+        self.run_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        os.chmod(self.run_dir, 0o700)
+        return self.run_dir
 
     def ensure_binary(self):
         if self.binary.is_file() and os.access(self.binary, os.X_OK):
@@ -123,6 +155,34 @@ class Engine:
             return ''
         text = output.strip()
         return re.sub(r'^fwclient\s+', '', text)[:80]
+
+    def help_text(self):
+        """返回缓存的 `fwclient -h` 帮助输出；探测失败或没有输出时返回 None。
+
+        只跑本地帮助（不联网、不触发版本检查或升级）；成功结果会被缓存，
+        探测失败不缓存，便于下次重试。
+        """
+        if self._help is None:
+            try:
+                _, output = self.run_cli('-h', timeout=self.PROBE_TIMEOUT)
+            except Error:
+                return None
+            if not output:
+                return None
+            self._help = output
+        return self._help
+
+    def supports_flag(self, flag):
+        """探测二进制是否支持某个命令行参数（基于缓存的 `fwclient -h` 输出）。
+
+        返回 True（帮助里列出 -k / -dir 等）/ False（帮助里没有，明确不支持）/
+        None（探测失败，无法判断）。
+        """
+        text = self.help_text()
+        if not text:
+            return None
+        # 匹配独立参数，如 "  -dir string"、"  -k, --kill"；前面必须是空白，避免误配 -d 之类
+        return bool(re.search(r'(?:^|\s)' + re.escape(flag) + r'(?=\s|$|,|/|\))', text))
 
     def find_pids(self):
         """只认命令行里带本插件二进制绝对路径的进程。"""
@@ -221,6 +281,11 @@ class Engine:
         argv = [str(self.binary), '-s', self.config['server'], '-t', self.config['token']]
         if self.config.get('insecure'):
             argv.append('-insecure')
+        # 新版客户端支持 -dir：把 pid / 日志 / 设备标识收进插件自己的运行目录。
+        # 老版本不认这个参数（可能直接报错退出），所以只在探测确认支持时才加；
+        # 探测失败（无法判断）也按旧方式启动，日志改由候选路径兜底。
+        if self.supports_flag('-dir') is True:
+            argv += ['-dir', str(self.ensure_run_dir())]
         argv.append('-d')
         try:
             # 优先后台守护：父进程会立刻退出，子进程继续跑
@@ -258,25 +323,8 @@ class Engine:
     # 停止流程的轮询节奏与等待预算：沿用旧实现（20 × 0.15s ≈ 3s）
     STOP_POLL_ROUNDS = 20
     STOP_POLL_INTERVAL = 0.15
-    # `fwclient -k` 与能力探测 `fwclient -h` 的最长执行时间，避免卡住拖住停止流程
+    # `fwclient -k` 的最长执行时间，避免卡住拖住停止流程
     SHUTDOWN_TIMEOUT = 10
-    PROBE_TIMEOUT = 5
-
-    def supports_shutdown_command(self):
-        """用本地 `fwclient -h` 探测是否支持规范关闭 `-k`。
-
-        只跑本地帮助，不联网、不触发版本检查或自动升级；
-        返回 True（帮助里列出 -k）/ False（帮助里没有 -k，明确不支持）/
-        None（探测失败或没有输出，无法判断）。
-        """
-        try:
-            _, output = self.run_cli('-h', timeout=self.PROBE_TIMEOUT)
-        except Error:
-            return None
-        if not output:
-            return None
-        # 匹配独立的 -k 选项，如 "  -k          优雅退出" 或 "  -k, --kill"
-        return bool(re.search(r'(?:^|\s)-k(?=\s|$|,|/|\))', output))
 
     def shutdown_command(self):
         """执行规范关闭命令 `fwclient -k`，返回 (是否成功, 失败原因)。
@@ -318,7 +366,7 @@ class Engine:
             # 全流程共用一个等待预算，正常路径耗时与旧实现一致（≤3s）
             deadline = time.monotonic() + self.STOP_POLL_ROUNDS * self.STOP_POLL_INTERVAL
             # 一、先廉价探测 `-k` 是否受支持：老二进制遇到未知参数可能不报错、反而再拉起一个实例
-            support = self.supports_shutdown_command()
+            support = self.supports_flag('-k')
             if support is False:
                 # 预期路径：包内老版本还不支持 -k（下次启动会自动升级），只记日志、不占用页面提示条
                 LOG.warning('停止服务：当前 fwclient 不支持 -k（帮助里没有该选项），改用信号终止')
@@ -360,12 +408,21 @@ class Engine:
         return output[:300] or '升级完成'
 
     def log_tail(self, lines=20):
-        try:
-            text = self.log_file.read_text(encoding='utf-8', errors='replace')
-        except OSError:
-            return ''
-        parts = [line for line in text.splitlines() if line.strip()]
-        return '\n'.join(parts[-lines:])[-4000:]
+        """读取运行日志摘要；候选顺序见 log_candidates。
+
+        取第一个存在的候选文件；文件不存在、读不到（正在轮转/被删）就换下一个，
+        全部都没有时返回中文提示而不是抛异常。
+        """
+        for path in self.log_candidates():
+            try:
+                if not path.is_file():
+                    continue
+                text = path.read_text(encoding='utf-8', errors='replace')
+            except OSError:
+                continue
+            parts = [line for line in text.splitlines() if line.strip()]
+            return '\n'.join(parts[-lines:])[-4000:]
+        return self.LOG_MISSING
 
     def launch(self, action, data):
         if action not in ('setup', 'start', 'stop', 'upgrade', 'reconfigure'):

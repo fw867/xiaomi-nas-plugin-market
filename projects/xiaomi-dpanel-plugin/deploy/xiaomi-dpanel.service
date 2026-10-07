@@ -9,7 +9,8 @@ WorkingDirectory=/data/plugin/dpanel/current
 Environment=NAS_USER_ID=__NAS_USER_ID__
 Environment=DATA_DIR=/data/plugin/dpanel/data
 Environment=LOCAL_ROOT=/nas/pool0/__NAS_USER_ID__/data
-Environment=PORT=18160
+# 18110：原来是硬盘休眠插件已占用的那个端口（NAS 上实测由它监听），改成空闲端口。
+Environment=PORT=18110
 ExecStart=/usr/bin/python3 /data/plugin/dpanel/current/server.py
 ExecStopPost=/usr/bin/python3 /data/plugin/dpanel/current/server.py --stop-owned
 Restart=on-failure

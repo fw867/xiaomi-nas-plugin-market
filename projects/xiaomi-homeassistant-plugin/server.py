@@ -1,4 +1,4 @@
-"""Owner-authenticated DPanel console. No generic Docker proxy."""
+"""Owner-authenticated Home Assistant console. No generic Docker proxy."""
 from __future__ import annotations
 
 import argparse
@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit, parse_qs
 
-from engine import Engine, Error, PORT, installed_version
+from engine import Engine, Error, PORT, installed_version, parse_roots, service_address
 
 WEB = Path(__file__).resolve().parent / 'web'
 TTL = 86400
@@ -25,7 +25,7 @@ TTL = 86400
 STATIC = {
     '/app.js': ('app.js', 'application/javascript; charset=utf-8'),
     '/styles.css': ('styles.css', 'text/css; charset=utf-8'),
-    '/assets/dpanel.png': ('assets/dpanel.png', 'image/png'),
+    '/assets/homeassistant.png': ('assets/homeassistant.png', 'image/png'),
 }
 
 
@@ -87,7 +87,7 @@ class Handler(BaseHTTPRequestHandler):
         return hmac.new(self.server.key, text.encode(), hashlib.sha256).hexdigest()
 
     def session(self):
-        token = self.headers.get('X-DPanel-Session', '')
+        token = self.headers.get('X-Homeassistant-Session', '')
         try:
             payload, signature = token.rsplit('.', 1)
             if len(token) > 200 or int(payload.split('.')[0]) < time.time():
@@ -119,12 +119,13 @@ class Handler(BaseHTTPRequestHandler):
         return None
 
     def address(self):
+        """入口地址：host 网络下容器直接用宿主机的 8123，所以就是宿主机地址。"""
         host = lan_ip()
         if not host:
             host = re.sub(r':\d+$', '', self.headers.get('Host', '').strip())
             if not re.fullmatch(r'[A-Za-z0-9.\-]{1,253}', host):
                 return ''
-        return 'http://' + host + ':' + str(PORT) + '/dpanel/ui'
+        return service_address(host)
 
     def do_GET(self):
         route = urlsplit(self.path)
@@ -153,7 +154,10 @@ class Handler(BaseHTTPRequestHandler):
                 result = self.server.engine.snapshot()
                 result['address'] = self.address()
             elif route.path == '/api/browse':
-                result = {'items': self.server.engine.browse(parse_qs(route.query).get('path', [''])[0])}
+                # ?root=<位置序号>&path=<根内相对路径>；缺省 root=0、path='' 保持旧行为。
+                query = parse_qs(route.query)
+                result = {'items': self.server.engine.browse(query.get('path', [''])[0],
+                                                             query.get('root', ['0'])[0])}
             else:
                 return self.send(404, {'ok': False, 'error': 'not found'})
             self.send(200, {'ok': True, **result})
@@ -176,10 +180,32 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(data, dict):
                 raise Error('请求格式无效')
             action = urlsplit(self.path).path.removeprefix('/api/')
-            if not action.startswith('service/'):
-                raise Error('不支持此操作')
-            self.server.engine.launch(action.split('/')[1], data)
-            self.send(202, {'ok': True})
+            if action == 'setup':
+                # 唯一的目录选择：配置目录（留空＝插件私有目录）
+                config = data.get('path', '')
+                if not isinstance(config, str) or len(config) > 1024:
+                    raise Error('目录路径无效')
+                self.server.engine.launch('setup', {'path': config,
+                                                    'pathRoot': data.get('pathRoot')})
+                return self.send(202, {'ok': True})
+            if action.startswith('service/'):
+                name = action.split('/')[1]
+                if name == 'reset' and data.get('confirm') is not True:
+                    raise Error('请确认重新初始化')
+                if name in ('reconfigure', 'reset'):
+                    # 这两个动作要当场反映到页面上：等它跑完（最多 15 秒）直接回最新状态；
+                    # 超时仍未结束就照 setup/start/stop 的老规矩回 202，让页面轮询。
+                    self.server.engine.launch(name, data, wait=15)
+                    result = self.server.engine.snapshot()
+                    if result['busy']:
+                        # 还没跑完（例如要等容器停止）：回 202，页面继续轮询
+                        return self.send(202, {'ok': True, 'busy': True})
+                    if result['error']:
+                        return self.send(400, {'ok': False, 'error': result['error']})
+                    return self.send(200, {'ok': True, **result})
+                self.server.engine.launch(name, data)
+                return self.send(202, {'ok': True})
+            raise Error('不支持此操作')
         except (Error, ValueError, OSError) as exc:
             self.send(400, {'ok': False, 'error': str(exc) if isinstance(exc, Error) else '操作失败，请检查输入'})
         finally:
@@ -192,21 +218,22 @@ def main():
     parser.add_argument('--stop-owned', action='store_true')
     args = parser.parse_args()
     data = os.environ.get('DATA_DIR') or (
-        tempfile.mkdtemp(prefix='dpanel-preview-') if args.dev else '/data/plugin/dpanel/data')
+        tempfile.mkdtemp(prefix='homeassistant-preview-') if args.dev else '/data/plugin/homeassistant/data')
+    # 存储位置：LOCAL_ROOTS 是冒号分隔的绝对路径列表（存储池 + 外接设备），
+    # 未设置时退化为单个 LOCAL_ROOT，与旧部署方式完全兼容。
     root = os.environ.get('LOCAL_ROOT', data if args.dev else '')
+    roots = parse_roots(os.environ.get('LOCAL_ROOTS', '')) or ([root] if root else [])
     user = os.environ.get('NAS_USER_ID', 'u123456' if args.dev else '')
-    if not root or not re.fullmatch(r'u[0-9]+', user):
-        raise SystemExit('LOCAL_ROOT and NAS_USER_ID are required')
-    engine = Engine(data, root, args.dev)
+    if not roots or not re.fullmatch(r'u[0-9]+', user):
+        raise SystemExit('LOCAL_ROOT/LOCAL_ROOTS and NAS_USER_ID are required')
+    engine = Engine(data, roots[0], args.dev, roots=roots)
     if args.stop_owned:
         engine.stop(remember=False)
         return
-    # 默认 18110：原来是硬盘休眠插件已占用的那个端口（NAS 上实测是它在监听），
-    # 两个插件抢同一个端口会让其中一个起不来。
-    server = Server(('127.0.0.1', int(os.environ.get('PORT', 18110))), engine, user, args.dev)
+    server = Server(('127.0.0.1', int(os.environ.get('PORT', 18200))), engine, user, args.dev)
     if engine.config and engine.config.get('enabled') and not args.dev:
         engine.launch('start', {})
-    print('DPanel plugin listening on http://127.0.0.1:' + str(server.server_port), flush=True)
+    print('Home Assistant plugin listening on http://127.0.0.1:' + str(server.server_port), flush=True)
     try:
         server.serve_forever()
     finally:

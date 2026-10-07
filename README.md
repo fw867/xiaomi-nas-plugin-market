@@ -74,7 +74,7 @@ NAS_USER_ID=u123456 bash -c "$(curl -fsSL https://raw.githubusercontent.com/fw86
 | [SSH 开关](projects/xiaomi-ssh-control-plugin) | 0.1.4 | 启停 SSH 远程登录，可设开机自启 |
 | [Transmission 下载](projects/xiaomi-transmission-plugin) | 0.1.41 | Docker 版 BT：下载/配置/监控目录可在「存储池 / 外接设备」之间选择，可随时改目录（保留种子与数据）或重新初始化（凭据会归档，可恢复）；端口 9091、51413；需要 Docker |
 | [Emby](projects/xiaomi-emby-plugin) | 0.1.17 | Emby 官方镜像的受限容器；媒体目录读写挂载、可在「存储池 / 外接设备」之间选择并可随时改目录或重新初始化，端口 8096 对局域网开放；需要 Docker |
-| [DPanel 容器管理](projects/xiaomi-dpanel-plugin) | 0.1.0 | 轻量 Docker 面板；挂载 docker.sock 与配置目录，端口 8807；需要 Docker |
+| [DPanel 容器管理](projects/xiaomi-dpanel-plugin) | 0.1.0 | 轻量 Docker 面板；挂载 docker.sock 与配置目录，面板端口 8807（插件服务端口 18110）；需要 Docker |
 | [Jellyfin](projects/xiaomi-jellyfin-plugin) | 0.1.10 | 开源媒体服务器；媒体/配置持久化、媒体目录可在「存储池 / 外接设备」之间选择并可随时改目录或重新初始化，端口 8097；需要 Docker |
 | [内网穿透](projects/xiaomi-fwclient-plugin) | 0.1.1 | fwclient 隧道；可配服务器/令牌，显示版本并支持升级 |
 | [硬盘休眠](projects/xiaomi-disk-sleep-plugin) | 0.1.0 | 与系统休眠开关联动，自定义休眠时长（官方固定 30 分钟），可查休眠/唤醒日志 |

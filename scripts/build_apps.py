@@ -411,7 +411,10 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
         "description": "DPanel Lite 镜像的受限容器；挂载 Docker socket 与可选配置目录，面板端口 8807 对局域网开放。",
         "project": "xiaomi-dpanel-plugin",
         "pluginId": 11008,
-        "port": 18160,
+        # 18110：原来这里写的 18160 与「硬盘休眠」撞号了（disksleep 才是在 18160
+        # 上监听的，NAS 上实测确认）。清单里的端口会下发给插件包与商店，写错会让
+        # 两个插件抢同一个端口，所以这里改成未占用的 18110。
+        "port": 18110,
         "releaseRoot": "/data/plugin/dpanel",
         "uiKey": "dpanel",
         "iconSource": "web/assets/dpanel.png",

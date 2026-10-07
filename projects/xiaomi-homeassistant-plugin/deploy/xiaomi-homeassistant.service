@@ -1,0 +1,31 @@
+[Unit]
+Description=Xiaomi Home Assistant Plugin
+After=network.target docker.service nginx.service
+Requires=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/data/plugin/homeassistant/current
+Environment=NAS_USER_ID=__NAS_USER_ID__
+Environment=DATA_DIR=/data/plugin/homeassistant/data
+Environment=LOCAL_ROOT=/nas/pool0/__NAS_USER_ID__/data
+# 可选存储位置（存储池 + 外接 USB 稳定路径）；/nas/mnt/usb 由 usb-stable-path.service 维护，
+# 插件页的目录选择器据此列出「存储池 / 外接设备」两个位置。
+Environment=LOCAL_ROOTS=/nas/pool0/__NAS_USER_ID__/data:/nas/mnt/usb
+Environment=PORT=18200
+ExecStart=/usr/bin/python3 /data/plugin/homeassistant/current/server.py
+ExecStopPost=/usr/bin/python3 /data/plugin/homeassistant/current/server.py --stop-owned
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+MemoryMax=160M
+TasksMax=32
+TimeoutStopSec=60
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target
