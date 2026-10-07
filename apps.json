@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "name": "小米智能存储应用商店",
-  "generatedAt": 1791383455,
+  "generatedAt": 1791392613,
   "repository": "fw867/xiaomi-nas-plugin-market",
   "branch": "main",
   "store": {
@@ -162,12 +162,12 @@
     {
       "id": "dpanel",
       "name": "DPanel 容器管理",
-      "version": "0.1.3",
+      "version": "0.1.4",
       "summary": "轻量 Docker 管理面板；可视化管理容器、镜像与 Compose；需要 Docker",
       "description": "DPanel Lite 镜像的受限容器；挂载 Docker socket 与可选配置目录，面板端口 8807 对局域网开放。",
-      "bundle": "apps/dpanel-0.1.3.zip",
-      "sha256": "ee8f3cecf44264eb2fb9d83b389e13900d8488c26f79bf7f143ad8f14f7a54e9",
-      "size": 64765,
+      "bundle": "apps/dpanel-0.1.4.zip",
+      "sha256": "f60837bc35636e6bd7bd752bed6bc63da7d0e3270303dbb680d58dc48adf56cd",
+      "size": 65072,
       "icon": "apps/icons/dpanel.png",
       "channel": "stable",
       "tags": [
@@ -176,7 +176,7 @@
       ],
       "author": "community",
       "pluginId": 11008,
-      "port": 18160
+      "port": 18110
     },
     {
       "id": "jellyfin",
@@ -199,12 +199,12 @@
     {
       "id": "fwclient",
       "name": "内网穿透",
-      "version": "0.1.6",
+      "version": "0.1.7",
       "summary": "fwclient 内网穿透客户端；可配服务器域名与令牌，显示版本并支持升级",
       "description": "随包携带 fwclient-linux-arm64。优先以守护进程运行 fwclient -s <域名> -t <令牌> -d；UI 显示当前版本，支持 -u 升级。",
-      "bundle": "apps/fwclient-0.1.6.zip",
-      "sha256": "a1aebae94bfe648402525559212bf5d74e582624f966e0403fd582f4da73afdc",
-      "size": 2496104,
+      "bundle": "apps/fwclient-0.1.7.zip",
+      "sha256": "f40aa8f87ed365995c21f9d7c15c81208624e73ac3bca65b1e61e6ced22f9c38",
+      "size": 2498140,
       "icon": "apps/icons/fwclient.png",
       "channel": "stable",
       "tags": [
