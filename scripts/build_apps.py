@@ -753,6 +753,56 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "id": "dockerctl",
+        "name": "Docker 控制台",
+        "version": "0.1.0",
+        "summary": "完整 Docker 控制台：容器、镜像、Compose 部署、存储卷与网络管理；需要 Docker",
+        "description": "容器启停/日志/详情、镜像拉取（带进度与取消）与删除、表单部署与 Compose 部署、"
+                       "存储卷与网络管理，操作日志落盘。Docker CLI 默认 /data/docker/docker，可在插件页修改；"
+                       "端口 18210 仅回环，只接受小米客户端证书入口。",
+        "project": "xiaomi-dockerctl-plugin",
+        "pluginId": 11022,
+        # 18210：现有社区插件依次占 18080/18100/18101/18110/18115/18117/18120/18122/
+        # 18130/18140/18150/18160/18170/18180/18190，18210 在仓库里未出现（已全量 grep）。
+        "port": 18210,
+        "releaseRoot": "/data/plugin/dockerctl",
+        "uiKey": "dockerctl",
+        "iconSource": "web/assets/dockerctl.png",
+        "iconName": "dockerctl.icon",
+        "runtime": {
+            "server.py": "server.py",
+            "engine.py": "engine.py",
+            "VERSION": "VERSION",
+            "web": "web",
+            "README.md": "README.md",
+        },
+        "ui": "web",
+        "serviceSource": "deploy/xiaomi-dockerctl.service",
+        "service": "xiaomi-dockerctl.service",
+        "nginxSource": "deploy/xiaomi-dockerctl.nginx.conf",
+        "nginx": "xiaomi-dockerctl.conf",
+        "healthPath": "/api/health",
+        "tags": ["tool", "docker"],
+        "author": "community",
+        "registry": {
+            "icon": "/icon/dockerctl.icon?v=0.1.0",
+            "frontend": {
+                "title": "Docker 控制台",
+                "desc": "容器与镜像管理",
+                "type": "url",
+                "permission": ["admin"],
+                "dev_type": [1, 2, 3, 4],
+                "url": [
+                    {"dev_type": [1], "url": "/index.html#/dockerctl_app"},
+                    {"dev_type": [2, 3, 4], "url": "/index.html#/dockerctl_pc"},
+                ],
+                "sortid": 11022,
+                "widget": [],
+            },
+            "info": {"tags": ["tool", "docker"], "publisher": "community", "ext": {"admin": True}},
+        },
+    },
 ]
 
 

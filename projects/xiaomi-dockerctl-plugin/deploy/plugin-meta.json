@@ -1,0 +1,16 @@
+{
+  "plugin": "dockerctl",
+  "name": "Docker 控制台",
+  "id": 11022,
+  "desc": "容器、镜像、Compose 部署、存储卷与网络管理；需要 Docker",
+  "tags": [
+    "tool",
+    "docker"
+  ],
+  "developer": "community",
+  "publisher": "community",
+  "system": false,
+  "type": "standard",
+  "service": "xiaomi-dockerctl.service",
+  "uiKey": "dockerctl"
+}

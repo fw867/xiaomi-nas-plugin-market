@@ -1,0 +1,43 @@
+[Unit]
+Description=Xiaomi Docker Console Plugin
+Documentation=https://github.com/fw867/xiaomi-nas-plugin-market
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/data/plugin/dockerctl/current
+Environment=PYTHONUNBUFFERED=1
+Environment=HOST=127.0.0.1
+Environment=PORT=18210
+# 插件页显示的版本号会先看安装目录名，再看框架登记的 INFO（在 /home/<用户> 下）
+Environment=NAS_USER_ID=__NAS_USER_ID__
+Environment=DATA_DIR=/data/plugin/dockerctl/data
+Environment=STATIC_DIR=/data/plugin/dockerctl/current/web
+# 非交互环境里 PATH 很短：systemd 默认不含 sbin，docker-compose 等工具常装在
+# /usr/sbin:/sbin 下，所以这里显式补全。
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# 设备上 Docker CLI 不在 PATH 里；配置页可改，改完写进 data/config.json。
+Environment=DOCKER_BIN=/data/docker/docker
+Environment=COMPOSE_DIR=/data/plugin/dockerctl/data/compose
+# docker login 的凭据写到 $HOME/.docker（插件私有目录），不碰 /root。
+Environment=HOME=/data/plugin/dockerctl/data
+ExecStart=/usr/bin/python3 /data/plugin/dockerctl/current/server.py
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectControlGroups=true
+# 只允许写插件自己的目录（Compose 项目、操作日志、拉取时间、配置都在这下面）
+ReadWritePaths=/data/plugin/dockerctl
+# docker compose 是 Go 程序，线程/内存比纯 Python 服务高；给足上限但仍受限
+MemoryMax=512M
+TasksMax=256
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

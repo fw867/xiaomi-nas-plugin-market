@@ -1,5 +1,11 @@
 # 发布记录
 
+## 未发布
+
+- 新增「Docker 控制台」0.1.0（`projects/xiaomi-dockerctl-plugin`，插件编号 11022，服务端口 18210）：移植自第三方 [`lvmaple/minas_plugin`](https://github.com/lvmaple/minas_plugin) 的 `xiaomi-nas-plugin-dockerctl`（**上游未声明许可证**，仅本地移植使用，未获再分发授权）。在客户端里直接管理宿主机 Docker：概览统计、容器启停/暂停/重启/删除/日志/详情、镜像列表与拉取（滚动进度、可取消、支持镜像加速前缀）、仓库登录、表单部署与 Compose 部署、存储卷与网络管理、操作日志落盘；「设置」页可改 Docker CLI 路径（设备上默认 `/data/docker/docker`，不在 PATH）。
+- 平台适配：端口改 18210（已确认未被现有插件占用）、`__NAS_USER_ID__` 占位、数据落 `/data/plugin/dockerctl/data`、服务日志进 journal、页面由插件进程直接提供。安全上加了三层：只监听回环、服务端二次校验小米客户端证书头、POST 强制 JSON；systemd 单元带 `NoNewPrivileges`/`ProtectHome`/`ProtectSystem=full`/只允许写插件目录。插件能操作全部容器与镜像，权限等价 Docker 级 root，只建议在自有设备上使用。
+- 验证：插件单测 70 项全过；商店侧 148 项中 139 通过、5 跳过、4 个既有错误（`catalog/bundles/` 未入库，与本次改动无关）；`scripts/build_apps.py --only dockerctl` 本地打包通过（`apps/dockerctl-0.1.0.zip`，校验后已清理、未提交）。
+
 ## v0.1.3-beta.1（未上架）
 
 - **容器插件支持「多存储位置」与「目录重配置」**（Transmission 0.1.41 / Jellyfin 0.1.10 / qB 下载 0.1.12 / Emby 0.1.17）：目录选择器可在**存储池**与**外接设备**（`/nas/mnt/usb`，U 盘稳定路径）之间切换，状态卡片与选择弹窗都显示**完整绝对路径**（不再只显示相对路径）；新增「修改目录」与「重新初始化」两个入口 —— 前者换位置但保留数据（按新宿主路径重建容器，只 restart 换不了挂载；失败自动回滚配置与凭据并尽量恢复原容器），后者清空插件配置与容器、页面回到初始化表单，**用户数据目录里的文件一个都不删不移**（Transmission 的 `settings.json` 与 WebUI 凭据只**归档**成 `.bak-<时间戳>`，可按 README「WebUI 密码忘了」一节恢复）。实现上新增 `LOCAL_ROOTS` 环境变量（冒号分隔，顺序即位置顺序；未设置时仍等价于单个 `LOCAL_ROOT`，旧部署行为不变），配置新增 `*_root` 记录所属位置，启动校验优先用它、缺失时按绝对路径反查、再退化到原根，device/inode 一致性与 FUSE 身份号自动更新逻辑保持不变 —— **旧配置照常启动**；插件包内的 systemd 单元统一下发 `LOCAL_ROOTS=...:/nas/mnt/usb`，新装即自带两个位置。

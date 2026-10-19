@@ -28,3 +28,7 @@
 # fwclient 内网穿透
 
 `projects/xiaomi-fwclient-plugin` 随包分发 **fwclient-linux-arm64**（内网穿透客户端，构建自本项目关联的 fwserver 源码）。使用者需自备合法的网关域名与访问令牌；隧道流量与规则由网关侧配置。插件图标为本项目自绘，仅用于识别。
+
+# Docker 控制台（移植代码）
+
+`projects/xiaomi-dockerctl-plugin` 移植自 GitHub 仓库 [`lvmaple/minas_plugin`](https://github.com/lvmaple/minas_plugin) 的 `xiaomi-nas-plugin-dockerctl` 子目录（作者 minas）。上游仓库与插件子目录均**未提供 LICENSE/COPYING 文件**，README 只写「License：仅供学习参考」，即上游未声明许可证；本目录仅作本地移植使用，若计划对外分发或上架，请先联系原作者取得许可。插件图标来自上游 `src/ui/icon.png`，仅用于识别插件功能。Docker 名称与商标归 Docker, Inc. 所有，本插件不代表官方背书。该插件本身是 Docker 控制台，能操作宿主机全部容器与镜像，权限等价于 Docker 级 root，使用风险由使用者承担。
