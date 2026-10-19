@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
   "name": "小米智能存储应用商店",
-  "generatedAt": 1792427337,
+  "generatedAt": 1792428885,
   "repository": "fw867/xiaomi-nas-plugin-market",
   "branch": "main",
   "store": {
@@ -294,12 +294,12 @@
     {
       "id": "dockerctl",
       "name": "Docker 控制台",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "summary": "完整 Docker 控制台：容器、镜像、Compose 部署、存储卷与网络管理；需要 Docker",
       "description": "容器启停/日志/详情、镜像拉取（带进度与取消）与删除、表单部署与 Compose 部署、存储卷与网络管理，操作日志落盘。Docker CLI 默认 /data/docker/docker，可在插件页修改；端口 18210 仅回环，只接受小米客户端证书入口。",
-      "bundle": "apps/dockerctl-0.1.0.zip",
-      "sha256": "9ff25ccec3b9b9e59457c7a50c1b2409f14cbd443385ff08be49223e615e02ae",
-      "size": 115806,
+      "bundle": "apps/dockerctl-0.1.1.zip",
+      "sha256": "872ac4bf11f01301650726cd9e7cb97e85406cb1bc9ccbd04e8370677b5fdcdb",
+      "size": 107021,
       "icon": "apps/icons/dockerctl.png",
       "channel": "stable",
       "tags": [
