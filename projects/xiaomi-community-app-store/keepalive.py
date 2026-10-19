@@ -33,6 +33,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import shutil
@@ -330,6 +331,26 @@ def vendor_baseline() -> dict[str, Any]:
     }
 
 
+def _vendor_record_for(key: str, record: dict[str, Any]) -> dict[str, Any]:
+    """按**磁盘实际状态**校正厂商条目的 `install/status/enable`。
+
+    真机实测：`plugincenter` 开机会遍历注册表，对"写着已安装、但
+    `/data/plugin/<key>` 没文件"的插件执行
+    `verify failed → can't use forever, force uninstall`，把 `install` 改回 false。
+    若我们坚持写 `install=true`，就会**每次开机拉锯**（日志刷屏且状态来回跳）。
+
+    所以：目录在 ⇒ 原样照抄快照；目录不在 ⇒ 标成"未安装 / 可下载"（`free`）。
+    其余字段（system / type / port / id / version / frontend / resource …）**仍逐字照抄**。
+    """
+    if (plugin_root() / key).is_dir():
+        return record
+    adjusted = copy.deepcopy(record)
+    adjusted["install"] = False
+    adjusted["status"] = "free"
+    adjusted["enable"] = False
+    return adjusted
+
+
 def restore_vendor_entries(document: dict[str, Any]) -> list[str]:
     """把基线里的厂商条目**只增**地补回 server.list。
 
@@ -346,6 +367,7 @@ def restore_vendor_entries(document: dict[str, Any]) -> list[str]:
     for key, record in vendor_baseline().items():
         if key in data:
             continue
+        record = _vendor_record_for(key, record)
         entry: dict[str, Any] = {"info": record["info"]}
         if isinstance(record.get("resource"), dict):
             entry["resource"] = record["resource"]

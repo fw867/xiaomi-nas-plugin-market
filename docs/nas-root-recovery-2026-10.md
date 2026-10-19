@@ -981,24 +981,30 @@ listener 8884 localhost             ; allow_anonymous true   ← 对应 platform
 ## 5.8 🛡️ 兜底保险：池文件触发的固件回退（无需 SSH）
 
 > **为什么需要这一层**：万一将来某次 OTA 把 SSH 与插件自愈**同时**打掉，那时手上一分钱远程通道都没有。
-> 但"**往池里扔一个文件**"这件事不需要 shell —— App 的文件管理、WebDAV、SMB 都能做。
-> 所以留两个**写死的触发文件名**，由 root 侧的钩子去发现并执行。
+> 但"**往池里扔一个文件**"这件事不需要 shell —— App 的文件应用、WebDAV、SMB 都能做。
+> 所以留几个**写死的触发文件名**，由 root 侧的钩子去发现并执行。
 
 ### 触发文件名与含义（硬编码，脚本**不接受任何参数**）
 
-| 池里的文件名 | 含义 | 会发生什么 |
-| --- | --- | --- |
-| `.minas-rollback-test` | **干跑** | 只在日志里写一行 `would stage …`，**什么都不改** |
-| `.minas-rollback` | **真触发** | ① 校验包 sha256 → ② 置 `downgrade_en` → ③ `sysota local <包>` **暂存**；**不自动重启** |
-| `.minas-reboot` | **重启** | 只有在"已暂存"状态下才 `reboot`；否则只记一行 `IGNORE` |
+每组有**两个等价写法，都认**：
+
+| 不带点（**日常用这个**） | 带点（兼容旧版） | 含义 | 会发生什么 |
+| --- | --- | --- | --- |
+| `minas-rollback-test` | `.minas-rollback-test` | **干跑** | 只在日志里写一行 `would stage …`，**什么都不改** |
+| `minas-rollback` | `.minas-rollback` | **真触发** | ① 校验包 sha256 → ② 置 `downgrade_en` → ③ `sysota local <包>` **暂存**；**不自动重启** |
+| `minas-reboot` | `.minas-reboot` | **重启** | 只有在"已暂存"状态下才 `reboot`；否则只记一行 `IGNORE` |
+
+> ⚠️ **为什么默认不带点**：App 的「文件」应用**建不出以点开头的文件**（点文件在界面里不可见/不可建）。
+> 为了能从 App 直接触发，默认用**不带点**的名字；带点的旧名字**保留兼容**，两边都能被识别。
 
 `<池>` = `/home/<用户>/pool0/data`（当前用户 `u3943892`）。日志在 `/data/plugin/safety/rollback.log`。
+**文件内容无所谓**（脚本不看内容），**读完即删**。
 
 ### 组件
 
 | 路径 | 作用 |
 | --- | --- |
-| `/data/plugin/safety/rollback.sh` | 全部逻辑（0755，root，只认三个固定文件名，自己加锁、自己幂等） |
+| `/data/plugin/safety/rollback.sh` | 全部逻辑（0755，root，只认上面 6 个固定文件名，自己加锁、自己幂等） |
 | `/etc/syshotplug/pool/99.rollback` | 每次**池挂载**（开机必经）转调上面的脚本 |
 | `/data/plugin/community-plugins-boot.sh` | 每分钟的 re-arm 也会 `rollback_watch`（双通道） |
 | `/data/backup/firmware/<包>` + `README.txt` | stash 的官方整机包 + 校验和 |
@@ -1007,11 +1013,11 @@ listener 8884 localhost             ; allow_anonymous true   ← 对应 platform
 
 ```bash
 # 1) 在池里扔一个 dry-run 触发文件（App 文件管理 / WebDAV / SMB 都行）
-#    路径：/pool0/data/.minas-rollback-test   内容随意
+#    路径：/pool0/data/minas-rollback-test   内容随意（App 文件应用可直接上传）
 # 2) 等 ≤2 分钟，看日志
 tail -5 /data/plugin/safety/rollback.log
 #    应看到：DRY-RUN: would stage … (… bytes); no changes made
-#            DRY-RUN: consumed …/.minas-rollback-test
+#            DRY-RUN: consumed …/minas-rollback-test
 # 3) 确认什么都没变
 jq -r .version /etc/minas.version
 fw_printenv -n minas_sys_ota      # 必须仍是 false
@@ -1019,8 +1025,8 @@ fw_printenv -n minas_sys_ota      # 必须仍是 false
 
 ### 真触发后的流程（**分两步，故意不自动重启**）
 
-1. 放 `.minas-rollback` → 脚本校验包 → 置 `downgrade_en=true` → `sysota local <包>` **只暂存** → 写 `.staged` 标记；
-2. 确认日志里出现 `STAGED: … NOT rebooting` 后，再放 `.minas-reboot` → 才真正重启并进入更新。
+1. 放 `minas-rollback` → 脚本校验包 → 置 `downgrade_en=true` → `sysota local <包>` **只暂存** → 写 `.staged` 标记；
+2. 确认日志里出现 `STAGED: … NOT rebooting` 后，再放 `minas-reboot` → 才真正重启并进入更新。
 
 **故意拆成两步**：暂存和重启之间留出人工复核的机会，避免"文件一扔就自动重启"。
 

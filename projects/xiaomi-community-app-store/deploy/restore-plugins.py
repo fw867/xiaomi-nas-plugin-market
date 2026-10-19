@@ -26,6 +26,7 @@ from typing import Any
 
 
 STORE_ROOT = Path(os.environ.get("STORE_ROOT", "/data/plugin/community-store"))
+PLUGIN_DIR = Path(os.environ.get("PLUGIN_DIR", "/data/plugin"))
 STATE_DIR = STORE_ROOT / "state"
 STORE_REGISTRATION = STATE_DIR / "store.json"
 SKIP_STATE_FILES = {"apps-cache.json", "apps.json", "store.json"}
@@ -132,6 +133,45 @@ def vendor_baseline() -> dict[str, Any]:
     return {k: v for k, v in data.items() if isinstance(v, dict) and isinstance(v.get("info"), dict)}
 
 
+def _vendor_record_for(key: str, record: dict[str, Any]) -> dict[str, Any]:
+    """按磁盘实际状态校正 `install/status/enable`。
+
+    `plugincenter` 开机会对"注册表说已装、但 `/data/plugin/<key>` 无文件"的插件
+    执行 `verify failed → force uninstall`。若我们坚持写 `install=true`，
+    每次开机都会拉锯一次。所以：目录在 ⇒ 照抄；目录不在 ⇒ `install=false / free`。
+    其余字段（system/type/port/id/version/frontend/resource…）仍逐字照抄。
+    """
+    if (PLUGIN_DIR / key).is_dir():
+        return record
+    adjusted = copy.deepcopy(record)
+    adjusted["install"] = False
+    adjusted["status"] = "free"
+    adjusted["enable"] = False
+    return adjusted
+
+
+def sync_vendor_reality(registry: dict[str, Any]) -> list[str]:
+    """把**已存在**的厂商条目按磁盘实际状态校正 `install/status/enable`。
+
+    这是"不覆盖已有厂商条目"规则的**唯一例外**，且只动这三个字段、只在
+    "注册表说已装但目录不存在"时动：
+    `plugincenter` 开机会对这类条目做 `verify failed → force uninstall`，
+    我们要么先校正、要么每次开机都被它改一遍（拉锯 + 日志刷屏）。
+    """
+    touched: list[str] = []
+    for key in vendor_baseline():
+        record = registry.get(key)
+        if not isinstance(record, dict) or (PLUGIN_DIR / key).is_dir():
+            continue
+        if record.get("install") is False and record.get("status") == "free":
+            continue
+        record["install"] = False
+        record["status"] = "free"
+        record["enable"] = False
+        touched.append(key)
+    return touched
+
+
 def merge_vendor_entries(registry: dict[str, Any]) -> list[str]:
     """把基线里**缺失**的厂商条目补回注册表，返回补了哪些 key。
 
@@ -139,7 +179,8 @@ def merge_vendor_entries(registry: dict[str, Any]) -> list[str]:
       * 已存在的厂商条目**一字不改**（哪怕版本看起来旧）；
       * **不删除**任何非我方条目；
       * 只增"基线里有、注册表里没有"的；
-      * 幂等：再跑一次不会重复补。
+      * 幂等：再跑一次不会重复补；
+      * `install/status/enable` 按磁盘实际状态校正。
     """
     added: list[str] = []
     for key, record in vendor_baseline().items():
@@ -147,7 +188,7 @@ def merge_vendor_entries(registry: dict[str, Any]) -> list[str]:
             continue
         if not isinstance(record.get("info"), dict):
             continue
-        registry[key] = record
+        registry[key] = _vendor_record_for(key, record)
         added.append(key)
     return added
 
@@ -195,7 +236,7 @@ def main() -> int:
         log("无法确定 NAS_USER_ID，跳过恢复")
         return 1
 
-    registry_path = Path(f"/data/plugin/{user}.list")
+    registry_path = PLUGIN_DIR / f"{user}.list"
     registry = read_json(registry_path)
     home_plugin = Path(f"/home/{user}/plugin")
 
@@ -308,6 +349,10 @@ def main() -> int:
     #   缺失的厂商条目 —— **绝不覆盖已存在的、绝不删除任何非我方条目**。
     for vendor_key in merge_vendor_entries(registry):
         changes.append(f"{vendor_key}:vendor")
+
+    # 已存在的厂商条目：只校正 install/status/enable（磁盘没文件就别写"已安装"）
+    for vendor_key in sync_vendor_reality(registry):
+        changes.append(f"{vendor_key}:vendor-state")
 
     if not changes:
         return 0

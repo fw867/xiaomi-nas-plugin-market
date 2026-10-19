@@ -109,3 +109,38 @@ App 里就少了几个应用。`server.list` 同理。
 
 **验证**：对账前 15 条 → `plugincenter update` 后变 5 条（云端清单）→ **≤1 分钟自愈回 15 条**，
 厂商 5 条字段（`system/type/port/status/install/enable/id/version`）与快照**逐字一致**；我们 10 个端口全 200。
+
+### 补充（同日）：触发名改为不带点 + 两个部署陷阱
+
+**触发名（每组两个等价写法，都认）**
+
+| 不带点（日常用） | 带点（兼容） | 含义 |
+| --- | --- | --- |
+| `minas-rollback-test` | `.minas-rollback-test` | 干跑，只写日志 |
+| `minas-rollback` | `.minas-rollback` | 真干（暂存，不重启） |
+| `minas-reboot` | `.minas-reboot` | 已暂存时才重启 |
+
+原因：App 的「文件」应用**建不出以点开头的文件**，所以默认用不带点的名字。
+
+**陷阱 1：`server.py` 每次启动会覆盖 `/data/plugin/community-plugins-boot.sh`**
+
+`server.py` 里 `BOOT_SOURCE = PROJECT/"deploy"/"community-plugins-boot.sh"`，与
+`/data/plugin/community-plugins-boot.sh` 不一致就重装 —— 于是我们给这个钩子加的
+re-arm / rollback_watch / PATH 加固**会被商店重启冲掉**（实测 21:14 被还原成打包原件）。
+
+⇒ 改钩子必须**同时**更新两个路径：
+- `/data/plugin/community-plugins-boot.sh`（运行时）
+- `/data/plugin/community-store/current/deploy/community-plugins-boot.sh`（打包源）
+
+并新增**独立 cron**（不依赖该钩子）：
+`* * * * * /data/plugin/safety/rollback.sh >/dev/null 2>&1 #@community.rollback`
+
+**陷阱 2：厂商插件"写着已安装但磁盘没文件"会被开机强杀**
+
+`plugincenter` 开机会对这类条目做 `verify failed → can't use forever, force uninstall`。
+所以恢复厂商条目时必须**按磁盘实际状态**校正 `install/status/enable`：
+目录在 ⇒ 照抄快照；目录不在 ⇒ `install=false / status=free`（在应用市场显示"可下载"）。
+`restore-plugins.py` 新增 `sync_vendor_reality()` 做这件事（只动这三个字段，是"不覆盖已有条目"的唯一例外）。
+
+**顺带修**：`rollback.sh` 的锁加**陈旧锁回收**（进程被中断后 `.lock` 会残留，
+之后每次都早退；现在超过 5 分钟的锁会被接管）。

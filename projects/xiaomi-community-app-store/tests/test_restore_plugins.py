@@ -21,9 +21,10 @@ SCRIPT = ROOT / "deploy" / "restore-plugins.py"
 VENDOR_KEYS = ("mediacenter", "central", "ipc", "baidupan", "xunlei")
 
 
-def load_module(baseline: Path):
+def load_module(baseline: Path, plugin_dir: Path | None = None):
     os.environ["VENDOR_BASELINE"] = str(baseline)
     os.environ["STORE_ROOT"] = str(baseline.parent / "store")
+    os.environ["PLUGIN_DIR"] = str(plugin_dir or (baseline.parent / "plugin"))
     spec = importlib.util.spec_from_file_location("restore_plugins_under_test", SCRIPT)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -71,10 +72,34 @@ class MergeVendorTests(unittest.TestCase):
             self.assertEqual(registry[key]["info"]["plugin"], key)
 
     def test_vendor_fields_are_verbatim(self) -> None:
+        # 先把 5 个插件目录都建出来 ⇒ 注册表状态与磁盘一致 ⇒ 必须逐字照抄
+        for key in VENDOR_KEYS:
+            (self.tmp / "plugin" / key).mkdir(parents=True, exist_ok=True)
         registry: dict = {}
         self.module.merge_vendor_entries(registry)
         expected = vendor_baseline_data()
-        self.assertEqual(registry, expected, "厂商条目必须逐字照抄基线")
+        self.assertEqual(registry, expected, "目录存在时必须逐字照抄基线")
+
+    def test_missing_dir_is_marked_free(self) -> None:
+        """目录不存在 ⇒ 写 install=false / status=free（避免开机被 force uninstall 拉锯）。"""
+        registry: dict = {}
+        self.module.merge_vendor_entries(registry)
+        for key in VENDOR_KEYS:
+            self.assertFalse(registry[key]["install"])
+            self.assertEqual(registry[key]["status"], "free")
+            self.assertFalse(registry[key]["enable"])
+        # 其余字段仍逐字保留
+        expected = vendor_baseline_data()
+        for key in VENDOR_KEYS:
+            self.assertEqual(registry[key]["info"], expected[key]["info"])
+            self.assertEqual(registry[key].get("resource"), expected[key].get("resource"))
+
+    def test_dir_present_keeps_running(self) -> None:
+        (self.tmp / "plugin" / "ipc").mkdir(parents=True)
+        registry: dict = {}
+        self.module.merge_vendor_entries(registry)
+        self.assertTrue(registry["ipc"]["install"])
+        self.assertEqual(registry["ipc"]["status"], "running")
 
     def test_existing_entry_is_untouched(self) -> None:
         original = {
