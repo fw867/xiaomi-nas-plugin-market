@@ -59,6 +59,11 @@ DOCKER_SOCK=/var/run/docker.sock
 # 上次「在跑」的容器清单：开机后按它把插件容器拉回来。原因见文件末尾 restore_containers()
 DOCKER_LAST_RUNNING=/data/plugin/.docker-last-running
 
+# 非交互环境（root cron）里的 PATH 加固：iptables / ss / ip 等常在 /sbin、/usr/sbin。
+# 小米 NAS 上 iptables 是 /sbin/iptables 与 /usr/sbin/iptables 两个软链；某些 cron
+# 实现的默认 PATH 不含 /sbin，会让 `command -v iptables` 直接判否、修复被静默跳过。
+export PATH="${PATH:-/usr/bin:/bin}:/usr/sbin:/sbin:/usr/local/sbin:/usr/local/bin"
+
 log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') $1" >> "$LOG" 2>/dev/null
     logger -t community-plugins-boot "$1" 2>/dev/null || true

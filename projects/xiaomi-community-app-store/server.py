@@ -29,6 +29,7 @@ from storelib import (
     RAW_BASE,
     GITHUB_API_LATEST,
 )
+from keepalive import start_background as start_keepalive
 
 
 PROJECT = Path(__file__).resolve().parent
@@ -502,12 +503,25 @@ def main() -> int:
         admin_token = "preview-only-token-not-for-production"
     server = StoreServer((args.host, args.port), args.dev, manager, admin_token)
     hook = sync_boot_hook()
+    # 自愈线程：每隔 2 分钟补 server.list 条目、还原被删目录、拉起未运行的服务。
+    # 与 root cron 里那条 `keepalive.py --once` 互为双保险，两处都幂等。
+    keepalive_loop = None
+    keepalive_note = "disabled (preview)"
+    if not args.dev:
+        try:
+            keepalive_loop = start_keepalive(args.user_id)
+            keepalive_note = "running"
+        except Exception as error:  # noqa: BLE001 自愈线程起不来不能挡住市场服务
+            keepalive_note = f"error: {error}"
     print(f"Xiaomi community store v{STORE_VERSION} on http://{args.host}:{args.port} ({'preview' if args.dev else 'active'}); {hook}")
+    print(f"keepalive: {keepalive_note}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        if keepalive_loop is not None:
+            keepalive_loop.stop()
         server.server_close()
     return 0
 

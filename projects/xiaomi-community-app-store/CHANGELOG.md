@@ -49,3 +49,31 @@
   回退，导致图标忽大忽小（实测回滚图标在 App 里只有 12×10.3 CSS px）；现六个图标统一 20×20 网格、
   `stroke-width 1.8`、圆头圆角、`currentColor`，渲染描边 1.71–1.8px、光学大小一致。
 
+
+## v0.2.31
+
+- **新增自愈模块 keepalive.py**（三件事，互为兜底）：
+  1. **server.list 条目注入**：把在册的 10 个社区插件条目补进 /data/plugin/server.list 的 .data
+     里。背景：打开 App 的「应用市场」会让 plugincenter 拿云端 server.list 与本地插件对账，
+     云端只有厂商那几条，社区插件不在其中就会被判成非法安装并 force uninstall（删目录、删注册表、
+     停服务）。注入后对账时它们是「在册」的。**只增不改**：厂商 5 条与任何已存在的条目一律不动。
+  2. **每插件备份**：把 /data/plugin/<插件>/ 打包到 /data/backup/plugins/<插件>.tar.gz，
+     **显式排除 data/、__pycache__、.git、
+ode_modules**（绝不复制用户数据）。
+  3. **自愈循环**：每 2 分钟检查 —— server.list 缺条目就注入、插件目录缺失就从备份还原、
+     服务没跑就 systemctl start、端口没听就记问题；每轮写一行结构化日志到
+     /data/plugin/community-store/state/keepalive.log。
+- **双通道驱动**：市场服务进程内的后台线程（daemon，随服务启动）+ root cron 里每分钟的
+  keepalive.py --once 作双保险；两处都幂等，重复执行无副作用。
+- CLI：--once / --backup / --restore <key> / --status / --install-cron / --remove-cron / --loop，
+  便于手工排障。
+- **开机钩子 PATH 加固**：community-plugins-boot.sh 顶部显式
+  export PATH（含 /usr/sbin:/sbin）。iptables 在本机是 /sbin/iptables 软链，某些 cron
+  实现的默认 PATH 不含 /sbin，会让 command -v iptables 判否、NAT 修复被静默跳过。
+- 新增 	ests/test_keepalive.py（12 个用例）：条目生成、注入幂等、**厂商条目不被改动**、
+  备份排除用户数据、备份→删除→还原、heal_once 的容错与报表。
+- **新增 current 软链自愈**：plugincenter 对账有时**只删 `<插件>/current`、保留整个目录**
+  （实测 ssh-control 在 20:05 还在、20:32 就没了，而 eleases/ 完好）。这种状态下服务
+  ExecStart 指向 current/... 重启就起不来，current/keepalive.sh 类 cron 变成每分钟空转，
+  而只看「目录是否存在」发现不了。ensure_current() 会在 current 缺失或断链时，
+  重新指向 eleases/ 里最新的版本目录，并重启对应服务。

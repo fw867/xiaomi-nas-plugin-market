@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Create the shareable one-time bootstrap package without private material."""
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from pathlib import Path
 
 
 PROJECT = Path(__file__).resolve().parents[1]
-VERSION = "0.2.30"
+VERSION = "0.2.31"
 DIST = PROJECT / "dist"
 PACKAGE_NAME = f"xiaomi-plugin-market-{VERSION}"
 INCLUDE = [
@@ -23,6 +23,7 @@ INCLUDE = [
     "README.md",
     "server.py",
     "storelib.py",
+    "keepalive.py",
     "web",
     "catalog",
     "deploy",

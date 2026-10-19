@@ -89,6 +89,51 @@ Windows PowerShell 无人值守安装：
 手动重装：`sh deploy/install-boot-hook.sh add`；卸载：`sh deploy/install-boot-hook.sh remove`。
 脚本日志在 `/data/plugin/community-plugins-boot.log`。
 
+## 自愈（keepalive.py）
+
+### 为什么需要它
+
+打开 App 的「应用市场」会触发 `plugincenter` 的一次**对账**：它拿云端下发的
+`server.list`（本地副本 `/data/plugin/server.list`）与本地已安装插件比对。
+云端那份只有厂商自己的条目，社区插件不在其中，于是对账会把它们当成**非法安装**并
+force uninstall —— 删目录、删注册表条目、停服务。所以**开机兜底挡不住运行期的对账删除**。
+
+`keepalive.py` 补三件事：
+
+1. **条目注入**：把在册的 10 个社区插件条目补进 `/data/plugin/server.list` 的 `.data`，
+   让它们在对账时「在册」。条目优先复用注册表里已有的记录（端口/版本/图标一致），
+   注册表没有时从插件自己的 `INFO` 生成。**只增不改**：厂商 5 条与任何已存在的条目一律不动。
+2. **每插件备份**：`/data/plugin/<插件>/` → `/data/backup/plugins/<插件>.tar.gz`，
+   **显式排除 `data/`、`__pycache__`、`.git`、`node_modules`**，绝不复制用户数据；
+   单个插件超过 512 MB 时只记日志、不打包。
+3. **自愈循环**：默认每 **120 秒**一轮 —— server.list 缺条目就注入、目录缺失就从备份还原、
+   服务没跑就拉起、端口没听就记问题；每轮写一行结构化日志到
+   `/data/plugin/community-store/state/keepalive.log`。
+
+### 双通道
+
+| 通道 | 触发方式 | 说明 |
+| --- | --- | --- |
+| 服务内后台线程 | 市场服务启动时拉起（daemon） | 随服务生命周期，最及时 |
+| root cron | `keepalive.py --once`，每分钟 | 服务挂了也能自愈；两处都**幂等** |
+
+```bash
+# 手工排障
+python3 keepalive.py --status                       # 插件/服务/端口/备份/条目 一览
+python3 keepalive.py --once --user-id 3943892       # 立刻跑一轮自愈
+python3 keepalive.py --backup                       # 只重新打包备份
+python3 keepalive.py --restore sshcontrol           # 从备份还原某个插件目录
+python3 keepalive.py --install-cron --user-id 3943892
+python3 keepalive.py --remove-cron
+```
+
+### 安全边界
+
+- 只处理脚本内 `PLUGINS` 表列出的 10 个插件，**绝不改动厂商条目**；
+- 备份**排除用户数据目录**，不读取、不复制任何用户内容；
+- 所有 JSON 写入都是「临时文件 + 原子替换」，不会留下半截文件；
+- 自愈失败只写日志，不会因此停掉市场服务本身。
+
 ## 开发与验证
 
 内置仓库包含设备管家、115 云备份、阿里云盘备份、WebDAV 文件桥和 qB 下载。WebDAV 文件桥自带经过官方 SHA-256 校验的 rclone ARM64 引擎，安装后共享默认关闭，远程连接需由用户填写自己的 WebDAV 账号。它不修改小米原有 5000 端口服务。
@@ -104,6 +149,44 @@ python3 server.py --dev
 ```
 
 开发预览默认打开 `http://127.0.0.1:18119/`。`--dev` 只用于本机预览，不启用安装、更新或卸载动作。
+
+### 在真机上验证自愈（复现"应用市场对账"）
+
+打开 App 里的「应用市场」会触发 `plugincenter` 的一次对账。这条路径**可以手工复现**，
+用来确认自愈是否真的起作用（比等 UI 更可控）：
+
+```bash
+# 1) 对账前快照
+jq -r 'keys | length' /data/plugin/u3943892.list        # 注册表条目数
+jq -r '.data | keys | length' /data/plugin/server.list  # 云端副本条目数
+
+# 2) 触发一次对账（与 App 点开应用市场走同一条路径）
+timeout 90 /usr/bin/plugincenter update
+
+# 3) 立刻再看一眼：通常会看到"被削"
+jq -r 'keys | length' /data/plugin/u3943892.list        # 实测会被清成 0（文件只剩 {}）
+jq -r '.data | keys | length' /data/plugin/server.list
+
+# 4) 等 1–2 分钟，让自愈跑完（两侧各有各的兜底）
+tail -5 /data/plugin/community-store/state/keepalive.log
+python3 /data/plugin/community-store/current/keepalive.py --status
+```
+
+**预期时间线**（实测）：
+
+| 时刻 | 现象 |
+| --- | --- |
+| T+0 | `plugincenter update` 返回；`u3943892.list` 被清空（只剩 `{}`），`server.list` 被刷新，可能有个别插件 `current` 被删 |
+| T+60s 内 | `keepalive.py --once`（cron）把 `server.list` 缺的条目补回；`restore-plugins.py`（开机钩子）重建注册表 |
+| T+120s 内 | `ensure_current` 把缺失/断链的 `current` 重新指向 `releases/` 最新版并重启服务 |
+| 之后 | `--status` 里 10 个插件 `dir/current/active/listening/backup` 全为 true |
+
+**判定标准**：复现后 **1–2 分钟内**回到"10 个插件全绿"，且
+`/data/plugin/community-store/state/keepalive.log` 里出现过 `server.list+...` 或
+`restored=...` / `relinked=...` 的行——说明自愈确实接住了。
+
+> 注意：`plugincenter update` 是**厂商自己的定期任务**（cron 里每 12 小时一次），手工跑它
+> 只是把它提前，不会引入额外风险；但**不要**在正在安装/升级插件时跑，避免与安装任务抢锁。
 
 ## 发布原则
 
