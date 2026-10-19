@@ -123,3 +123,106 @@ xiaomi-ssh-control.service  127.0.0.1:18130
 ```bash
 python3 -m unittest discover -s tests -v
 ```
+
+## SSH 执行通道修复（v0.1.8 起）
+
+### 问题
+
+这台固件的 `dropbear` 被厂商改过：二进制里**硬编码**了子程序路径
+`/usr/sbin/mi-shell`（`strings /usr/sbin/dropbearmulti | grep mi-shell` 可见）。
+而 `mi-shell` 是个 **JSON 协议受限壳**（`cJSON_Parse` + 读 stdin，含 `illegal cmd [%s]`），
+它**忽略 argv 里的 `-c 命令`**。结果就是：
+
+```bash
+ssh root@nas 'id'      # 认证成功、能看到登录 banner，但命令根本没执行
+ssh root@nas 'id > /tmp/x'   # 连 /tmp/x 都不会被创建
+```
+
+实测结论（2026-10-19）：与「socket 激活 / 独立进程」无关，与公钥/密码认证方式也无关 ——
+是**二进制层面**的行为，`-s`、`-B`、`-p 2222` 都改变不了。
+
+### 修法（可逆，不改原文件）
+
+根分区是 **只读 erofs**，改不了二进制。所以用 **bind-mount** 把 `mi-shell` 顶替成
+一个 30 字节的垫片：
+
+```sh
+#!/bin/sh
+exec /bin/bash "$@"
+```
+
+- 插件的 `deploy/mi-shell-shim` 会被复制到 `/data/plugin/ssh-control/state/mi-shell-shim`；
+- 挂载后 `ssh root@nas 'id'` 立刻正常（`uid=0(root)`）；
+- **`umount /usr/sbin/mi-shell` 立即完全还原**，原文件从未被修改（md5 不变）。
+
+### 三层内容（都由插件的 `deploy/98.ssh-restore` 承担）
+
+固化成 `/etc/syshotplug/pool/98.ssh-restore`（**每次池挂载 / 开机**执行一次，幂等）：
+
+1. 补齐两处 `authorized_keys`（`/etc/dropbear/` 与 `root` 的 `~/.ssh/`），`0600 root`；
+2. root 密码哈希被清空/锁死时，从母本 `/data/plugin/ssh-control/state/root-shadow` 写回；
+3. 挂上 `mi-shell` 垫片；顺带确保 `dropbear.socket` 在跑。
+
+母本（公钥、哈希、垫片）都在 `/data/plugin/ssh-control/state/` 下，`0700` 目录、文件 `0600/0755`。
+钩子里的路径与用户 id **由插件按本机实际情况生成**，不写死任何设备。
+
+### 怎么用
+
+- 插件页面「SSH 执行通道」卡片显示 **已修复 / 未修复 / 不适用**；
+- **一键修复**：装垫片 + 收公钥/哈希母本 + 装钩子 + 立刻挂载；
+- **一键还原**：`umount` + 删钩子。**不影响公钥登录本身**，也不会删除你配置的公钥。
+
+### 怎么彻底卸载
+
+在 App 里卸载本插件即可 —— 卸载时会执行 `scripts/control disable`，里面已经做了：
+
+```sh
+umount /usr/sbin/mi-shell
+rm -f /etc/syshotplug/pool/98.ssh-restore
+rm -f /data/plugin/ssh-control/state/mi-shell-shim
+```
+
+手工卸载等价于上面三行。**注意**：`/etc/dropbear/authorized_keys` 与 root 的
+`~/.ssh/authorized_keys` **不会**被删除——那是你自己的登录凭据。
+
+### 验证
+
+```bash
+ssh root@nas 'id'          # 修复后：uid=0(root) gid=0(root) ...
+umount /usr/sbin/mi-shell  # 还原后：又变成"认证成功但无输出"
+```
+
+### 已知边界
+
+- 只在本固件（`1.0.9.462`，`dropbear v2022.83`）上验证过；若以后厂商改回正常 dropbear，
+  状态会显示「不适用」（`/usr/sbin/mi-shell` 不存在时不做任何事）。
+- 垫片只把 `mi-shell` 这一条路径顶替掉；其它厂商功能不受影响。
+- 重启后靠 `/etc/syshotplug/pool/98.ssh-restore` 自动恢复（已实测过一次真实重启）。
+
+### 实现细节：为什么必须用 `nsenter`
+
+第一版是直接在插件进程里 `mount --bind`，结果**看起来成功、实际无效**：
+
+```
+插件自己的 status ：shimMounted = true
+主机（PID1）视角   ：/proc/1/mounts 里没有这一条  ⇒ dropbear 仍然拿到 mi-shell
+```
+
+原因：`xiaomi-ssh-control.service` 里有 `PrivateTmp=true`，systemd 据此给服务建了
+**独立的 mount namespace**（实测 `mnt:[4026532708]` vs PID1 的 `mnt:[4026531841]`），
+服务内的挂载对主机不可见。
+
+所以现在：
+
+- **挂载 / 卸载 / 跑钩子** 都走 `nsenter -t 1 -m -- <cmd>`，落到 PID1 的命名空间；
+- **"是否已挂载"的判断**读 `/proc/1/mounts`（不是 `/proc/mounts`，后者是服务自己的视角）；
+- 保留 `PrivateTmp=true`（不为了这功能牺牲硬化）。
+
+另外还有一层**主机侧兜底**：应用店的开机钩子 `community-plugins-boot.sh` 每分钟在
+**cron（主机命名空间）** 里检查一次，发现没挂就自己挂上（日志
+`ssh: mounted mi-shell shim (host namespace)`）。实测手动 `umount` 后 **≤60 秒**自动恢复。
+
+> 这一层很重要：syshotplug 的 pool 钩子**并非每次开机都会跑到**（实测 22:13 那次重启就没有
+> 任何 `98.ssh-restore` 日志），只靠它会出现"重启后 SSH 又不能执行命令"的缺口。
+
+用户点「一键还原」后 `state.json` 会写 `execFix: false`，上述两层都会**尊重该意图**不再挂回去。

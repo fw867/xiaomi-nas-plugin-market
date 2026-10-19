@@ -5,6 +5,11 @@ const autostartToggle = document.getElementById('autostartToggle');
 const methodSelect = document.getElementById('methodSelect');
 const methodHint = document.getElementById('methodHint');
 const hookNote = document.getElementById('hookNote');
+const execBadge = document.getElementById('execBadge');
+const execHint = document.getElementById('execHint');
+const execDetail = document.getElementById('execDetail');
+const execFixBtn = document.getElementById('execFixBtn');
+const execRevertBtn = document.getElementById('execRevertBtn');
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
 const note = document.getElementById('note');
@@ -12,6 +17,18 @@ const toast = document.getElementById('toast');
 
 let busy = false;
 let firstRender = true;
+
+const EXEC_LABEL = {
+  fixed: '已修复',
+  broken: '未修复',
+  'not-applicable': '不适用',
+};
+
+const EXEC_DETAIL = {
+  fixed: 'SSH 可以正常执行命令（公钥与密码登录都可用）。',
+  broken: '能登录但命令不执行：本机固件把 dropbear 的子程序写死成 mi-shell（只认 JSON 协议、忽略 -c 参数）。点「一键修复」用可逆的方式换成正常 shell。',
+  'not-applicable': '本机没有 /usr/sbin/mi-shell，不受该问题影响。',
+};
 
 const METHOD_HINTS = {
   cron: '每分钟巡检一次，发现 SSH 没跑就拉起；兼容性最好。',
@@ -61,6 +78,26 @@ function render(data) {
   note.textContent = data.autostart
     ? `开机自启已开启（${how}）：系统每次启动后会自动把 SSH 拉回来。`
     : '开机自启已关闭：小 Mi 系统会在每次开机时关闭 SSH，手动启动只在本次开机内有效。';
+
+  const exec = data.exec || {};
+  const execState = exec.state || 'not-applicable';
+  execBadge.textContent = EXEC_LABEL[execState] || '未知';
+  execBadge.className = `exec-badge ${execState}`;
+  execHint.textContent = EXEC_DETAIL[execState] || '';
+  const bits = [];
+  if (exec.applicable === false) {
+    bits.push('本机无 mi-shell，无需处理');
+  } else {
+    bits.push(`钩子：${exec.hookInstalled ? '已安装' : '未安装'}`);
+    bits.push(`垫片：${exec.shimMounted ? '已挂载' : '未挂载'}`);
+    bits.push(`公钥：${exec.authorizedKeys ? '在位' : '缺失'}`);
+  }
+  execDetail.hidden = false;
+  execDetail.textContent = bits.join(' ｜ ');
+  const applicable = exec.applicable !== false;
+  execFixBtn.disabled = busy || !applicable || execState === 'fixed';
+  execRevertBtn.disabled = busy || !applicable || (execState !== 'fixed' && !exec.hookInstalled);
+
   firstRender = false;
 }
 
@@ -150,6 +187,12 @@ methodSelect.addEventListener('change', () => {
 });
 
 document.getElementById('refreshButton').addEventListener('click', refresh);
+
+execFixBtn.addEventListener('click', () =>
+  act(() => request('/exec/fix', {}), '已修复：SSH 现在可以正常执行命令'));
+
+execRevertBtn.addEventListener('click', () =>
+  act(() => request('/exec/revert', {}), '已还原：SSH 恢复厂商原行为（公钥登录不受影响）'));
 /* 小米客户端在 WebView 里注入 flutter_inappwebview / android_webview，官方插件靠自带的
    js-bridge.js 调宿主方法。这里只实现我们用到的那一小部分：调宿主方法并忽略返回结果。 */
 function callClient(method, params) {

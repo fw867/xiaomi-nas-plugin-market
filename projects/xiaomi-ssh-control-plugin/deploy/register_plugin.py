@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Register only the SSH Control plugin in a Xiaomi user registry."""
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ def plugin_record(plugin_id: int, now: int) -> dict[str, Any]:
             "plugin": PLUGIN_KEY,
             "name": "SSH 开关",
             "id": plugin_id,
-            "version": "0.1.0",
+            "version": "0.1.8",
             "tags": ["tool", "system"],
             "desc": "启停 SSH 远程登录，并可设置开机自动保持运行",
             "developer": "community",

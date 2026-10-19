@@ -4,6 +4,10 @@
 # 返回值非 0 会导致插件被判定为启动失败。
 # 本插件实际的服务启停由 systemd 负责（xiaomi-ssh-control.service），
 # 这里只做转发并保证返回成功。
+#
+# `disable` 同时负责**幂等卸载「执行通道修复」**：
+#   umount 垫片 → 删 syshotplug 钩子 → 删垫片文件
+# 注意：**不会**动 authorized_keys / root 密码哈希，公钥登录本身不受影响。
 
 log() {
     logger -t "plugin" "[sshcontrol] control: $*"
@@ -17,6 +21,11 @@ case "$1" in
         ;;
     disable)
         systemctl stop xiaomi-ssh-control.service 2>/dev/null
+        # 卸载执行通道修复（全部幂等，失败也不影响返回 0）
+        umount /usr/sbin/mi-shell 2>/dev/null
+        rm -f /etc/syshotplug/pool/98.ssh-restore 2>/dev/null
+        rm -f /data/plugin/ssh-control/state/mi-shell-shim 2>/dev/null
+        log "exec channel reverted"
         ;;
 esac
 

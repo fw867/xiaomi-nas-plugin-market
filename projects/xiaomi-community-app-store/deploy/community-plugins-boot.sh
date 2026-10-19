@@ -409,21 +409,39 @@ except Exception:
 }
 
 # ---- SSH 抗 OTA 固化 re-arm（幂等；每次运行都跑，与开机窗口无关）----
-# 依据：/etc 是 overlay（upper 在 /data/etc/upper，OTA 不清），而 /data 必然保留。
-# 所以把"OTA 会丢的东西"（crontab 条目、/etc/syshotplug 钩子、authorized_keys）
-# 用 /data 里的母本重建。固化点本身极简：只做本地文件操作，不联网、不执行外部命令。
-SSH_PUBKEY_FILE=/data/.sys-ssh/ssh-pubkey.txt
-SSH_HOOK_MASTER=/data/backup/ssh/98.ssh-restore
+#
+# ⚠️ **归属已变更**：`/etc/syshotplug/pool/98.ssh-restore` 现在由 **ssh-control 插件**
+# 自己生成（含 mi-shell 垫片挂载），本钩子**不再安装它**，只做幂等检查 ——
+# 缺失时调用插件自己的 `--fix-exec`（不重复实现一遍安装逻辑，避免两份代码漂移）。
+SSH_PLUGIN_DIR=/data/plugin/ssh-control/current
 SSH_HOOK_TARGET=/etc/syshotplug/pool/98.ssh-restore
 
 rearm_ssh_hardening() {
-    # 1) syshotplug 钩子缺失 → 从母本重建
-    if [ -f "$SSH_HOOK_MASTER" ] && [ ! -f "$SSH_HOOK_TARGET" ]; then
-        mkdir -p "$(dirname "$SSH_HOOK_TARGET")" 2>/dev/null
-        cp "$SSH_HOOK_MASTER" "$SSH_HOOK_TARGET" 2>/dev/null && {
-            chmod 755 "$SSH_HOOK_TARGET" 2>/dev/null
-            log "ssh: restored $SSH_HOOK_TARGET"
-        }
+    # 用户显式「一键还原」过（execFix=false）就不要再挂回去，否则每分钟都会打架
+    if grep -q '"execFix"[[:space:]]*:[[:space:]]*false' /data/plugin/ssh-control/state.json 2>/dev/null; then
+        return 0
+    fi
+
+    # 1) 钩子缺失 → 交给 ssh-control 插件自己修（它是 owner）
+    if [ ! -f "$SSH_HOOK_TARGET" ] && [ -f "$SSH_PLUGIN_DIR/server.py" ]; then
+        if python3 "$SSH_PLUGIN_DIR/server.py" --fix-exec >/dev/null 2>&1; then
+            log "ssh: delegated missing $SSH_HOOK_TARGET to ssh-control"
+        else
+            log "ssh: ssh-control --fix-exec failed"
+        fi
+    fi
+
+    # 1b) ★ 垫片没挂 → **就在本进程里挂**（cron 跑在主机 mount namespace）。
+    #     插件服务有 PrivateTmp=true，自带 private mount namespace，服务内 mount
+    #     对主机/dropbear 无效（实测坐实），所以这里必须有主机侧的兜底。
+    #     syshotplug 的 pool 钩子并非每次开机都会跑到，单靠它不够。
+    SSH_SHIM=/data/plugin/ssh-control/state/mi-shell-shim
+    if [ -e /usr/sbin/mi-shell ] && [ -x "$SSH_SHIM" ]; then
+        if ! grep -q ' /usr/sbin/mi-shell ' /proc/mounts 2>/dev/null; then
+            if mount --bind "$SSH_SHIM" /usr/sbin/mi-shell 2>/dev/null; then
+                log "ssh: mounted mi-shell shim (host namespace)"
+            fi
+        fi
     fi
 
     # 2) crontab 里没有本脚本条目 → 补回（OTA 可能清空 crontabs）

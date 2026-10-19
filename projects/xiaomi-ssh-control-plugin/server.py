@@ -22,6 +22,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -34,6 +35,7 @@ PORT = int(os.environ.get("PORT", "18130"))
 BASE_PATH = os.environ.get("BASE_PATH", "/")
 WEB_DIR = Path(os.environ.get("WEB_DIR", Path(__file__).resolve().parent / "web"))
 RUNTIME_DIR = Path(os.environ.get("RUNTIME_DIR", Path(__file__).resolve().parent))
+STATE_DIR = Path(os.environ.get("SSH_STATE_DIR", "/data/plugin/ssh-control/state"))
 STATE_FILE = Path(os.environ.get("STATE_FILE", "/data/plugin/ssh-control/state.json"))
 DROPBEAR_UNIT = "dropbear.socket"
 KEEPALIVE_SCRIPT = RUNTIME_DIR / "keepalive.sh"
@@ -46,6 +48,38 @@ HOTPLUG_DIR = Path(os.environ.get("HOTPLUG_DIR", "/etc/syshotplug/pool"))
 HOTPLUG_NAME = "98.ssh-control"
 # /etc 是 overlay，写入 /etc/syshotplug/pool 会落到这里；用来向用户报告"已持久化"
 HOTPLUG_UPPER_DIR = Path(os.environ.get("HOTPLUG_UPPER_DIR", "/data/etc/upper/syshotplug/pool"))
+
+# ---------------------------------------------------------------------------
+# 执行通道修复（mi-shell => bash 的可逆 bind-mount 垫片）
+#
+# 背景（真机实证）：这台固件的 dropbear 被厂商改成了**固定 exec /usr/sbin/mi-shell**
+# （二进制里硬编码该路径），而 mi-shell 是个 JSON 协议受限壳，只看 stdin、**忽略
+# `-c 命令`**，于是 `ssh host 'id'` 认证成功却什么都不执行。
+# 根分区是只读 erofs，改不了二进制；用 bind-mount 把 mi-shell 顶替成"转发 bash"的
+# 垫片即可，`umount` 立刻还原（原文件从未被修改）。
+# ---------------------------------------------------------------------------
+MI_SHELL = Path(os.environ.get("MI_SHELL_PATH", "/usr/sbin/mi-shell"))
+SHIM_SOURCE = RUNTIME_DIR / "mi-shell-shim"
+SHIM_PATH = Path(os.environ.get("SSH_SHIM_PATH", str(STATE_DIR / "mi-shell-shim")))
+RESTORE_SOURCE = RUNTIME_DIR / "98.ssh-restore"
+RESTORE_NAME = "98.ssh-restore"
+PUBKEY_MASTER = Path(os.environ.get("SSH_PUBKEY_MASTER", str(STATE_DIR / "ssh-pubkey.txt")))
+SHADOW_MASTER = Path(os.environ.get("SSH_SHADOW_MASTER", str(STATE_DIR / "root-shadow")))
+RESTORE_LOG = Path(os.environ.get("SSH_RESTORE_LOG", str(STATE_DIR / "restore.log")))
+PASSWD_FILE = Path(os.environ.get("PASSWD_FILE", "/etc/passwd"))
+SHADOW_FILE = Path(os.environ.get("SHADOW_FILE", "/etc/shadow"))
+PROC_MOUNTS = Path(os.environ.get("PROC_MOUNTS", "/proc/1/mounts"))
+# 本服务有 PrivateTmp=true ⇒ systemd 给它单独建了 mount namespace，
+# 服务内 `mount` 对主机（以及 dropbear）**无效**（实测坐实）。所以挂载/卸载/跑钩子
+# 都要通过 nsenter 进 PID 1 的 namespace 去做。
+NSENTER_CANDIDATES = ("/bin/nsenter", "/usr/bin/nsenter", "/usr/sbin/nsenter")
+DROPBEAR_AUTHORIZED_KEYS = Path(
+    os.environ.get("DROPBEAR_AUTHORIZED_KEYS", "/etc/dropbear/authorized_keys")
+)
+PLUGIN_DIR = Path(os.environ.get("PLUGIN_DIR", "/data/plugin"))
+STORE_REGISTRATION = Path(
+    os.environ.get("STORE_REGISTRATION", "/data/plugin/community-store/state/store.json")
+)
 
 # 守护方式：cron / hotplug / both
 METHODS = ("cron", "hotplug", "both")
@@ -235,6 +269,330 @@ def set_method(method: str) -> tuple[bool, str]:
 
 
 # ---------------------------------------------------------------------------
+# 执行通道：参数解析（一律从本机实际状态推导，不写死任何用户 id）
+# ---------------------------------------------------------------------------
+
+def detect_user_id() -> str:
+    """当前 NAS 用户 id（纯数字）。优先插件注册信息，其次最新的 u*.list。"""
+    override = os.environ.get("SSH_CONTROL_USER_ID", "").strip()
+    if override:
+        return override.lstrip("u")
+    try:
+        data = json.loads(STORE_REGISTRATION.read_text(encoding="utf-8"))
+        user = str(data.get("user", "")).strip()
+        if user:
+            return user.lstrip("u")
+    except (OSError, json.JSONDecodeError):
+        pass
+    try:
+        lists = sorted(PLUGIN_DIR.glob("u*.list"), key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        lists = []
+    return lists[0].stem.lstrip("u") if lists else ""
+
+
+def resolve_pool_data(user_id: str) -> str:
+    """池里的 data 目录；不存在则返回空串（调用方据此判断"不适用"）。"""
+    override = os.environ.get("SSH_CONTROL_POOL_DATA", "")
+    if override:
+        return override
+    if not user_id:
+        return ""
+    candidate = Path(f"/home/u{user_id}/pool0/data")
+    return str(candidate) if candidate.is_dir() else ""
+
+
+def resolve_root_home() -> str:
+    """root 的 home 必须是持久层（/home 在池上，能扛 OTA）。
+
+    已经在 /home 下就沿用；否则用厂商工具创建的那个（`/home/rootx`）。
+    """
+    override = os.environ.get("SSH_CONTROL_ROOT_HOME", "")
+    if override:
+        return override
+    home = ""
+    try:
+        for line in PASSWD_FILE.read_text(encoding="utf-8").splitlines():
+            if line.startswith("root:"):
+                fields = line.split(":")
+                if len(fields) > 5:
+                    home = fields[5]
+                break
+    except OSError:
+        pass
+    if home.startswith("/home/"):
+        return home
+    return "/home/rootx"
+
+
+def restore_hook_path() -> Path:
+    return HOTPLUG_DIR / RESTORE_NAME
+
+
+def mi_shell_shim_mounted() -> bool:
+    """垫片是否已挂上（读 /proc/mounts，不依赖 mountpoint 命令）。"""
+    try:
+        text = PROC_MOUNTS.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    needle = f" {MI_SHELL} "
+    return any(needle in line for line in text.splitlines())
+
+
+def restore_hook_installed() -> bool:
+    target = restore_hook_path()
+    return target.is_file() and os.access(target, os.X_OK)
+
+
+def authorized_keys_present() -> bool:
+    root_home = resolve_root_home()
+    for candidate in (DROPBEAR_AUTHORIZED_KEYS,
+                      Path(root_home) / ".ssh" / "authorized_keys"):
+        try:
+            if candidate.is_file() and candidate.stat().st_size > 0:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def render_restore_hook() -> str:
+    """把模板里的占位符换成本机实际值（钩子因此自包含，不需要读外部配置）。"""
+    try:
+        template = RESTORE_SOURCE.read_text(encoding="utf-8")
+    except OSError as error:
+        raise RuntimeError(f"读取钩子模板失败：{error}") from error
+    user_id = detect_user_id()
+    values = {
+        "@USER_ID@": user_id or "unknown",
+        "@POOL_DATA@": resolve_pool_data(user_id) or "(unknown)",
+        "@ROOT_HOME@": resolve_root_home(),
+        "@PUBKEY_FILE@": str(PUBKEY_MASTER),
+        "@SHADOW_FILE@": str(SHADOW_MASTER),
+        "@SHIM@": str(SHIM_PATH),
+        "@LOG@": str(RESTORE_LOG),
+        "@MI_SHELL@": str(MI_SHELL),
+    }
+    rendered = template
+    for placeholder, value in values.items():
+        rendered = rendered.replace(placeholder, value)
+    return rendered
+
+
+def ensure_shim() -> tuple[bool, str]:
+    """把 mi-shell-shim 落到插件自己的 state 目录（0700 目录 / 0755 文件）。"""
+    try:
+        payload = SHIM_SOURCE.read_bytes()
+    except OSError as error:
+        return False, f"读取垫片失败：{error}"
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        os.chmod(STATE_DIR, 0o700)
+        temporary = SHIM_PATH.with_name(SHIM_PATH.name + ".tmp")
+        temporary.write_bytes(payload)
+        os.chmod(temporary, 0o755)
+        temporary.replace(SHIM_PATH)
+    except OSError as error:
+        return False, f"写入垫片失败：{error}"
+    return True, ""
+
+
+def ensure_pubkey_master() -> tuple[bool, str]:
+    """把当前有效的公钥收进母本（钩子靠它恢复 authorized_keys）。"""
+    keys: list[str] = []
+    root_home = resolve_root_home()
+    for source in (DROPBEAR_AUTHORIZED_KEYS,
+                   Path(root_home) / ".ssh" / "authorized_keys"):
+        try:
+            for line in source.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#") and line not in keys:
+                    keys.append(line)
+        except OSError:
+            continue
+    if not keys:
+        return False, "没有读到任何公钥（先配置公钥登录再用一键修复）"
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        temporary = PUBKEY_MASTER.with_name(PUBKEY_MASTER.name + ".tmp")
+        temporary.write_text("\n".join(keys) + "\n", encoding="utf-8")
+        os.chmod(temporary, 0o600)
+        temporary.replace(PUBKEY_MASTER)
+    except OSError as error:
+        return False, f"写入公钥母本失败：{error}"
+    return True, ""
+
+
+def ensure_shadow_master() -> tuple[bool, str]:
+    """把 root 当前的密码哈希收进母本（为空/锁定时跳过）。"""
+    current = ""
+    try:
+        for line in SHADOW_FILE.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith("root:"):
+                fields = line.split(":")
+                current = fields[1] if len(fields) > 1 else ""
+                break
+    except OSError as error:
+        return False, f"读取 /etc/shadow 失败：{error}"
+    if not current or current.startswith("!") or current.startswith("*"):
+        return True, ""  # 没有可用哈希就不写母本，钩子会跳过这一步
+    try:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        temporary = SHADOW_MASTER.with_name(SHADOW_MASTER.name + ".tmp")
+        temporary.write_text(current + "\n", encoding="utf-8")
+        os.chmod(temporary, 0o600)
+        temporary.replace(SHADOW_MASTER)
+    except OSError as error:
+        return False, f"写入哈希母本失败：{error}"
+    return True, ""
+
+
+def install_restore_hook() -> tuple[bool, str]:
+    try:
+        rendered = render_restore_hook()
+    except RuntimeError as error:
+        return False, str(error)
+    target = restore_hook_path()
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(target.name + ".tmp")
+        temporary.write_text(rendered, encoding="utf-8")
+        os.chmod(temporary, 0o755)
+        temporary.replace(target)
+    except OSError as error:
+        return False, f"安装钩子失败：{error}"
+    return True, ""
+
+
+def remove_restore_hook() -> tuple[bool, str]:
+    try:
+        restore_hook_path().unlink()
+    except FileNotFoundError:
+        return True, ""
+    except OSError as error:
+        return False, f"删除钩子失败：{error}"
+    return True, ""
+
+
+def _host_run(command: list[str]) -> subprocess.CompletedProcess[str]:
+    """在 **PID 1 的 mount namespace** 里执行命令。
+
+    为什么必须这样：unit 里有 `PrivateTmp=true`，systemd 据此给服务建了一个
+    private mount namespace（实测 `mnt:[4026532708]` vs PID1 的 `mnt:[4026531841]`）。
+    服务内直接 `mount --bind` 只是"自己看得见"——`/proc/1/mounts` 里没有，
+    dropbear 也就用不上。用 `nsenter -t 1 -m` 落到主机命名空间才真正生效。
+
+    没有 nsenter 时退回本命名空间（老行为，至少不会崩）。
+    """
+    getuid = getattr(os, "geteuid", None)
+    is_root = bool(getuid and getuid() == 0)
+    if is_root and Path("/proc/1/ns/mnt").exists():
+        for candidate in NSENTER_CANDIDATES:
+            if Path(candidate).exists():
+                return _run([candidate, "-t", "1", "-m", "--"] + command)
+    return _run(command)
+
+
+def mount_shim() -> tuple[bool, str]:
+    if not MI_SHELL.exists():
+        return False, f"{MI_SHELL} 不存在，本机不适用"
+    if mi_shell_shim_mounted():
+        return True, ""
+    if not os.access(SHIM_PATH, os.R_OK):
+        return False, f"垫片不存在：{SHIM_PATH}"
+    result = _host_run(["mount", "--bind", str(SHIM_PATH), str(MI_SHELL)])
+    if result.returncode != 0:
+        error = (result.stderr or result.stdout or "mount 失败").strip()
+        return False, error
+    return True, ""
+
+
+def unmount_shim() -> tuple[bool, str]:
+    if not mi_shell_shim_mounted():
+        return True, ""
+    result = _host_run(["umount", str(MI_SHELL)])
+    if result.returncode != 0:
+        error = (result.stderr or result.stdout or "umount 失败").strip()
+        return False, error
+    return True, ""
+
+
+def run_restore_hook() -> tuple[bool, str]:
+    """立刻跑一次钩子，把三件事一次性落实（不等下次开机）。
+
+    同样走 nsenter：钩子里就包含 `mount --bind`，在私有 namespace 里跑等于白跑。
+    """
+    target = restore_hook_path()
+    if not target.is_file():
+        return False, "钩子不存在"
+    result = _host_run(["/bin/sh", str(target)])
+    if result.returncode != 0:
+        return False, (result.stderr or result.stdout or "钩子执行失败").strip()
+    return True, ""
+
+
+def exec_channel_status() -> dict:
+    applicable = MI_SHELL.exists()
+    installed = restore_hook_installed()
+    mounted = mi_shell_shim_mounted()
+    keys = authorized_keys_present()
+    if not applicable:
+        state = "not-applicable"
+    elif installed and mounted and keys:
+        state = "fixed"
+    else:
+        state = "broken"
+    return {
+        "state": state,
+        "applicable": applicable,
+        "hookInstalled": installed,
+        "shimMounted": mounted,
+        "authorizedKeys": keys,
+        "shimFile": SHIM_PATH.is_file(),
+        "hookPath": str(restore_hook_path()),
+        "shimPath": str(SHIM_PATH),
+        "miShellPath": str(MI_SHELL),
+    }
+
+
+def fix_exec_channel() -> tuple[bool, str]:
+    """一键修复：垫片 + 公钥/哈希母本 + 钩子 + 立刻挂上。全程幂等。"""
+    for step in (ensure_shim, ensure_pubkey_master, ensure_shadow_master, install_restore_hook):
+        ok, error = step()
+        if not ok:
+            return False, error
+    ok, error = run_restore_hook()
+    if not ok:
+        return False, error
+    ok, error = mount_shim()
+    if not ok:
+        return False, error
+    state = read_state()
+    state["execFix"] = True
+    write_state(state)
+    return True, ""
+
+
+def revert_exec_channel() -> tuple[bool, str]:
+    """一键还原：卸载垫片 + 删钩子。**不动公钥登录本身**，也不删已配置的公钥。"""
+    ok, error = unmount_shim()
+    if not ok:
+        return False, error
+    ok, error = remove_restore_hook()
+    if not ok:
+        return False, error
+    state = read_state()
+    state["execFix"] = False
+    write_state(state)
+    return True, ""
+
+
+def exec_channel_wanted() -> bool:
+    """插件启动时是否要自动装。默认装；用户显式「一键还原」过就不再自动装回来。"""
+    return read_state().get("execFix") is not False
+
+
+# ---------------------------------------------------------------------------
 # HTTP
 # ---------------------------------------------------------------------------
 
@@ -276,6 +634,7 @@ class Handler(BaseHTTPRequestHandler):
                 "path": str(hotplug_path()),
                 "name": HOTPLUG_NAME,
             },
+            "exec": exec_channel_status(),
         }
 
     def _serve_static(self, path: str) -> None:
@@ -376,11 +735,42 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(HTTPStatus.OK, self._status())
                 return
 
+            if path == "/api/exec/fix":
+                ok, error = fix_exec_channel()
+                if not ok:
+                    self._json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": error})
+                    return
+                self._json(HTTPStatus.OK, self._status())
+                return
+
+            if path == "/api/exec/revert":
+                ok, error = revert_exec_channel()
+                if not ok:
+                    self._json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": error})
+                    return
+                self._json(HTTPStatus.OK, self._status())
+                return
+
         self._json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not found"})
 
 
 def main() -> int:
+    # CLI：给外部（例如应用店的开机钩子）做一次幂等修复，跑完即退出，不常驻。
+    if "--fix-exec" in sys.argv[1:]:
+        ok, error = fix_exec_channel()
+        print(f"fix-exec: {'ok' if ok else error}", flush=True)
+        return 0 if ok else 1
+    if "--exec-status" in sys.argv[1:]:
+        print(json.dumps(exec_channel_status(), ensure_ascii=False), flush=True)
+        return 0
+
     STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    # 插件启动时**幂等**装好执行通道修复（用户显式「一键还原」过就不再装回来）
+    if exec_channel_wanted():
+        ok, error = fix_exec_channel()
+        print(f"exec channel fix: {'ok' if ok else error}", flush=True)
+    else:
+        print("exec channel fix: skipped (reverted by user)", flush=True)
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Xiaomi SSH control listening on http://{HOST}:{PORT}", flush=True)
     try:

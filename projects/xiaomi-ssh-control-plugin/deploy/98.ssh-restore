@@ -1,0 +1,83 @@
+#!/bin/sh
+# 抗 OTA 固化点：恢复 root 的 SSH 授权 + 修好「能执行命令」。
+#
+# 由 /etc/syshotplug/pool/ 在**每次池挂载**（开机必经）以 root 身份执行。
+# 本文件由 ssh-control 插件生成（占位符已替换为本机实际路径），**不应手工编辑**。
+#
+# 设计原则（这是"最后一道防线"，必须极简、极稳）：
+#   * 只做本地文件操作：读母本 → 写 authorized_keys / 修 root home / 回灌密码哈希 / 挂垫片
+#   * **不联网、不下载、不执行任何外部命令字符串**
+#   * 全程幂等：跑多少次结果都一样
+#   * 任何一步失败都只记日志、不 exit 非零（避免影响其它 pool 钩子）
+#
+# 生成参数（来自插件）：用户=@USER_ID@  池数据目录=@POOL_DATA@
+
+ROOT_HOME=@ROOT_HOME@
+PUB=@PUBKEY_FILE@
+SHADOW_MASTER=@SHADOW_FILE@
+SHIM=@SHIM@
+LOG=@LOG@
+MI_SHELL=@MI_SHELL@
+
+log() {
+    mkdir -p "$(dirname "$LOG")" 2>/dev/null
+    printf '%s  98.ssh-restore: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$LOG" 2>/dev/null
+}
+
+# ---- 1) root 的 home 必须在持久层（dropbear 从这里读 ~/.ssh/authorized_keys）----
+if [ -n "$ROOT_HOME" ] && ! grep -q "^root:[^:]*:[^:]*:[^:]*:[^:]*:$ROOT_HOME:" /etc/passwd 2>/dev/null; then
+    cp -f /etc/passwd /etc/passwd.before-ssh-restore 2>/dev/null
+    sed -i "s#^\(root:[^:]*:[^:]*:[^:]*:[^:]*:\)[^:]*:#\1$ROOT_HOME:#" /etc/passwd 2>/dev/null &&
+        log "passwd: root home -> $ROOT_HOME"
+fi
+
+# ---- 2) 两处 authorized_keys 都补齐（幂等追加，0600 root）----
+if [ -s "$PUB" ]; then
+    mkdir -p /etc/dropbear "$ROOT_HOME/.ssh" 2>/dev/null
+    chmod 700 "$ROOT_HOME" "$ROOT_HOME/.ssh" 2>/dev/null
+    for AK in /etc/dropbear/authorized_keys "$ROOT_HOME/.ssh/authorized_keys"; do
+        touch "$AK" 2>/dev/null || continue
+        while IFS= read -r key; do
+            [ -n "$key" ] || continue
+            grep -qxF "$key" "$AK" 2>/dev/null || printf '%s\n' "$key" >> "$AK"
+        done < "$PUB"
+        chmod 600 "$AK" 2>/dev/null
+        chown 0:0 "$AK" 2>/dev/null
+    done
+    log "authorized_keys ensured"
+fi
+
+# ---- 3) 确保 dropbear.socket 在（厂商 boot_check 可能把它关掉）----
+systemctl enable dropbear.socket >/dev/null 2>&1
+systemctl start dropbear.socket >/dev/null 2>&1 && log "dropbear.socket started"
+
+# ---- 4) root 密码哈希：被清空/锁死则从母本写回 ----
+if [ -s "$SHADOW_MASTER" ]; then
+    cur="$(awk -F: '$1=="root"{print $2}' /etc/shadow 2>/dev/null)"
+    case "$cur" in
+        ""|"!"*|"*"*)
+            h="$(cat "$SHADOW_MASTER" 2>/dev/null)"
+            if [ -n "$h" ]; then
+                cp -f /etc/shadow /etc/shadow.before-ssh-restore 2>/dev/null
+                if awk -F: -v x="$h" 'BEGIN{OFS=":"} $1=="root"{$2=x} {print}' /etc/shadow > /etc/shadow.new 2>/dev/null \
+                   && [ -s /etc/shadow.new ] && grep -q '^root:' /etc/shadow.new; then
+                    cat /etc/shadow.new > /etc/shadow
+                    log "shadow: root hash restored"
+                fi
+                rm -f /etc/shadow.new 2>/dev/null
+            fi
+            ;;
+    esac
+fi
+
+# ---- 5) 让 SSH 能真正执行命令 ----
+# 厂商把 dropbear 的 child 程序写死成 mi-shell（JSON 协议受限壳，忽略 `-c 命令`），
+# 所以「认证成功但命令不执行」。根分区是只读 erofs，改不了二进制；
+# 这里用 bind-mount 把它换成"转发给 bash"的垫片（原文件不动，umount 即完全还原）。
+if [ -x "$SHIM" ] && [ -e "$MI_SHELL" ]; then
+    if ! grep -q " $MI_SHELL " /proc/mounts 2>/dev/null; then
+        mount --bind "$SHIM" "$MI_SHELL" 2>/dev/null && log "mi-shell shim mounted (ssh exec enabled)"
+    fi
+fi
+
+exit 0

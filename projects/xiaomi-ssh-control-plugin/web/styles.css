@@ -162,3 +162,21 @@ main { width: min(560px, calc(100% - 40px)); margin: 0 auto; padding: 24px 0 60p
   transition: .2s ease;
 }
 .toast.visible { opacity: 1; transform: translateY(0); }
+
+/* ---- SSH 执行通道（mi-shell 垫片）状态徽标 ---- */
+.exec-badge {
+  flex: 0 0 auto;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  color: #4a5568;
+  background: #eef1f6;
+}
+.exec-badge.fixed { color: #0f7b56; background: #e3f6ee; }
+.exec-badge.broken { color: #b4552d; background: #fdeee7; }
+.exec-badge.not-applicable { color: #5c6472; background: #eef1f6; }
+
+.exec-actions { grid-template-columns: 1fr 1fr; margin-top: 12px; }
+.exec-actions .btn { height: 40px; font-size: 14px; }

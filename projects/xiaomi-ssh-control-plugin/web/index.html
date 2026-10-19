@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
     <title>SSH 开关</title>
-    <link rel="stylesheet" href="styles.css?v=1" />
+    <link rel="stylesheet" href="styles.css?v=2" />
   </head>
   <body>
     <header class="topbar">
@@ -47,6 +47,21 @@
         <p class="hook-note" id="hookNote" hidden></p>
       </section>
 
+      <section class="card">
+        <div class="row">
+          <div class="row-copy">
+            <strong>SSH 执行通道</strong>
+            <small id="execHint">正在检测…</small>
+          </div>
+          <span class="exec-badge" id="execBadge">—</span>
+        </div>
+        <p class="hook-note" id="execDetail" hidden></p>
+        <div class="actions exec-actions">
+          <button class="btn" id="execFixBtn">一键修复</button>
+          <button class="btn danger" id="execRevertBtn">一键还原</button>
+        </div>
+      </section>
+
       <section class="actions">
         <button class="btn primary" id="startBtn">启动 SSH</button>
         <button class="btn danger" id="stopBtn">停止 SSH</button>
@@ -56,6 +71,6 @@
     </main>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="app.js?v=1" defer></script>
+    <script src="app.js?v=2" defer></script>
   </body>
 </html>
