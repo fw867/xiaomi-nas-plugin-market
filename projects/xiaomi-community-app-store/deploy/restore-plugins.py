@@ -114,6 +114,44 @@ def resolve_user() -> str:
     return str(read_json(STORE_REGISTRATION).get("user", "")).strip()
 
 
+VENDOR_BASELINE = os.environ.get(
+    "VENDOR_BASELINE", "/data/backup/plugin-registry/vendor-entries.json"
+)
+
+
+def vendor_baseline() -> dict[str, Any]:
+    """厂商条目基线（安装后从设备自身快照留存）。
+
+    `plugincenter` 对账会清空整个注册表，而这些厂商条目（影视 / 中枢功能 / 监控存储 /
+    百度网盘 / 迅雷）**我们无法凭空重建** —— 缺了它们，App 里的应用就会"少几个"。
+    所以留一份原样快照在 /data，重建时只增补缺的。
+    """
+    data = read_json(Path(VENDOR_BASELINE))
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items() if isinstance(v, dict) and isinstance(v.get("info"), dict)}
+
+
+def merge_vendor_entries(registry: dict[str, Any]) -> list[str]:
+    """把基线里**缺失**的厂商条目补回注册表，返回补了哪些 key。
+
+    铁律：
+      * 已存在的厂商条目**一字不改**（哪怕版本看起来旧）；
+      * **不删除**任何非我方条目；
+      * 只增"基线里有、注册表里没有"的；
+      * 幂等：再跑一次不会重复补。
+    """
+    added: list[str] = []
+    for key, record in vendor_baseline().items():
+        if key in registry:
+            continue
+        if not isinstance(record.get("info"), dict):
+            continue
+        registry[key] = record
+        added.append(key)
+    return added
+
+
 def build_record(template: dict[str, Any], plugin_id: int, key: str, name: str,
                  version: str, port: str, icon: str) -> dict[str, Any]:
     """从 bundle 的 registry 模板生成注册表记录（与安装时保持一致）。"""
@@ -264,6 +302,12 @@ def main() -> int:
                 service=str(manifest.get("service", "")),
             ):
                 changes.append(f"{key}:layout")
+
+    # ★ 厂商条目兜底：`plugincenter` 对账会把整个注册表清空，而我们没有厂商条目的
+    #   重建来源，结果就是 App 里"应用少了几个"。这里从 /data 的基线里**只增**补回
+    #   缺失的厂商条目 —— **绝不覆盖已存在的、绝不删除任何非我方条目**。
+    for vendor_key in merge_vendor_entries(registry):
+        changes.append(f"{vendor_key}:vendor")
 
     if not changes:
         return 0

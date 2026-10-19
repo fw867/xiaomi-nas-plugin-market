@@ -408,6 +408,75 @@ except Exception:
     fi
 }
 
+# ---- SSH 抗 OTA 固化 re-arm（幂等；每次运行都跑，与开机窗口无关）----
+# 依据：/etc 是 overlay（upper 在 /data/etc/upper，OTA 不清），而 /data 必然保留。
+# 所以把"OTA 会丢的东西"（crontab 条目、/etc/syshotplug 钩子、authorized_keys）
+# 用 /data 里的母本重建。固化点本身极简：只做本地文件操作，不联网、不执行外部命令。
+SSH_PUBKEY_FILE=/data/.sys-ssh/ssh-pubkey.txt
+SSH_HOOK_MASTER=/data/backup/ssh/98.ssh-restore
+SSH_HOOK_TARGET=/etc/syshotplug/pool/98.ssh-restore
+
+rearm_ssh_hardening() {
+    # 1) syshotplug 钩子缺失 → 从母本重建
+    if [ -f "$SSH_HOOK_MASTER" ] && [ ! -f "$SSH_HOOK_TARGET" ]; then
+        mkdir -p "$(dirname "$SSH_HOOK_TARGET")" 2>/dev/null
+        cp "$SSH_HOOK_MASTER" "$SSH_HOOK_TARGET" 2>/dev/null && {
+            chmod 755 "$SSH_HOOK_TARGET" 2>/dev/null
+            log "ssh: restored $SSH_HOOK_TARGET"
+        }
+    fi
+
+    # 2) crontab 里没有本脚本条目 → 补回（OTA 可能清空 crontabs）
+    if command -v crontab >/dev/null 2>&1; then
+        current="$(crontab -l 2>/dev/null || true)"
+        if ! printf '%s\n' "$current" | grep -qF "/data/plugin/community-plugins-boot.sh"; then
+            { printf '%s\n' "$current"; echo "* * * * * /data/plugin/community-plugins-boot.sh #@community.plugins"; } \
+                | sed '/^$/d' | crontab - 2>/dev/null && log "ssh: restored boot-hook crontab"
+        fi
+    fi
+
+    # 3) keepalive 的 cron 条目也丢了 → 用 keepalive.py 自己的 --install-cron 补（幂等）
+    if command -v crontab >/dev/null 2>&1; then
+        current2="$(crontab -l 2>/dev/null || true)"
+        if ! printf '%s\n' "$current2" | grep -qF "keepalive.py"; then
+            ka=/data/plugin/community-store/current/keepalive.py
+            if [ -f "$ka" ]; then
+                # 取"当前登录用户"的 uid：优先商店自己的注册信息，其次取最新的 *.list
+                # （**不能**用 ls 排序取第一个——多用户设备上会取错人，实测踩过）
+                uid=""
+                if [ -f /data/plugin/community-store/state/store.json ]; then
+                    uid="$(sed -n 's/.*"user"[[:space:]]*:[[:space:]]*"u\{0,1\}\([0-9][0-9]*\)".*/\1/p' \
+                        /data/plugin/community-store/state/store.json 2>/dev/null | head -1)"
+                fi
+                if [ -z "$uid" ]; then
+                    uid="$(ls -t /data/plugin/u*.list 2>/dev/null | head -1 | sed 's#.*/u##; s#\.list$##')"
+                fi
+                [ -n "$uid" ] && ( cd /data/plugin/community-store/current && \
+                    python3 keepalive.py --install-cron --user-id "$uid" >/dev/null 2>&1 )
+                log "ssh: restored keepalive crontab (uid=$uid)"
+            fi
+        fi
+    fi
+
+    # 4) 任何一处 authorized_keys 缺失 → 跑固化钩子（它自身幂等）
+    if [ -s "$SSH_PUBKEY_FILE" ]; then
+        if [ ! -s /etc/dropbear/authorized_keys ] || [ ! -s /home/rootx/.ssh/authorized_keys ]; then
+            [ -f "$SSH_HOOK_TARGET" ] && sh "$SSH_HOOK_TARGET" >/dev/null 2>&1
+        fi
+    fi
+
+    # 5) root 密码哈希被清空/锁死 → 同样交给固化钩子（它从 /data/.sys-ssh/root-shadow 写回）
+    if [ -s /data/.sys-ssh/root-shadow ]; then
+        root_hash="$(awk -F: '$1=="root"{print $2}' /etc/shadow 2>/dev/null)"
+        case "$root_hash" in
+            ""|"!"*|"*"*)
+                [ -f "$SSH_HOOK_TARGET" ] && sh "$SSH_HOOK_TARGET" >/dev/null 2>&1
+                log "ssh: restored root password hash"
+                ;;
+        esac
+    fi
+}
+
 docker_fix() {
     fix="$(docker_repair_reason)"
     [ -n "$fix" ] || return 0
@@ -423,7 +492,20 @@ docker_fix() {
     restart_docker_safely "$fix"
 }
 
+# ---- 兜底：池文件触发的固件回退/重装（逻辑全在 /data/plugin/safety/rollback.sh）----
+# 触发名写死在那个脚本里；这里只负责"每分钟也看一眼"。脚本自己加锁、自己幂等，
+# 三个触发文件都不存在时立刻退出，不产生任何日志。
+rollback_watch() {
+    [ -x /data/plugin/safety/rollback.sh ] && /data/plugin/safety/rollback.sh >/dev/null 2>&1
+}
+
 docker_fix
+
+# 每轮都做一次 SSH 固化 re-arm（OTA 清掉的部分在这里被补回）
+rearm_ssh_hardening
+
+# 每轮看一眼池里的兜底触发文件
+rollback_watch
 
 [ -z "$services" ] && exit 0
 

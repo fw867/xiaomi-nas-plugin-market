@@ -10,15 +10,19 @@
 > | **设备 IP** | ⚠️ **已变更为 `192.168.1.9`**（原 `192.168.1.8`；`.8` 现为飞牛 fnOS，勿混用） |
 > | **10 个社区插件** | ✅ **全部恢复**：目录 / `current` 软链 / systemd 服务 / 端口 18080·18100·18101·18119·18130·18140·18160·18170·18180·18190 全部 `HTTP 200`；注册表 10 条 `frontend`+`info` 完整 |
 > | **自愈机制** | ✅ **已安装**：`keepalive.py`（server.list 条目注入 + 每插件备份 + 目录/`current`/服务自愈，服务内后台线程 + root cron 双通道）+ 开机钩子的 `restore-plugins.py`（注册表重建） |
-> | **SSH** | 🟡 **公钥认证可用，但 dropbear exec bug 仍在**（认证成功却**命令无输出**）⇒ **日常运维改用「socat / 文件通道」**，不要用 `ssh host cmd` |
+> | **SSH** | ✅ **已修复（2026-10-19 晚）**：公钥**与密码**登录都能正常执行命令。根因不是 dropbear 的 bug，而是**厂商把 dropbear 写死 exec `/usr/sbin/mi-shell`**（一个 JSON 协议受限壳，忽略 `-c` 参数）；根分区是只读 erofs 无法改二进制，改用 **bind-mount 垫片转发 bash** 解决（原文件不动，`umount` 即还原） |
 > | **数据** | ✅ 未受影响（照片/视频/下载/共享/相册/备份全程未触碰） |
 >
-> #### 本次恢复实操中确认的两条关键事实（供未来参考）
+> #### 本次恢复实操中确认的三条关键事实（供未来参考）
 > 1. 🟢 **`plugincenter` 的对账破坏面比预期大**：打开 App「应用市场」（或跑 `/usr/bin/plugincenter update`）会
->    **清空注册表 `<用户>.list`**、**刷新 `server.list`**、并**可能只删 `<插件>/current` 而保留目录**。
->    因此「开机兜底」不足以覆盖运行期删除，必须有三重兜底：**server.list 条目注入 + 注册表重建 + `current` 重链**。
+>    **把注册表 `<用户>.list` 整个替换成云端清单**、**刷新 `server.list`**、并**可能只删 `<插件>/current` 而保留目录**。
+>    ⇒ 必须有多重兜底：**server.list 条目注入 + 注册表重建 + `current` 重链**。
 > 2. 🟢 **`/home/<root的新home>`（本例 `/home/rootx`）是 0700 root 目录**，`filemgr/get_file` 的存在性预言机
 >    对它**会假阴性**（返回"不存在"）—— 判断这类路径是否在位，**必须用 root 权限实际读取**，不能信预言机。
+> 3. 🟢 **对账是"整文件替换"，两个方向都会丢东西**：云端正常时换成 **5 条厂商条目**（**我们的 10 条被削**），
+>    云端空/失败时换成 **`{}`**（**厂商 5 条也没了** ⇒ App 里"应用少几个"，实测丢了百度网盘/迅雷）。
+>    ⇒ 两侧都必须有**本地基线**：我们的 10 条靠插件目录/INFO 重建，**厂商 5 条必须另存快照**
+>    （`/data/backup/plugin-registry/vendor-entries.json`），重建时**只增不删、已存在的一字不改**。
 >
 > **恢复后的运维要点**见 §6；**自愈机制的复现验证方法**见
 > `projects/xiaomi-community-app-store/README.md` 的「在真机上验证自愈」一节。
@@ -40,7 +44,9 @@
 3. [固件分析资产](#3-固件分析资产)（含 **A/B 双槽机制**与防回滚）
 4. [三条可行退路的评估](#4-三条可行退路的评估)
 5. [安全观察](#5-安全观察与本事件相关但独立)（含 **§5.6 收尾结论：完整证伪清单 + 仅剩三条退路**；
-   以及 **§5.7 独立成果：中枢网关镜像已成功提取并完整分析**）
+   以及 **§5.7 独立成果：中枢网关镜像已成功提取并完整分析**；
+   以及 **§5.8 兜底保险：池文件触发的固件回退（无需 SSH）**；
+   以及 **§5.9 SSH「认证成功但命令无输出」的根因与修复**）
 6. [**拿到 root 后 10 分钟恢复**](#6-拿到-root-后-10-分钟恢复)
 7. [附录：可复现命令与证据索引](#7-附录可复现命令与证据索引)
 
@@ -969,6 +975,121 @@ listener 8884 localhost             ; allow_anonymous true   ← 对应 platform
 > `dsh_probe.zip`、`dsh_probe/`、`.v_subcfg(1)`、`dsh_dir_probe/`），**事后已逐一删除并经
 > WebDAV 与 filemgr 双通道回读确认**；池外目标**一个都没有创建成功**；
 > **未覆盖任何已存在文件、未改任何现有配置、未重启、未动用户数据。**
+
+---
+
+## 5.8 🛡️ 兜底保险：池文件触发的固件回退（无需 SSH）
+
+> **为什么需要这一层**：万一将来某次 OTA 把 SSH 与插件自愈**同时**打掉，那时手上一分钱远程通道都没有。
+> 但"**往池里扔一个文件**"这件事不需要 shell —— App 的文件管理、WebDAV、SMB 都能做。
+> 所以留两个**写死的触发文件名**，由 root 侧的钩子去发现并执行。
+
+### 触发文件名与含义（硬编码，脚本**不接受任何参数**）
+
+| 池里的文件名 | 含义 | 会发生什么 |
+| --- | --- | --- |
+| `.minas-rollback-test` | **干跑** | 只在日志里写一行 `would stage …`，**什么都不改** |
+| `.minas-rollback` | **真触发** | ① 校验包 sha256 → ② 置 `downgrade_en` → ③ `sysota local <包>` **暂存**；**不自动重启** |
+| `.minas-reboot` | **重启** | 只有在"已暂存"状态下才 `reboot`；否则只记一行 `IGNORE` |
+
+`<池>` = `/home/<用户>/pool0/data`（当前用户 `u3943892`）。日志在 `/data/plugin/safety/rollback.log`。
+
+### 组件
+
+| 路径 | 作用 |
+| --- | --- |
+| `/data/plugin/safety/rollback.sh` | 全部逻辑（0755，root，只认三个固定文件名，自己加锁、自己幂等） |
+| `/etc/syshotplug/pool/99.rollback` | 每次**池挂载**（开机必经）转调上面的脚本 |
+| `/data/plugin/community-plugins-boot.sh` | 每分钟的 re-arm 也会 `rollback_watch`（双通道） |
+| `/data/backup/firmware/<包>` + `README.txt` | stash 的官方整机包 + 校验和 |
+
+### 怎么测干跑（**安全**）
+
+```bash
+# 1) 在池里扔一个 dry-run 触发文件（App 文件管理 / WebDAV / SMB 都行）
+#    路径：/pool0/data/.minas-rollback-test   内容随意
+# 2) 等 ≤2 分钟，看日志
+tail -5 /data/plugin/safety/rollback.log
+#    应看到：DRY-RUN: would stage … (… bytes); no changes made
+#            DRY-RUN: consumed …/.minas-rollback-test
+# 3) 确认什么都没变
+jq -r .version /etc/minas.version
+fw_printenv -n minas_sys_ota      # 必须仍是 false
+```
+
+### 真触发后的流程（**分两步，故意不自动重启**）
+
+1. 放 `.minas-rollback` → 脚本校验包 → 置 `downgrade_en=true` → `sysota local <包>` **只暂存** → 写 `.staged` 标记；
+2. 确认日志里出现 `STAGED: … NOT rebooting` 后，再放 `.minas-reboot` → 才真正重启并进入更新。
+
+**故意拆成两步**：暂存和重启之间留出人工复核的机会，避免"文件一扔就自动重启"。
+
+### 风险与前提（**如实记录**）
+
+| 项 | 说明 |
+| --- | --- |
+| 包的性质 | 是**整机系统更新包**（`system_RP05_release_1.0.9.462…server.bin`，342 979 584 B，sha256 `a59a4969…017e3`） |
+| `/data` 与池 | **不动**（系统包只写系统分区） |
+| 前提 | 需要 `downgrade_en` 可用（RPMB 里是 `true` 才允许降级/重装到同版本或更低） |
+| 会不会丢数据 | 整机更新不清 `/data`；但**任何固件操作都有风险**，真触发前应先备份重要数据 |
+| 失败会怎样 | 脚本每步都写日志并 `ABORT`/`FAIL`；sha256 不符直接中止，不会带着坏包去刷 |
+| 触发文件残留 | 脚本消费后会删除，避免每分钟重复执行 |
+
+> 🔒 **本节不包含任何提权/利用细节**：只描述"用户自己的设备上，用一个文件触发官方 OTA 命令"这一运维动作。
+
+---
+
+## 5.9 🔑 SSH「认证成功但命令无输出」的根因与修复（2026-10-19）
+
+> **现象**：公钥/密码认证都成功（`exit=0`、能看到登录 Banner），但 `ssh root@nas 'id'` **什么都不输出**，
+> 连 `id > /tmp/x` 这种副作用都不产生 —— 说明**命令压根没被执行**。
+> 曾误判为 "dropbear exec bug"。
+
+### 真正的根因（🟢 已实证）
+
+| 证据 | 结论 |
+| --- | --- |
+| `strings /usr/sbin/dropbearmulti \| grep mi-shell` → **`/usr/sbin/mi-shell`** | 厂商把 child 程序**硬编码**改成了 `mi-shell` |
+| `/usr/sbin/mi-shell` 用 `cJSON_Parse` + `fgets(stdin)`，含 `illegal cmd [%s]`、`run cmd: [%s]` | 它是个**JSON 协议受限壳**，只认 stdin 上的 JSON，**忽略 argv 里的 `-c 命令`** |
+| `/bin/sh -c 'echo OK'` 在本机正常 | 问题不在 shell |
+| 独立模式（`-F -E -p 2222`）同样无输出 | 与 `-i`/socket 激活无关，是**二进制层面**的行为 |
+| `mount \| grep ' / '` → `erofs (ro)` | 根分区**只读**，不能直接改二进制 |
+
+⇒ **不是 bug，是厂商的设计**：SSH 只给你一个受限的 JSON 壳。
+
+### 修复（🟢 可逆、不改原文件）
+
+```bash
+# 垫片：把参数原样交给真正的 shell（落在 /data，抗 OTA）
+cat > /data/plugin/safety/mi-shell-shim <<'EOS'
+#!/bin/sh
+exec /bin/bash "$@"
+EOS
+chmod 755 /data/plugin/safety/mi-shell-shim
+
+# 运行时覆盖（内存操作，重启即消失，原文件不受影响）
+mount --bind /data/plugin/safety/mi-shell-shim /usr/sbin/mi-shell
+
+# 还原（立刻恢复厂商原行为）
+umount /usr/sbin/mi-shell
+```
+
+**持久化**：`/etc/syshotplug/pool/98.ssh-restore` 在每次池挂载/开机时检查，未挂载就自动挂上，
+并写日志 `mi-shell shim mounted (ssh exec enabled)`。
+
+### 验证结果
+
+| 检查 | 结果 |
+| --- | --- |
+| `ssh root@nas 'id; hostname; jq -r .version /etc/minas.version'` | ✅ `uid=0(root)` / `minasc71ab1` / `1.0.9.462.F24C26D24-REL` |
+| 公钥登录 | ✅ |
+| 密码登录 | ✅ |
+| `umount` 后 `md5sum /usr/sbin/mi-shell` | ✅ 与原版一致（`c1544ec8…`），原文件从未被修改 |
+| 钩子幂等 | ✅ 重复执行只有 1 条挂载 |
+
+> ⚠️ **副作用**：`mi-shell` 被顶替期间，任何依赖它的厂商内部功能（若有）会拿到 bash 而不是 JSON 壳。
+> 由于该路径来自 dropbear 的硬编码，**已知唯一使用者就是 SSH 会话本身**；如需完全恢复原状，
+> 执行 `umount /usr/sbin/mi-shell` 即可。
 
 ---
 

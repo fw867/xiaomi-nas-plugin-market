@@ -41,7 +41,7 @@ import sys
 import tarfile
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -307,18 +307,67 @@ def repair_placeholder_versions(
     return repaired
 
 
+def vendor_baseline_path() -> Path:
+    """厂商条目基线（放在 /data 下，抗 OTA）。
+
+    `plugincenter` 对账会**同时**清空注册表与 server.list，而影视 / 中枢功能 /
+    监控存储 / 百度网盘 / 迅雷 这几条**没法凭空重建** —— 缺了它们，App 的应用市场
+    就会"少几个"。所以留一份原样快照，缺失时只增补回。
+    """
+    override = os.environ.get("XCM_VENDOR_BASELINE")
+    if override:
+        return Path(override)
+    return host_root() / "data/backup/plugin-registry/vendor-entries.json"
+
+
+def vendor_baseline() -> dict[str, Any]:
+    data = _read_json(vendor_baseline_path())
+    if not isinstance(data, dict):
+        return {}
+    return {
+        key: value for key, value in data.items()
+        if isinstance(value, dict) and isinstance(value.get("info"), dict)
+    }
+
+
+def restore_vendor_entries(document: dict[str, Any]) -> list[str]:
+    """把基线里的厂商条目**只增**地补回 server.list。
+
+    规则（与我们自己的条目一致）：
+      * 已存在的厂商条目**一律不动**（哪怕字段看起来"旧"）；
+      * **不删除**任何条目；
+      * 只补"基线里有、文件里没有"的。
+    """
+    data = document.get("data")
+    if not isinstance(data, dict):
+        data = {}
+        document["data"] = data
+    added: list[str] = []
+    for key, record in vendor_baseline().items():
+        if key in data:
+            continue
+        entry: dict[str, Any] = {"info": record["info"]}
+        if isinstance(record.get("resource"), dict):
+            entry["resource"] = record["resource"]
+        data[key] = entry
+        added.append(key)
+    return added
+
+
 def heal_server_list(user_id: str) -> dict[str, Any]:
     path = server_list_path()
     document = load_server_list()
     entries = {item.key: build_server_entry(user_id, item) for item in PLUGINS}
     added = inject_server_entries(document, entries)
     repaired = repair_placeholder_versions(document, entries)
-    if added or repaired:
+    vendor_added = restore_vendor_entries(document)
+    if added or repaired or vendor_added:
         _write_json_atomic(path, document)
     return {
         "path": str(path),
         "added": added,
         "repaired": repaired,
+        "vendor_added": vendor_added,
         "total_our_keys": len(entries),
         "present_after": sum(1 for key in entries if key in (document.get("data") or {})),
     }
@@ -512,11 +561,12 @@ class HealReport:
     started: list[str]
     relinked: list[str]
     problems: list[str]
+    vendor_restored: list[str] = field(default_factory=list)
 
     @property
     def changed(self) -> bool:
         return bool(self.server_list_added or self.restored or self.started
-                    or self.relinked or self.problems)
+                    or self.relinked or self.vendor_restored or self.problems)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -525,6 +575,7 @@ class HealReport:
             "restored": self.restored,
             "started": self.started,
             "relinked": self.relinked,
+            "vendor_restored": self.vendor_restored,
             "problems": self.problems,
         }
 
@@ -532,6 +583,8 @@ class HealReport:
         parts = []
         if self.server_list_added:
             parts.append("server.list+" + ",".join(self.server_list_added))
+        if self.vendor_restored:
+            parts.append("vendor+" + ",".join(self.vendor_restored))
         if self.restored:
             parts.append("restored=" + ",".join(self.restored))
         if self.relinked:
@@ -549,11 +602,13 @@ def heal_once(user_id: str, *, do_backup: bool = False, do_restore: bool = True)
     started: list[str] = []
     relinked: list[str] = []
     problems: list[str] = []
+    vendor_restored: list[str] = []
 
-    # ① server.list 条目注入
+    # ① server.list 条目注入（含厂商条目的只增补回）
     try:
         result = heal_server_list(user_id)
         added = list(result.get("added") or [])
+        vendor_restored = list(result.get("vendor_added") or [])
     except Exception as error:  # noqa: BLE001 自愈不能因为一步失败就整体崩
         problems.append(f"server.list:{error}")
 
@@ -597,7 +652,8 @@ def heal_once(user_id: str, *, do_backup: bool = False, do_restore: bool = True)
             if not outcome.get("ok"):
                 problems.append(f"backup:{outcome.get('key')}:{outcome.get('reason')}")
 
-    report = HealReport(int(time.time()), added, restored, started, relinked, problems)
+    report = HealReport(int(time.time()), added, restored, started, relinked, problems,
+                        vendor_restored)
     _append_log(report.summary())
     return report
 

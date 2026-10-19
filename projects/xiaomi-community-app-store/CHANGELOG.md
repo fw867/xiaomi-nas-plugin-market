@@ -77,3 +77,35 @@ ode_modules**（绝不复制用户数据）。
   ExecStart 指向 current/... 重启就起不来，current/keepalive.sh 类 cron 变成每分钟空转，
   而只看「目录是否存在」发现不了。ensure_current() 会在 current 缺失或断链时，
   重新指向 eleases/ 里最新的版本目录，并重启对应服务。
+
+## v0.2.32
+
+### 修复：重建注册表/server.list 时**丢掉厂商条目**，导致 App 里"应用少了几个"
+
+**现象（用户实测反馈）**：应用市场里 **百度网盘、迅雷** 以及另一个系统应用不见了。
+
+**根因**：
+`plugincenter update`（打开 App 应用市场也会触发）会**把 `/data/plugin/<用户>.list` 整个替换成云端清单**：
+- 云端返回正常时 → 文件被换成 **5 条厂商条目**，**我们的 10 条被削掉**；
+- 云端返回空/失败时 → 文件被清成 `{}`，**厂商 5 条也没了**。
+
+`restore-plugins.py` 本来只"补充我们自己的 10 条"（merge），所以第二种情况下厂商条目**没有来源可恢复**，
+App 里就少了几个应用。`server.list` 同理。
+
+**修法：给厂商条目一份基线，缺失时只增补回**
+
+| 改动 | 说明 |
+| --- | --- |
+| 新增 `/data/backup/plugin-registry/vendor-entries.json` | 厂商 5 条（影视 / 中枢功能 / 监控存储 / 百度网盘 / 迅雷）的**原样快照**，0600，落 `/data` 抗 OTA |
+| `deploy/restore-plugins.py` | 新增 `vendor_baseline()` / `merge_vendor_entries()`；写注册表前把基线里**缺失**的厂商条目补回 |
+| `keepalive.py` | 新增 `vendor_baseline_path()` / `vendor_baseline()` / `restore_vendor_entries()`；`heal_server_list` 同步补 `server.list`；`HealReport` 增加 `vendor_restored`，日志打印 `vendor+...` |
+| 单测 | 新增 `tests/test_restore_plugins.py`（7 例）；`tests/test_keepalive.py` 增加 `VendorEntryTests`（6 例） |
+
+**铁律（两条路径一致）**：
+- 已存在的厂商条目**一字不改**（哪怕云端版本看起来更旧）；
+- **绝不删除**任何非我方条目；
+- 只增"基线里有、文件里没有"的；
+- 幂等：重复执行不产生任何变化。
+
+**验证**：对账前 15 条 → `plugincenter update` 后变 5 条（云端清单）→ **≤1 分钟自愈回 15 条**，
+厂商 5 条字段（`system/type/port/status/install/enable/id/version`）与快照**逐字一致**；我们 10 个端口全 200。

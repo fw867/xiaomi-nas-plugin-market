@@ -65,6 +65,29 @@ class HostRootCase(unittest.TestCase):
         path.write_text(json.dumps(keys, ensure_ascii=False), encoding="utf-8")
         return path
 
+    def write_vendor_baseline(self, keys: tuple[str, ...] = VENDOR_KEYS) -> Path:
+        """写一份厂商条目基线（模拟 /data/backup/plugin-registry/vendor-entries.json）。"""
+        baseline = {}
+        for index, key in enumerate(keys):
+            baseline[key] = {
+                "status": "free" if key in ("baidupan", "xunlei") else "running",
+                "install": key not in ("baidupan", "xunlei"),
+                "enable": key not in ("baidupan", "xunlei"),
+                "info": {
+                    "plugin": key,
+                    "name": f"vendor-{key}",
+                    "id": 100 + index,
+                    "version": f"9.9.{index}",
+                    "system": key not in ("baidupan", "xunlei"),
+                    "type": "standard",
+                },
+                "resource": {"mpk": f"https://example.invalid/{key}.mpk"},
+            }
+        path = keepalive.vendor_baseline_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(baseline, ensure_ascii=False), encoding="utf-8")
+        return path
+
 
 class ServerEntryTests(HostRootCase):
     def test_entry_from_info(self) -> None:
@@ -232,6 +255,65 @@ class BackupTests(HostRootCase):
         self.assertTrue(outcome["ok"], outcome)
         self.assertTrue((directory / "current").is_symlink())
         self.assertTrue((directory / "current" / "server.py").is_file())
+
+
+class VendorEntryTests(HostRootCase):
+    """厂商条目（影视/中枢/监控存储/百度网盘/迅雷）**只增不删**。
+
+    真机事故：`plugincenter update` 清空注册表后，重建只补了我们自己的 10 条，
+    厂商 5 条没有来源 ⇒ App 里"应用少了几个"（用户点名百度网盘、迅雷）。
+    """
+
+    def test_missing_vendor_entries_are_restored(self) -> None:
+        self.write_vendor_baseline()
+        document = {"code": 0, "message": "", "data": {}}
+        added = keepalive.restore_vendor_entries(document)
+        self.assertEqual(sorted(added), sorted(VENDOR_KEYS))
+        for key in VENDOR_KEYS:
+            self.assertIn(key, document["data"])
+            self.assertIn("info", document["data"][key])
+
+    def test_existing_vendor_entry_is_never_overwritten(self) -> None:
+        self.write_vendor_baseline()
+        original = {"info": {"plugin": "xunlei", "name": "本地改过的名字", "version": "0.0.1"}}
+        document = {"code": 0, "data": {"xunlei": original}}
+        added = keepalive.restore_vendor_entries(document)
+        self.assertNotIn("xunlei", added)
+        self.assertEqual(document["data"]["xunlei"], original, "已存在的厂商条目必须原样保留")
+
+    def test_vendor_restore_is_idempotent(self) -> None:
+        self.write_vendor_baseline()
+        document = {"code": 0, "data": {}}
+        keepalive.restore_vendor_entries(document)
+        first = json.dumps(document, sort_keys=True)
+        again = keepalive.restore_vendor_entries(document)
+        self.assertEqual(again, [], "第二次不应再补任何条目")
+        self.assertEqual(json.dumps(document, sort_keys=True), first)
+
+    def test_heal_server_list_restores_vendor_and_ours(self) -> None:
+        self.write_vendor_baseline()
+        item = keepalive.PLUGINS[0]
+        self.make_plugin(item)
+        result = keepalive.heal_server_list("3943892")
+        self.assertIn(item.key, result["added"])
+        self.assertEqual(sorted(result["vendor_added"]), sorted(VENDOR_KEYS))
+        saved = json.loads(keepalive.server_list_path().read_text(encoding="utf-8"))
+        for key in VENDOR_KEYS:
+            self.assertIn(key, saved["data"])
+        self.assertIn(item.key, saved["data"])
+
+    def test_no_baseline_means_no_vendor_entries(self) -> None:
+        """没有基线文件时不能凭空造厂商条目（保持只动我们自己的 10 条）。"""
+        document = {"code": 0, "data": {}}
+        self.assertEqual(keepalive.restore_vendor_entries(document), [])
+        self.assertEqual(document["data"], {})
+
+    def test_heal_report_mentions_vendor(self) -> None:
+        self.write_vendor_baseline()
+        self.make_plugin(keepalive.PLUGINS[0])
+        report = keepalive.heal_once("3943892")
+        self.assertTrue(report.vendor_restored)
+        self.assertIn("vendor+", report.summary())
 
 
 class RegistryPathTests(HostRootCase):
