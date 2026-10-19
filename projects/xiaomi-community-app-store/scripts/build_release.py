@@ -11,7 +11,7 @@ from pathlib import Path
 
 
 PROJECT = Path(__file__).resolve().parents[1]
-VERSION = "0.2.36"
+VERSION = "0.2.37"
 DIST = PROJECT / "dist"
 PACKAGE_NAME = f"xiaomi-plugin-market-{VERSION}"
 INCLUDE = [
