@@ -337,6 +337,23 @@ class EngineTests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(Error):
                 engine.container_action(bad, "stop", {})
 
+    def test_remove_image_by_id_and_force(self):
+        # 无标签镜像（<none>:<none>）只能按 ID 删除
+        image_id = "sha256:" + "b" * 64
+        engine = self.engine([
+            ("rmi -f " + image_id, (0, "Deleted: " + image_id + "\n", "")),
+            ("rmi " + image_id, (0, "Deleted: " + image_id + "\n", "")),
+        ])
+        result = engine.remove_image(image_id, {})
+        self.assertTrue(result["ok"])
+        self.assertEqual(engine.docker.calls[-1], ["rmi", image_id])
+        self.assertEqual(engine.ops.tail(1)[0]["kind"], "删除镜像")
+        self.assertEqual(engine.ops.tail(1)[0]["ok"], True)
+
+        result = engine.remove_image(image_id, {"force": True})
+        self.assertTrue(result["ok"])
+        self.assertEqual(engine.docker.calls[-1], ["rmi", "-f", image_id])
+
     def test_deploy_run_builds_command(self):
         engine = self.engine([("run -d", (0, "cid123\n", ""))])
         result = engine.deploy_run({

@@ -332,6 +332,65 @@ def draw_jellyfin(w: Pen, c: Pen) -> None:
     w.round_poly([(100, 88), (100, 168), (164, 128)], 10)     # 内部小实心三角
 
 
+# Docker 控制台：设计盒 0–156 × 0–132 内画「简化鲸鱼 + 4 个货箱」，再整体缩放平移到画布中央
+DOCKER_WHALE = [
+    ("M", (8, 96)),
+    ("C", (8, 78), (18, 62), (36, 62)),        # 头顶 → 平背起点
+    ("L", (128, 62)),                          # 平背（货箱坐在上面）
+    ("C", (144, 56), (152, 40), (156, 26)),    # 尾鳍上缘到尖端
+    ("C", (156, 46), (152, 68), (140, 82)),    # 尾鳍外缘回落（根部加厚）
+    ("C", (134, 78), (129, 74), (126, 72)),    # 收回身体右侧
+    ("C", (126, 96), (116, 116), (100, 124)),  # 右腹
+    ("C", (80, 132), (44, 132), (28, 126)),    # 腹底
+    ("C", (14, 120), (6, 106), (6, 100)),      # 左腹 / 下颏
+    ("C", (6, 97), (7, 96), (8, 96)),
+]
+DOCKER_SCALE = 1.04
+DOCKER_DX = 43.76       # 使设计盒 bbox(6,2)-(156,132) 的中心落在 (128,128)
+DOCKER_DY = 58.32
+
+
+def _bezier_points(segments, steps: int = 28) -> list[tuple[float, float]]:
+    """把 M/L/C 段落采样成折线点（C 为三次贝塞尔）。"""
+    pts: list[tuple[float, float]] = []
+    cur = (0.0, 0.0)
+    for seg in segments:
+        if seg[0] == "M":
+            cur = seg[1]
+            pts.append(cur)
+        elif seg[0] == "L":
+            cur = seg[1]
+            pts.append(cur)
+        elif seg[0] == "C":
+            (x0, y0), (x1, y1) = seg[1], seg[2]
+            end = seg[3]
+            for i in range(1, steps + 1):
+                t = i / steps
+                mt = 1 - t
+                x = mt ** 3 * cur[0] + 3 * mt * mt * t * x0 + 3 * mt * t * t * x1 + t ** 3 * end[0]
+                y = mt ** 3 * cur[1] + 3 * mt * mt * t * y0 + 3 * mt * t * t * y1 + t ** 3 * end[1]
+                pts.append((x, y))
+            cur = end
+    return pts
+
+
+def draw_dockerctl(w: Pen, c: Pen) -> None:
+    """Docker 控制台：简化鲸鱼（头朝左、尾鳍上翘）+ 背上 4 个货箱。"""
+    k, dx, dy = DOCKER_SCALE, DOCKER_DX, DOCKER_DY
+
+    def T(x: float, y: float) -> tuple[float, float]:
+        return x * k + dx, y * k + dy
+
+    # 货箱：底层 3 个 + 上层 1 个（同 Docker 徽标的货箱堆叠）
+    for x, y in ((34, 32), (67, 32), (100, 32), (67, 2)):
+        w.rrect(*T(x, y), *T(x + 30, y + 30), 7 * k)
+    # 鲸身（实心，与其它图标的实心图形保持同一视觉重量）
+    pts = [T(x, y) for x, y in _bezier_points(DOCKER_WHALE)]
+    w.d.polygon([(x * w.s, y * w.s) for x, y in pts], fill=255)
+    # 眼睛（挖空露出底色）
+    w.circle(*T(41, 93), 8 * k, fill=0)
+
+
 # ---------------------------------------------------------------------------
 # 图标清单（project / 图标路径以 scripts/build_apps.py 的 iconSource 为准）
 # ---------------------------------------------------------------------------
@@ -405,6 +464,13 @@ ICON_SPECS: list[dict] = [
         "top": "#58B6F0", "bottom": "#1A63C8", "draw": draw_dpanel,
         "purpose": "吊臂 + 三个容器方块：Docker 面板",
         "label_ascii": "dpanel",
+    },
+    {
+        "id": "dockerctl", "name": "Docker 控制台",
+        "project": "xiaomi-dockerctl-plugin", "rel": "web/assets/dockerctl.png",
+        "top": "#5AC8FA", "bottom": "#0A6BE0", "draw": draw_dockerctl,
+        "purpose": "鲸鱼 + 货箱：Docker 容器管理控制台",
+        "label_ascii": "dockerctl",
     },
     {
         "id": "devicemanager", "name": "设备管家",
@@ -681,14 +747,24 @@ def make_preview(path: Path, icons: list[tuple[dict, Image.Image]]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="为自建插件生成统一风格图标")
     parser.add_argument("--preview", help="额外输出一张预览图（浅灰底 + 网格 + 中文名）")
+    parser.add_argument("--only", action="append", metavar="ID",
+                        help="只生成指定 id 的图标（可重复；默认全部）")
     args = parser.parse_args()
+
+    specs = ICON_SPECS
+    if args.only:
+        wanted = set(args.only)
+        unknown = wanted - {s["id"] for s in ICON_SPECS}
+        if unknown:
+            parser.error(f"未知图标 id: {', '.join(sorted(unknown))}")
+        specs = [s for s in ICON_SPECS if s["id"] in wanted]
 
     results: list[tuple[dict, Image.Image]] = []
     metrics: dict[str, dict] = {}
     failures: dict[str, list[str]] = {}
     print(f"canvas {SIZE}x{SIZE}  radius {RADIUS}  supersample {SS}x\n")
 
-    for spec in ICON_SPECS:
+    for spec in specs:
         target = ROOT / "projects" / spec["project"] / spec["rel"]
         image, info = build_icon(spec)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -705,7 +781,7 @@ def main() -> int:
 
     print("\n=== 自检 ===")
     ok = True
-    for spec in ICON_SPECS:
+    for spec in specs:
         key = spec["id"]
         m = metrics[key]
         fails = list(failures[key])

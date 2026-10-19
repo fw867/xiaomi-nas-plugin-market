@@ -5,6 +5,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from urllib.parse import quote
 
 from engine import Engine
 from server import Server
@@ -237,6 +238,16 @@ class PostTests(HTTPBase):
         self.assertEqual(status, 400)
         self.assertIn("镜像名不合法", json.loads(body)["error"])
 
+    def test_remove_image_by_id(self):
+        # 无标签镜像（<none>:<none>）只能按 ID 删除，前端会把 data-id 编码进路径
+        image_id = "sha256:" + "c" * 64
+        self.serve(responses=[("rmi " + image_id, (0, "Untagged: " + image_id + "\n", ""))])
+        status, body, _ = self.request(
+            "POST", "/api/images/" + quote(image_id, safe="") + "/remove", {})
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(body)["ok"])
+        self.assertEqual(self.server.engine.docker.calls[-1], ["rmi", image_id])
+
     def test_clear_logs(self):
         self.serve()
         self.server.engine.ops.log("操作", "x", True)
@@ -317,19 +328,26 @@ class UiTests(unittest.TestCase):
         self.assertNotIn(":9302", script)
         self.assertIn("loadSettings", script)
 
+    def test_app_deletes_untagged_image_by_id(self):
+        script = (self.web / "app.js").read_text(encoding="utf-8")
+        # 无标签镜像不再被前端拦下，而是自动改用镜像 ID 调用删除接口
+        self.assertNotIn("无标签镜像请用 ID 删除", script)
+        self.assertIn("var target=dangling?imgID:imgRef;", script)
+        self.assertIn("removeImageRequest(target,false)", script)
+
     def test_index_references_existing_files(self):
         html = (self.web / "index.html").read_text(encoding="utf-8")
         for name in ("style.css", "app.js"):
             self.assertIn(name, html)
             self.assertTrue((self.web / name).is_file(), name)
 
-    def test_icon_is_300x300_png(self):
+    def test_icon_is_256x256_png(self):
         data = (self.web / "assets" / "dockerctl.png").read_bytes()
         self.assertTrue(data.startswith(b"\x89PNG\r\n\x1a\n"))
-        # IHDR：宽高各 4 字节大端
+        # IHDR：宽高各 4 字节大端；256×256 与市场其它插件图标一致
         width = int.from_bytes(data[16:20], "big")
         height = int.from_bytes(data[20:24], "big")
-        self.assertEqual((width, height), (300, 300))
+        self.assertEqual((width, height), (256, 256))
 
 
 if __name__ == "__main__":

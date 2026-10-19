@@ -96,7 +96,7 @@ projects/xiaomi-dockerctl-plugin/
 │   ├── index.html
 │   ├── app.js
 │   ├── style.css
-│   └── assets/dockerctl.png    # 300×300 图标
+│   └── assets/dockerctl.png    # 256×256 图标（由 scripts/make_plugin_icons.py 生成）
 ├── deploy/
 │   ├── xiaomi-dockerctl.service
 │   ├── xiaomi-dockerctl.nginx.conf
@@ -135,4 +135,5 @@ Docker CLI**（如果装了），不会连接 NAS。没有 Docker 时页面里�
 
 上游未声明许可证（仓库与插件子目录都没有 LICENSE/COPYING，README 仅写「仅供学习参考」）。
 本目录仅作**本地移植使用**；若计划对外分发或上架，请先联系原作者取得许可，上游后续补充许可证时以其为准。
-页面图标来自上游 `src/ui/icon.png`（Docker 风格的鲸鱼图形），仅用于识别插件功能。
+页面图标已改为本仓库自绘：由 `scripts/make_plugin_icons.py` 按市场统一规范
+（256×256 圆角渐变底 + 白色鲸鱼/货箱图形）程序化生成，不再取自上游 `src/ui/icon.png`。

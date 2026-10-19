@@ -346,6 +346,12 @@ function loadImages(){
     $("image-list").innerHTML='<div class="empty"><div class="icon">⚠️</div>加载失败</div>';
   });
 }
+function removeImageRequest(target,force){
+  return fetchJSON(apiUrl("images/"+encodeURIComponent(target)+"/remove"),{
+    method:"POST",headers:{"Content-Type":"application/json"},
+    body:force?"{\"force\":true}":"{}"
+  });
+}
 function renderImages(){
   var kw=($("search-img").value||"").toLowerCase();
   var items=allImages.filter(function(x){
@@ -378,6 +384,13 @@ function renderImages(){
       "</div></div>";
   }).join("");
   box.querySelectorAll(".c-card").forEach(function(card){
+    var imgRef=card.getAttribute("data-img")||"";
+    var imgID=card.getAttribute("data-id")||"";
+    // <none>:<none> 的无标签镜像没有 repo:tag，Docker 只接受镜像 ID，这里自动改用 ID
+    var dangling=!imgRef||imgRef.indexOf("<none>")>=0;
+    var target=dangling?imgID:imgRef;
+    var shortID=String(imgID).replace("sha256:","").slice(0,12);
+    var label=dangling?("无标签镜像 "+shortID):imgRef;
     card.addEventListener("click",function(e){
       if(e.target.tagName==="BUTTON")return;
       openImageDetail(card.getAttribute("data-id"),card.getAttribute("data-img"));
@@ -386,27 +399,33 @@ function renderImages(){
       btn.addEventListener("click",function(e){
         e.stopPropagation();
         var act=btn.getAttribute("data-act");
-        var img=card.getAttribute("data-img");
+        if(!target){toast("镜像信息缺失，请刷新后重试");return;}
         if(act==="run"){
-          // jump to deploy with image prefilled
+          // jump to deploy with image prefilled（无标签镜像用 ID 部署）
           document.querySelector('.tab[data-view="deploy"]').click();
           var sel=$("dep-image");
           if(sel){
-            var has=[].some.call(sel.options,function(o){return o.value===img;});
-            if(!has)addImageOption(sel,img);
-            sel.value=img;
+            var has=[].some.call(sel.options,function(o){return o.value===target;});
+            if(!has)addImageOption(sel,target);
+            sel.value=target;
             syncImageCustom();
           }
-          toast("已填入镜像: "+img);
+          toast("已填入镜像: "+target);
           return;
         }
-        if(img.indexOf("<none>")>=0){toast("无标签镜像请用 ID 删除");return;}
-        if(!confirm("确认删除镜像 "+img+"？"))return;
-        fetchJSON(apiUrl("images/"+encodeURIComponent(img)+"/remove"),{
-          method:"POST",headers:{"Content-Type":"application/json"},body:"{}"
-        }).then(function(d){
-          if(d.ok){toast("已删除");loadImages();loadOverview();}
-          else toast("删除失败: "+(d.error||""));
+        if(!confirm("确认删除镜像 "+label+"？"))return;
+        removeImageRequest(target,false).then(function(d){
+          if(d.ok){toast("已删除");loadImages();loadOverview();return;}
+          var err=d.error||"";
+          // 镜像仍被容器引用时 Docker 要求 -f；二次确认后强制删除
+          if(/being used|must be forced|is using/i.test(err)){
+            if(!confirm("镜像仍被容器引用，强制删除？\n\n"+err))return;
+            return removeImageRequest(target,true).then(function(d2){
+              if(d2.ok){toast("已强制删除");loadImages();loadOverview();}
+              else toast("删除失败: "+(d2.error||""));
+            });
+          }
+          toast("删除失败: "+err);
         }).catch(function(){toast("请求失败");});
       });
     });
