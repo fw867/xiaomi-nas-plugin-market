@@ -144,3 +144,85 @@ re-arm / rollback_watch / PATH 加固**会被商店重启冲掉**（实测 21:14
 
 **顺带修**：`rollback.sh` 的锁加**陈旧锁回收**（进程被中断后 `.lock` 会残留，
 之后每次都早退；现在超过 5 分钟的锁会被接管）。
+
+## v0.2.36
+
+### 🔴 紧急修复：自升级（`/api/self-update`）漏复制 `keepalive.py`，导致升级后**整站空白**
+
+**用户现象**：在插件市场点「升级到 0.2.35」后，页面一片空白。
+
+**根因**（🟢 实证）：`storelib.py` 的 `self_update_store()` 从下载包重建 release 目录时只复制了
+`server.py` / `storelib.py` / `web` / `catalog` / `deploy` / `scripts` / `VERSION`，
+**漏了 `keepalive.py`**；而 `server.py` 第 32 行是 `from keepalive import start_background`。
+于是新 release 一启动就：
+
+```
+ModuleNotFoundError: No module named 'keepalive'
+→ status=1/FAILURE → systemd 每 5 秒重启一次（实测重启 20+ 次）
+→ 18119 端口不再监听 → 浏览器拿到空响应 → 空白页
+```
+
+**修法（两层）**
+
+1. **`storelib.py` 抽出 `materialize_release(project_dir, release_dir, target_version)`**
+   - 补上复制 `keepalive.py`；
+   - **切换 `current` 之前自检**：缺 `RUNTIME_REQUIRED`（server.py / storelib.py / web/index.html）
+     任一，或 `server.py` 里出现 `import keepalive` 但包里没有 `keepalive.py`，
+     就**删掉半成品并抛 `StoreError`** —— 宁可升级失败，也绝不把站点切成空白。
+
+2. **`server.py` 把 keepalive 改成容错导入**
+   ```python
+   try:
+       from keepalive import start_background as start_keepalive
+   except ImportError:
+       start_keepalive = None      # 只是没有后台自愈线程，站点照常可用
+   ```
+   即便将来又漏了文件，也只是 `keepalive: unavailable (keepalive.py missing)`，
+   **不会整站起不来**（root cron 里那条 `--once` 仍在兜底）。
+
+**单测**：新增 `tests/test_self_update.py` **6 例**
+（复制 keepalive / 缺 keepalive 时中止且不留半成品 / 缺 web/index.html 中止 /
+server 不依赖 keepalive 时允许缺失 / 拒绝已存在的 release 目录 / `RUNTIME_REQUIRED` 常量）。
+
+**⚠️ 发布注意事项（重要）**
+
+- 这次事故只发生在 **self-update** 路径；**签名 bundle（zip）路径是完整的**（包里本来就有 keepalive.py）。
+- 反过来说：**任何还在跑修复前 `storelib.py` 的设备，下一次自升级都会再次踩坑**——
+  因为它是用"当前正在跑的（有 bug 的）storelib.py"去构造新 release。
+  所以修复版必须通过 **bundle 安装**（`/api/install`）或手动换文件才能落地，**不能靠自升级传递**。
+- 建议：暂时**不要在旧版商店里点「升级」**，改用 bundle。
+
+### 新增：`/api/self-update` 入口**硬闸**（防止其它设备继续踩坑）
+
+自升级是**用当前正在跑的 `storelib.py`** 去重建新 release 的 ⇒ 如果这份代码本身漏文件，
+它造出来的版本一定是坏的，而且**它无法自我修复**（旧代码里没有修复逻辑）。
+
+所以自升级入口先做能力自检 `self_update_capability()`：
+
+| 检查项 | 不满足时 |
+| --- | --- |
+| 存在 `materialize_release`（能在切换 `current` 前自检） | 拒绝 |
+| `RUNTIME_REQUIRED` 覆盖 `keepalive.py` | 拒绝 |
+
+- **POST `/api/self-update`**：能力不足 → **HTTP 409**，返回
+  ```json
+  {"ok": false,
+   "error": "当前商店版本较旧，不支持安全自升级；请通过安装包（bundle）升级。",
+   "capability": {"ok": false, "version": "…", "hasMaterializeRelease": false,
+                  "runtimeRequired": [...], "problems": ["…"], "remedy": "…"}}
+  ```
+  且**不会创建任何 release 目录**（被拦下时零副作用）。
+- **GET `/api/self-update`**（新增，只读）：返回 `{"ok": true, "selfUpdate": {…}, "version": …}`，
+  前端可据此**禁用「升级」按钮**并提示改用 bundle。
+
+`RUNTIME_REQUIRED` 现在把 `keepalive.py` 列为**硬性必检项**（不再"看 server.py 有没有引用"）。
+
+**单测**：`tests/test_self_update.py` 扩到 **11 例**，新增
+「新 storelib 放行」「旧 storelib（无 `materialize_release`）拒绝且错误含 `bundle`」
+「`RUNTIME_REQUIRED` 未覆盖 keepalive 时拒绝」「被拦下时不动文件系统」。
+
+### ⚠️ 发布要求（重要）
+
+- **v0.2.36 必须通过 bundle（签名安装包）发布**；
+- **旧版商店里不要点「升级」**（那条是自升级，会把新版本做成缺文件的坏版本）；
+- 修复版**无法通过自升级传播**到旧设备（自举问题），只能走 bundle。

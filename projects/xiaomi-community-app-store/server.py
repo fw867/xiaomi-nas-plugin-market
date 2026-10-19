@@ -25,11 +25,18 @@ from storelib import (
     fetch_store_latest_version,
     is_newer_version,
     load_apps_catalog,
+    self_update_capability,
     self_update_store,
     RAW_BASE,
     GITHUB_API_LATEST,
 )
-from keepalive import start_background as start_keepalive
+# ★ 容错导入：`keepalive.py` 是同级模块。若某次升级把它漏了，**整站会起不来**
+#   （2026-10-19 真实事故：自升级漏复制 keepalive.py ⇒ ModuleNotFoundError ⇒ 页面空白）。
+#   这里降级成"没有自愈线程但仍能正常开站"，只影响后台自愈，不影响浏览与安装。
+try:
+    from keepalive import start_background as start_keepalive
+except ImportError:  # pragma: no cover - 仅在文件缺失时触发
+    start_keepalive = None  # type: ignore[assignment]
 
 
 PROJECT = Path(__file__).resolve().parent
@@ -346,6 +353,15 @@ class StoreHandler(BaseHTTPRequestHandler):
         if path in ("/", "/index.html"):
             self._serve_index()
             return
+        if path == "/api/self-update":
+            # 只读：当前这份代码是否具备"安全自升级"能力（前端可据此禁用按钮并提示用 bundle）
+            capability = self_update_capability()
+            self._json(HTTPStatus.OK, {
+                "ok": True,
+                "selfUpdate": capability,
+                "version": STORE_VERSION,
+            })
+            return
         if path == "/api/status":
             if not self._require_session():
                 return
@@ -452,6 +468,18 @@ class StoreHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": f"操作失败：{error}"})
 
     def _handle_self_update(self) -> None:
+        # ★ 入口硬闸：自升级是用**当前在跑的 storelib** 去重建新 release。
+        #   若这份代码本身不具备安全重建能力（缺 materialize_release / 自检清单没覆盖
+        #   keepalive.py），它造出来的新版本一定是坏的，而且它**无法自我修复**。
+        #   所以这里直接拒绝，并给出只读状态 + 改用 bundle 的指引。
+        capability = self_update_capability()
+        if not capability["ok"]:
+            self._json(HTTPStatus.CONFLICT, {
+                "ok": False,
+                "error": "当前商店版本较旧，不支持安全自升级；请通过安装包（bundle）升级。",
+                "capability": capability,
+            })
+            return
         if not ACTION_LOCK.acquire(blocking=False):
             self._json(HTTPStatus.CONFLICT, {"ok": False, "error": "另一个任务正在执行，请稍后再试"})
             return
@@ -459,7 +487,8 @@ class StoreHandler(BaseHTTPRequestHandler):
             result = self_update_store(STORE_VERSION)
             self._json(HTTPStatus.OK, result)
         except StoreError as error:
-            self._json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(error)})
+            self._json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(error),
+                                                "capability": capability})
         except Exception as error:
             self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": f"更新失败：{error}"})
         finally:
@@ -508,11 +537,16 @@ def main() -> int:
     keepalive_loop = None
     keepalive_note = "disabled (preview)"
     if not args.dev:
-        try:
-            keepalive_loop = start_keepalive(args.user_id)
-            keepalive_note = "running"
-        except Exception as error:  # noqa: BLE001 自愈线程起不来不能挡住市场服务
-            keepalive_note = f"error: {error}"
+        if start_keepalive is None:
+            # 降级：keepalive.py 缺失（例如某次升级漏打包）。站点照常可用，
+            # 只是没有后台自愈线程；root cron 里那条 --once 仍在兜底。
+            keepalive_note = "unavailable (keepalive.py missing)"
+        else:
+            try:
+                keepalive_loop = start_keepalive(args.user_id)
+                keepalive_note = "running"
+            except Exception as error:  # noqa: BLE001 自愈线程起不来不能挡住市场服务
+                keepalive_note = f"error: {error}"
     print(f"Xiaomi community store v{STORE_VERSION} on http://{args.host}:{args.port} ({'preview' if args.dev else 'active'}); {hook}")
     print(f"keepalive: {keepalive_note}")
     try:

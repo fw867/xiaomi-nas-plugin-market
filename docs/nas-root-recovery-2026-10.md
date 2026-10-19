@@ -46,7 +46,8 @@
 5. [安全观察](#5-安全观察与本事件相关但独立)（含 **§5.6 收尾结论：完整证伪清单 + 仅剩三条退路**；
    以及 **§5.7 独立成果：中枢网关镜像已成功提取并完整分析**；
    以及 **§5.8 兜底保险：池文件触发的固件回退（无需 SSH）**；
-   以及 **§5.9 SSH「认证成功但命令无输出」的根因与修复**）
+   以及 **§5.9 SSH「认证成功但命令无输出」的根因与修复**；
+   以及 **§5.10 自升级的"自举陷阱"（升级后页面空白）**）
 6. [**拿到 root 后 10 分钟恢复**](#6-拿到-root-后-10-分钟恢复)
 7. [附录：可复现命令与证据索引](#7-附录可复现命令与证据索引)
 
@@ -1096,6 +1097,73 @@ umount /usr/sbin/mi-shell
 > ⚠️ **副作用**：`mi-shell` 被顶替期间，任何依赖它的厂商内部功能（若有）会拿到 bash 而不是 JSON 壳。
 > 由于该路径来自 dropbear 的硬编码，**已知唯一使用者就是 SSH 会话本身**；如需完全恢复原状，
 > 执行 `umount /usr/sbin/mi-shell` 即可。
+
+---
+
+## 5.10 ⚠️ 自升级的"自举陷阱"（插件市场升级后页面空白）
+
+> 记录于 2026-10-19：自己在插件市场点「升级到 0.2.35」后，**插件市场整页空白**。
+
+### 现象
+
+```
+journalctl -u xiaomi-community-store
+  File "/data/plugin/community-store/current/server.py", line 32, in <module>
+    from keepalive import start_background as start_keepalive
+ModuleNotFoundError: No module named 'keepalive'
+→ status=1/FAILURE → systemd 每 5 秒重启一次（实测 24 次）
+→ 18119 端口不再监听 → 浏览器拿到空响应 → 空白页
+```
+
+`current/releases/0.2.35-self-…/` 里 **没有 `keepalive.py`**；与上一版 0.2.30 做 `find | comm`
+比较，差的文件只有它（外加点号缓存与备份）。
+
+### 根因
+
+商店的**自升级**（`POST /api/self-update`）不是解压整包，而是**用当前正在运行的项目目录重建
+一个新 release**：复制 `server.py` / `storelib.py` / `web` / `catalog` / `deploy` / `scripts` /
+`VERSION` —— **独独漏了 `keepalive.py`**，而 `server.py` 第 32 行直接 `from keepalive import …`。
+
+（走 `/api/install` 的**签名 bundle** 路径是解压整包，包里本来就有 `keepalive.py`，所以不会坏。）
+
+### 为什么必须改用 bundle（自举陷阱）
+
+> **自升级是用"当前正在跑的 storelib.py"去构造新版本的。**
+
+⇒ 任何还跑着**修复前 `storelib.py`** 的设备，下一次自升级**仍会踩同一个坑**；
+而且修复**无法通过自升级传播给它自己**（构造新版本的那段代码本身就是有 bug 的那段）。
+
+修复版本只能通过 **bundle（签名安装包，`/api/install`）** 或手动替换文件送达。
+
+### 修复（三层）
+
+| 层 | 内容 |
+| --- | --- |
+| 复制 | `materialize_release()` 补上 `keepalive.py` |
+| 自检 | 切换 `current` **之前**校验 `RUNTIME_REQUIRED`（`server.py`/`storelib.py`/**`keepalive.py`**/`web/index.html`），缺任一 → **删掉半成品 + 抛 `StoreError`**；宁可升级失败也不切空白 |
+| 降级 | `server.py` 把 keepalive 改成**容错导入**：`except ImportError: start_keepalive = None` ⇒ 最坏只是没有后台自愈线程（`keepalive: unavailable`），站点照常可用 |
+
+### 硬闸（防止别的设备继续踩坑）
+
+入口 `POST /api/self-update` 先跑 `self_update_capability()`：
+
+- 必须存在 `materialize_release`；
+- 必须 `RUNTIME_REQUIRED` 覆盖 `keepalive.py`。
+
+不满足 → **HTTP 409** + 明确中文提示：
+
+> 「当前商店版本较旧，不支持安全自升级；请通过安装包（bundle）升级。」
+
+并附**只读**状态（版本、`hasMaterializeRelease`、`runtimeRequired`、`problems`、`remedy`）。
+被拦下时**不创建任何 release 目录**。
+
+另有 `GET /api/self-update`（只读）返回同一份能力状态，前端可据此**禁用「升级」按钮**。
+
+### 结论（运维要求）
+
+1. **v0.2.36 必须通过 bundle 发布**；
+2. **旧版商店里不要点「升级」**（那是自升级路径）；
+3. 修复版**只能**经 bundle 抵达旧设备，别指望自升级能自愈。
 
 ---
 

@@ -1516,6 +1516,87 @@ class InstallManager:
 # 商店自更新
 # ---------------------------------------------------------------------------
 
+# 自升级重建 release 时必须落盘的运行时文件。
+# `keepalive.py` 被 `server.py` 直接 import，漏了它新版本起不来（2026-10-19 真实事故），
+# 所以它是**硬性**必检项，而不是"看 server.py 有没有引用"。
+RUNTIME_REQUIRED = ("server.py", "storelib.py", "keepalive.py", "web/index.html")
+
+
+def self_update_capability() -> dict[str, Any]:
+    """检查**当前正在运行的这份 storelib** 是否具备"安全自升级"的能力。
+
+    为什么需要这道闸：自升级是用**当前在跑的 storelib.py** 去重建新 release 的。
+    如果这份代码本身漏文件，它构造出来的新版本就是坏的 —— 而且它**无法自我修复**
+    （旧代码里根本没有修复逻辑）。所以入口先自检，能力不足就直接拒绝，改用 bundle。
+
+    返回（只读、可直接回给前端）：
+        {"ok": bool, "version": str, "hasMaterializeRelease": bool,
+         "runtimeRequired": [...], "problems": [...], "remedy": str}
+    """
+    problems: list[str] = []
+    has_materialize = callable(globals().get("materialize_release"))
+    runtime_required = tuple(globals().get("RUNTIME_REQUIRED") or ())
+    if not has_materialize:
+        problems.append("缺少 materialize_release（无法在切换 current 之前自检）")
+    if "keepalive.py" not in runtime_required:
+        problems.append("自检清单 RUNTIME_REQUIRED 未覆盖 keepalive.py")
+    version = str(globals().get("__version__", "") or "")
+    if not version:
+        try:
+            version = (Path(__file__).resolve().parent / "VERSION").read_text(
+                encoding="ascii", errors="replace").strip()
+        except OSError:
+            version = ""
+    return {
+        "ok": not problems,
+        "version": version,
+        "hasMaterializeRelease": has_materialize,
+        "runtimeRequired": list(runtime_required),
+        "problems": problems,
+        "remedy": "请通过安装包（bundle）升级：在插件市场里下载并安装新版本，不要用「自升级」。",
+    }
+
+
+def materialize_release(project_dir: Path, release_dir: Path, target_version: str) -> None:
+    """把更新包里的项目目录落成一个可用的 release 目录。
+
+    **必须在切换 `current` 之前调用**：缺任何一个运行时文件就抛 `StoreError`
+    并清掉半成品，让升级失败但站点保持可用。
+
+    历史事故（2026-10-19）：早期实现漏复制 `keepalive.py`，而 `server.py` 里有
+    `from keepalive import start_background`；结果新 release 起不来、服务崩溃重启、
+    整站空白页。所以这里既补上复制，也加了"依赖文件必存在"的自检。
+    """
+    release_dir.mkdir(parents=True, exist_ok=False)
+
+    shutil.copy2(project_dir / "server.py", release_dir / "server.py")
+    shutil.copy2(project_dir / "storelib.py", release_dir / "storelib.py")
+    if (project_dir / "keepalive.py").is_file():
+        shutil.copy2(project_dir / "keepalive.py", release_dir / "keepalive.py")
+    if (project_dir / "web").is_dir():
+        shutil.copytree(project_dir / "web", release_dir / "web")
+    if (project_dir / "catalog").is_dir():
+        shutil.copytree(project_dir / "catalog", release_dir / "catalog")
+    if (project_dir / "deploy").is_dir():
+        shutil.copytree(project_dir / "deploy", release_dir / "deploy")
+    if (project_dir / "scripts").is_dir():
+        shutil.copytree(project_dir / "scripts", release_dir / "scripts",
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    version_src = project_dir / "VERSION"
+    if version_src.is_file():
+        shutil.copy2(version_src, release_dir / "VERSION")
+    else:
+        (release_dir / "VERSION").write_text(target_version + "\n", encoding="ascii")
+
+    problems: list[str] = []
+    for required in RUNTIME_REQUIRED:
+        if not (release_dir / required).is_file():
+            problems.append(required)
+    if problems:
+        shutil.rmtree(release_dir, ignore_errors=True)
+        raise StoreError("自升级已中止：新版本缺少 " + "、".join(problems) + "；已保留原版本")
+
+
 def self_update_store(
     current_version: str,
     *,
@@ -1525,7 +1606,17 @@ def self_update_store(
     """下载最新 Release，替换当前商店文件并重启服务。
 
     必须以 root 在 NAS 上运行。返回 {"ok": True, "version": ...}。
+
+    ⚠️ **入口硬闸**：自升级是拿"当前正在跑的 storelib"去重建新 release，
+    所以先自检能力；不具备就**直接拒绝**并提示改用 bundle（不让它造出坏版本）。
     """
+    capability = self_update_capability()
+    if not capability["ok"]:
+        raise StoreError(
+            "当前商店版本较旧，不支持安全自升级；请通过安装包（bundle）升级。"
+            f"（当前自升级能力：{capability['version'] or '未知版本'}；"
+            f"缺少：{'、'.join(capability['problems'])}）"
+        )
     repo = repo or DEFAULT_REPO
     api_url = f"https://api.github.com/repos/{repo}/releases/latest"
     latest = fetch_store_latest_version(api_url)
@@ -1593,26 +1684,9 @@ def self_update_store(
         # 创建新 release 目录
         release_id = f"{target_version}-self-{int(time.time())}"
         release_dir = store_path / "releases" / release_id
-        release_dir.mkdir(parents=True, exist_ok=False)
 
-        # 复制文件
-        shutil.copy2(project_dir / "server.py", release_dir / "server.py")
-        shutil.copy2(project_dir / "storelib.py", release_dir / "storelib.py")
-        if (project_dir / "web").is_dir():
-            shutil.copytree(project_dir / "web", release_dir / "web")
-        if (project_dir / "catalog").is_dir():
-            shutil.copytree(project_dir / "catalog", release_dir / "catalog")
-        if (project_dir / "deploy").is_dir():
-            shutil.copytree(project_dir / "deploy", release_dir / "deploy")
-        if (project_dir / "scripts").is_dir():
-            shutil.copytree(project_dir / "scripts", release_dir / "scripts",
-                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-        # VERSION 文件（server.py 启动时读取）
-        version_src = project_dir / "VERSION"
-        if version_src.is_file():
-            shutil.copy2(version_src, release_dir / "VERSION")
-        else:
-            (release_dir / "VERSION").write_text(target_version + "\n", encoding="ascii")
+        # 落盘 + 自检（缺运行时文件会抛 StoreError 并清掉半成品）
+        materialize_release(project_dir, release_dir, target_version)
 
         # 更新 current 符号链接
         current_link = store_path / "current"
