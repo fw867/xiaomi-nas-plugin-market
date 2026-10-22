@@ -1,32 +1,51 @@
-﻿# 缃戠粶閭诲眳锛坣etneighbor锛?
-瑙ｅ喅涓や釜鏃ュ父鐥涚偣锛?
-1. **Windows 璧勬簮绠＄悊鍣ㄣ€岀綉缁溿€嶉噷鐪嬩笉鍒板皬绫冲瓨鍌?*锛屾瘡娆″彧鑳芥墜杈?`\\192.168.1.8`锛?2. **鍏变韩 app 閲屼竴涓处鍙峰彧鑳介厤涓€涓叡浜洰褰?*锛屾兂鍐嶅叡浜竴涓枃浠跺す娌℃湁鍏ュ彛銆?
-涓や欢浜嬮兘涓嶆槸纭欢鎴栧唴鏍哥殑闄愬埗锛氱涓€浠舵槸绯荤粺鑷甫鐨勫彂鐜版湇鍔★紙`/usr/bin/wsdd`锛夊彂鐨勬姤鏂?灏戜簡涓€涓繀闇€瀛楁銆佸厓鏁版嵁鎺ュ彛涔熷彧璁?GET锛涚浜屼欢鏇寸畝鍗曗€斺€斿簳灞傛湰鏉ュ氨鏀寔涓€涓处鍙锋寕澶氫釜
-鐩綍锛屽彧鏄?app 鐨勭晫闈笉缁欍€傛湰鎻掍欢鎶婅繖涓ゅ琛ラ綈銆?
-## 涓€銆佷负浠€涔堣嚜宸卞疄鐜?WSD 鍥炲簲鍣?
-Windows 鐨勩€岀綉缁溿€嶉潬 **WSD锛圵S-Discovery锛?* 鎵捐澶囥€傜郴缁熼噷鐨?`/usr/bin/wsdd` 鐪嬭捣鏉ュ湪
-姝ｅ父宸ヤ綔锛氳兘鍥炵瓟 Probe銆佸惎鍔ㄦ椂鍙?Hello銆佸仠姝㈡椂鍙?Bye锛宍ss` 涔熻兘鐪嬪埌瀹冪洃鍚?3702銆備絾瀹冩湁
-涓夊鑷村懡缂哄彛锛?*浠讳綍涓€涓兘浼氳 Windows 瀹屽叏鏃犺杩欏彴涓绘満**锛?026-09-28 鍦?NAS 涓婁笌涓婃父
-[wsdd](https://github.com/christgau/wsdd) 鍋氬瓧鑺傜骇瀵规瘮瀹炴祴寰楀嚭锛夛細
+# 网络邻居（netneighbor）
 
-| # | 缂哄彛 | 瀹炴祴鐜拌薄 |
+解决两个日常痛点：
+
+1. **Windows 资源管理器「网络」里看不到小米存储**，每次只能手输 `\\192.168.1.8`；
+2. **共享 app 里一个账号只能配一个共享目录**，想再共享一个文件夹没有入口。
+
+两件事都不是硬件或内核的限制：第一件是系统自带的发现服务（`/usr/bin/wsdd`）发的报文
+少了一个必需字段、元数据接口也只认 GET；第二件更简单——底层本来就支持一个账号挂多个
+目录，只是 app 的界面不给。本插件把这两处补齐。
+
+## 一、为什么自己实现 WSD 回应器
+
+Windows 的「网络」靠 **WSD（WS-Discovery）** 找设备。系统里的 `/usr/bin/wsdd` 看起来在
+正常工作：能回答 Probe、启动时发 Hello、停止时发 Bye，`ss` 也能看到它监听 3702。但它有
+三处致命缺口，**任何一个都会让 Windows 完全无视这台主机**（2026-09-28 在 NAS 上与上游
+[wsdd](https://github.com/christgau/wsdd) 做字节级对比实测得出）：
+
+| # | 缺口 | 实测现象 |
 | --- | --- | --- |
-| 1 | 娑堟伅**娌℃湁 `wsd:AppSequence` 澶?* | WS-Discovery 瑙勫畾 Hello / Bye / ProbeMatches / ResolveMatches 蹇呴』甯﹀畠銆傜己浜嗕箣鍚?Windows 鏀跺埌 ProbeMatch 涔?*鏁存潯涓㈡帀**锛岃繛璁惧鎻忚堪閮戒笉鏉ュ彇锛堟姄鍖呭彲瑙侊細鍙湁鎴戜滑鐨?Probe 鍦ㄥ彂锛孨AS 渚ф敹涓嶅埌浠讳綍 HTTP 璇锋眰锛?|
-| 2 | 鍏冩暟鎹帴鍙?*涓嶅搷搴?`WS-Transfer Get`锛圫OAP POST锛?* | `curl -X POST http://192.168.1.8:35169/wsd/` 鈫?`(52) Empty reply from server`锛涜€屽悓涓€鍦板潃 `curl`锛圙ET锛夎繑鍥?`200`銆?175 瀛楄妭銆俉indows 鍙栨弿杩扮敤鐨勬鏄偅涓?POST |
-| 3 | 鎻忚堪鍝嶅簲**娌℃湁 `wsa:RelatesTo`** | 琛ヤ笂 1 涔嬪悗 Windows 浼氭潵鍙栧厓鏁版嵁锛堟湇鍔＄鑳界湅鍒?`POST 鈥?action=Get`锛夛紝浣嗙己浜嗚繖鏉″叧鑱?ID 瀹冧細涓㈠純鏁翠唤鎻忚堪鈥斺€旇〃鐜颁负鈥滄棩蹇楅噷鏄庢槑 200 浜嗭紝涓绘満杩樻槸涓嶅嚭鐜扳€?|
+| 1 | 消息**没有 `wsd:AppSequence` 头** | WS-Discovery 规定 Hello / Bye / ProbeMatches / ResolveMatches 必须带它。缺了之后 Windows 收到 ProbeMatch 也**整条丢掉**，连设备描述都不来取（抓包可见：只有我们的 Probe 在发，NAS 侧收不到任何 HTTP 请求） |
+| 2 | 元数据接口**不响应 `WS-Transfer Get`（SOAP POST）** | `curl -X POST http://192.168.1.8:35169/wsd/` → `(52) Empty reply from server`；而同一地址 `curl`（GET）返回 `200`、2175 字节。Windows 取描述用的正是那个 POST |
+| 3 | 描述响应**没有 `wsa:RelatesTo`** | 补上 1 之后 Windows 会来取元数据（服务端能看到 `POST … action=Get`），但缺了这条关联 ID 它会丢弃整份描述——表现为“日志里明明 200 了，主机还是不出现” |
 
-琛ラ綈涓夋潯涔嬪悗锛屾湰鏈?Windows 鐨勮祫婧愮鐞嗗櫒銆岀綉缁溿€嶉噷绔嬪埢鍑虹幇 `SMARTSTORAGE`锛屽弻鍑诲彲鐩存帴
-杩涘叆 SMB 鍏变韩锛涘彂 `Bye` 鏃跺畠浼氭秷澶便€佸啀 `Hello` 鍙堝洖鏉ワ紙瀵瑰簲鎻掍欢鐨勫仠姝?鍚姩璺緞锛夈€?
-鎵€浠?`wsd.py` 鑷繁瀹炵幇浜嗗畬鏁寸殑鏈嶅姟绔竴渚э細
+补齐三条之后，本机 Windows 的资源管理器「网络」里立刻出现 `SMARTSTORAGE`，双击可直接
+进入 SMB 共享；发 `Bye` 时它会消失、再 `Hello` 又回来（对应插件的停止/启动路径）。
 
-- 缁勬挱鐩戝惉 `3702`锛歚Probe` 鈫?`ProbeMatches`锛宍Resolve` 鈫?`ResolveMatches`锛?- 涓诲姩閫氬憡锛氬惎鍔?`Hello`锛堝彂涓ら亶锛孶DP 浼氫涪锛夈€侀€€鍑?`Bye`銆佹瘡 `WSD_HELLO_INTERVAL`
-  绉掞紙榛樿 900锛夐噸鍙戜竴娆★紱
-- 鍏冩暟鎹?HTTP 鏈嶅姟锛堥粯璁?`5357`锛夛細鏅€?GET 涓?`WS-Transfer Get` 閮借繑鍥?`wsx:Metadata`锛?  骞舵寜璇锋眰鍥炲～ `wsa:RelatesTo`锛?- 韬唤 `urn:uuid` 钀藉湪 `<DATA_DIR>/wsd.json`锛岄噸鍚笉鍙樷€斺€斿惁鍒?Windows 閲屼細澶氬嚭骞界伒璁惧锛?- 缁嗚妭锛氬搷搴?*浠?3702 绔彛鍙戝嚭**锛涘彂閫佸墠鐢?`IP_MULTICAST_IF` 鎶婄粍鎾嚭鍙ｉ拤鍦ㄥ眬鍩熺綉缃戝崱涓?  锛堜笉閽夌殑璇濆彲鑳戒粠 `docker0` 鍑哄幓锛屼竴鍙版満鍣ㄩ兘鐪嬩笉鍒帮紝NAS 涓婂疄娴嬭俯杩囷級銆?
-## 浜屻€佷负浠€涔堟帴绠″畼鏂?wsdd 鐢?drop-in 鑰屼笉鏄?`systemctl mask`
+所以 `wsd.py` 自己实现了完整的服务端一侧：
 
-涓や釜鍙戠幇鏈嶅姟浼氭姠 3702锛屽繀椤昏瀹樻柟閭ｄ釜鍋滀笅鏉ャ€備絾**涓嶈兘鐢?`mask`**锛?
-瀹樻柟鐨?`/usr/bin/smb_mgr.sh`锛堝叡浜?app 鐨勫悗绔級姣忔淇濆瓨鍏变韩锛屾渶鍚庝竴姝ラ兘浼?`systemctl restart wsdd`銆俙mask` 涔嬪悗杩欎竴姝ュ繀鐒跺け璐ワ紝鏁存潯鍛戒护杩斿洖 1鈥斺€旂敤鎴峰湪鍏变韩 app 閲?灏变細鐪嬪埌銆屼繚瀛樺け璐ャ€嶏紝灏界 `smb.conf` 鍏跺疄宸茬粡鍐欏ソ浜嗐€傝繖鏄彲瑙佺殑鍔熻兘鍥炲綊銆?
-鏀规垚鍐欎竴涓┖鎿嶄綔鐨?drop-in锛堝彧鍔ㄦ垜浠嚜宸辩殑閭ｄ釜鏂囦欢锛屼笉纰?`/usr/lib` 涓嬬殑鍘熷崟鍏冿級锛?
+- 组播监听 `3702`：`Probe` → `ProbeMatches`，`Resolve` → `ResolveMatches`；
+- 主动通告：启动 `Hello`（发两遍，UDP 会丢）、退出 `Bye`、每 `WSD_HELLO_INTERVAL`
+  秒（默认 900）重发一次；
+- 元数据 HTTP 服务（默认 `5357`）：普通 GET 与 `WS-Transfer Get` 都返回 `wsx:Metadata`，
+  并按请求回填 `wsa:RelatesTo`；
+- 身份 `urn:uuid` 落在 `<DATA_DIR>/wsd.json`，重启不变——否则 Windows 里会多出幽灵设备；
+- 细节：响应**从 3702 端口发出**；发送前用 `IP_MULTICAST_IF` 把组播出口钉在局域网网卡上
+  （不钉的话可能从 `docker0` 出去，一台机器都看不到，NAS 上实测踩过）。
+
+## 二、为什么接管官方 wsdd 用 drop-in 而不是 `systemctl mask`
+
+两个发现服务会抢 3702，必须让官方那个停下来。但**不能用 `mask`**：
+
+官方的 `/usr/bin/smb_mgr.sh`（共享 app 的后端）每次保存共享，最后一步都会
+`systemctl restart wsdd`。`mask` 之后这一步必然失败，整条命令返回 1——用户在共享 app 里
+就会看到「保存失败」，尽管 `smb.conf` 其实已经写好了。这是可见的功能回归。
+
+改成写一个空操作的 drop-in（只动我们自己的那个文件，不碰 `/usr/lib` 下的原单元）：
+
 ```ini
 # /etc/systemd/system/wsdd.service.d/netneighbor.conf
 [Service]
@@ -39,143 +58,221 @@ ExecReload=/bin/true
 RemainAfterExit=yes
 ```
 
-杩欐牱 `systemctl restart wsdd` 渚濇棫杩斿洖 0锛岃€?3702 琚湡姝ｉ噴鏀俱€傛帴绠￠『搴忔槸
-`stop wsdd` 鈫?`pkill -x wsdd` 鍏滃簳 鈫?鍐?drop-in 鈫?`daemon-reload` 鈫?鑷 3702 鏄惁鐪熺殑
-绌哄嚭鏉ワ紙鍗犵敤鏃舵棩蹇椾細鎵撳嵃鎸佹湁杩涚▼锛屼究浜庢帓鏌ワ級銆?
-**鍗歌浇/鍋滅敤鏃惰繕鍘?*锛氬垹鎺?drop-in 鈫?`daemon-reload` 鈫?`systemctl start wsdd`銆?鏈嶅姟鍗曞厓閲岃繕鏈変竴鏉?`ExecStopPost=鈥?server.py --restore-wsdd`锛屼綔涓鸿繘绋嬭 `kill -9`
-鏃剁殑绗簩閬撲繚闄┿€備袱姝ラ兘鏄箓绛夌殑銆?
-## 涓夈€佷竴涓处鍙峰涓叡浜洰褰?
-灏忕背鍏变韩 app 鐨勬暟鎹簮鏄?UCI锛?
-```
-/etc/config/sambauser    # 姣忎釜璐﹀彿涓€娈碉細option user 'u3943892'锛圢AS 鐢ㄦ埛锛?                         #                 option name 'fw867'锛堣处鍙凤級
-                         #                 list dirs '<鐩綍>'锛堟湰鏉ュ氨鏄垪琛級
-/etc/config/sambashare   # 姣忎釜鍏变韩涓€娈碉細option name / path / list users 'samba<璐﹀彿>'
-/etc/samba/users.map     # samba<璐﹀彿> = <璐﹀彿>
-```
+这样 `systemctl restart wsdd` 依旧返回 0，而 3702 被真正释放。接管顺序是
+`stop wsdd` → `pkill -x wsdd` 兜底 → 写 drop-in → `daemon-reload` → 自检 3702 是否真的
+空出来（占用时日志会打印持有进程，便于排查）。
 
-搴曞眰涓€鐩存槸銆屼竴涓处鍙?鈫?澶氫釜 dirs 鈫?澶氫釜 sambashare 娈点€嶏紝鍙槸 app 鍙啓涓€涓€傚畼鏂?`/usr/bin/smb_mgr.sh` 涔熺暀浜嗗懡浠わ細
+**卸载/停用时还原**：删掉 drop-in → `daemon-reload` → `systemctl start wsdd`。
+服务单元里还有一条 `ExecStopPost=… server.py --restore-wsdd`，作为进程被 `kill -9`
+时的第二道保险。两步都是幂等的。
+
+## 三、一个账号多个共享目录
+
+小米共享 app 的数据源是 UCI：
 
 ```
-smb_mgr.sh shares add_dir <share_name> <path> "<璐﹀彿>" <鍏变韩鍚? [force_user]
+/etc/config/sambauser    # 每个账号一段：option user 'u3943892'（NAS 用户）
+                         #                 option name 'fw867'（账号）
+                         #                 list dirs '<目录>'（本来就是列表）
+/etc/config/sambashare   # 每个共享一段：option name / path / list users 'samba<账号>'
+/etc/samba/users.map     # samba<账号> = <账号>
+```
+
+底层一直是「一个账号 → 多个 dirs → 多个 sambashare 段」，只是 app 只写一个。官方
+`/usr/bin/smb_mgr.sh` 也留了命令：
+
+```
+smb_mgr.sh shares add_dir <share_name> <path> "<账号>" <共享名> [force_user]
 smb_mgr.sh shares del_dir <share_name>
 ```
 
-瀹炴祴锛堝悓涓€璐﹀彿 `fw867`锛孲MB 鐢ㄦ埛 `sambafw867`锛夛細
+实测（同一账号 `fw867`，SMB 用户 `sambafw867`）：
 
 ```
-$ smb_mgr.sh shares add_dir u3943892_nb_1 '/home/u3943892/pool0/data/鎴戠殑鐓х墖' 'fw867' '鐓х墖-3943892' 'u3943892'
-$ testparm -s | grep -A3 鐓х墖-3943892
-[鐓х墖-3943892]  path = "/home/u3943892/pool0/data/鎴戠殑鐓х墖"  valid users = sambafw867
-$ net view \\192.168.1.8          # 鍚屼竴璐﹀彿涓嬪嚭鐜颁袱涓叡浜?  锟斤拷锟?3943892  Disk   u3943892_1 share directory
-  锟斤拷片-3943892  Disk   u3943892_nb_1 share directory
+$ smb_mgr.sh shares add_dir u3943892_nb_1 '/home/u3943892/pool0/data/我的照片' 'fw867' '照片-3943892' 'u3943892'
+$ testparm -s | grep -A3 照片-3943892
+[照片-3943892]  path = "/home/u3943892/pool0/data/我的照片"  valid users = sambafw867
+$ net view \\192.168.1.8          # 同一账号下出现两个共享
+  ���-3943892  Disk   u3943892_1 share directory
+  ��Ƭ-3943892  Disk   u3943892_nb_1 share directory
 ```
 
-涓や釜瀹规槗韪╃殑鍧戯紙閮藉凡瀹炴祴锛屽埆鍐嶆敼鍥炲幓锛夛細
+两个容易踩的坑（都已实测，别再改回去）：
 
-- `<user_list>` 瑕佷紶**璐﹀彿鍚?*锛坄fw867`锛夛紝`smb_mgr.sh` 鍐呴儴鑷繁鍔?`samba` 鍓嶇紑锛?  浼?`sambafw867` 浼氬湪 `pdbedit` 閭ｆ鎶?`Username not found!` 骞朵互 1 閫€鍑恒€?- **涓嶈璋冪敤 `smb_mgr.sh reload`/`restart`**锛氬畠浠渶鍚庝竴姝ユ槸 `systemctl restart wsdd`锛?  鍦ㄦ帴绠′箣鍚庯紙鍝€曠敤 drop-in锛変篃鍙兘鎷垮埌闈?0锛岃浜鸿鍒ゅけ璐ャ€傛彃浠舵敼鎴愯嚜宸辫蛋
-  `smb_mgr.sh init_config` + `systemctl reload smb nmb`锛岀劧鍚?*鍥炶 `/etc/config/sambashare`
-  涓?`/var/etc/smb.conf` 纭鍏变韩鐪熺殑鍐欒繘鍘讳簡**锛屼互姝ゅ垽瀹氭垚鍔熴€?
-鎻掍欢鑷缓鐨勫叡浜敤鐙珛鍛藉悕绌洪棿 `<璐﹀彿>_nb_<搴忓彿>`锛坄SHARE_PREFIX = '_nb_'`锛夛紝鍙厑璁稿鍒?鑷繁寤虹殑锛歛pp 鐢熸垚鐨?`<璐﹀彿>_<id>` 涓?`public` 绛夊彈淇濇姢鍏变韩涓嶄細琚彃浠剁銆?
-### 澶栨帴璁惧锛歚/nas/mnt` 涓嬬殑鐩綍涔熻兘鍏变韩
+- `<user_list>` 要传**账号名**（`fw867`），`smb_mgr.sh` 内部自己加 `samba` 前缀；
+  传 `sambafw867` 会在 `pdbedit` 那步报 `Username not found!` 并以 1 退出。
+- **不要调用 `smb_mgr.sh reload`/`restart`**：它们最后一步是 `systemctl restart wsdd`，
+  在接管之后（哪怕用 drop-in）也可能拿到非 0，让人误判失败。插件改成自己走
+  `smb_mgr.sh init_config` + `systemctl reload smb nmb`，然后**回读 `/etc/config/sambashare`
+  与 `/var/etc/smb.conf` 确认共享真的写进去了**，以此判定成功。
 
-`/nas/mnt` 涓嬮潰鏄悇绉嶆寕杞界偣锛坄usb` 鏄鎺ヨ澶?U 鐩樼殑绋冲畾璺緞锛孨AS 涓婄殑鏈嶅姟鎶婂畠 bind 鍒?鍘傚晢鑷繁鐨?`/mnt/usb-<鍝堝笇>`锛涜繕鏈?`pa0`/`pa1` 涔嬬被锛夈€傛彃浠堕粯璁ゆ妸 `/nas/mnt` 浣滀负
-**杩藉姞**鐨勫厑璁告牴锛堢幆澧冨彉閲?`EXTRA_ROOTS`锛屽啋鍙峰垎闅斿涓€佹敮鎸佸崟灞傞€氶厤濡?`/mnt/usb-*`锛夛紝鎵€浠?`/nas/mnt/usb` 鍙婂叾涓嬮潰鐨勪换鎰忓瓙鐩綍閮借兘閫氳繃鏍￠獙骞惰鍏变韩锛?
+插件自建的共享用独立命名空间 `<账号>_nb_<序号>`（`SHARE_PREFIX = '_nb_'`），只允许增删
+自己建的：app 生成的 `<账号>_<id>` 与 `public` 等受保护共享不会被插件碰。
+
+### 外接设备：`/nas/mnt` 下的目录也能共享
+
+`/nas/mnt` 下面是各种挂载点（`usb` 是外接设备 U 盘的稳定路径，NAS 上的服务把它 bind 到
+厂商自己的 `/mnt/usb-<哈希>`；还有 `pa0`/`pa1` 之类）。插件默认把 `/nas/mnt` 作为
+**追加**的允许根（环境变量 `EXTRA_ROOTS`，冒号分隔多个、支持单层通配如
+`/mnt/usb-*`），所以 `/nas/mnt/usb` 及其下面的任意子目录都能通过校验并被共享：
+
 ```
-鏈€缁堝厑璁告牴 = 锛圓LLOWED_ROOTS 鏈夊垯鍗曠嫭鐢ㄥ畠锛屽惁鍒?FALLBACK_ROOTS + 鎸夐厤缃淳鐢燂級+ EXTRA_ROOTS
+最终允许根 = （ALLOWED_ROOTS 有则单独用它，否则 FALLBACK_ROOTS + 按配置派生）+ EXTRA_ROOTS
 ```
 
-涓ょ偣绾﹀畾锛?
-- `ALLOWED_ROOTS` 浠嶇劧鏄?*鏄惧紡瑕嗙洊**璇箟锛堢粰浜嗗氨鍙敤瀹冿級锛宍EXTRA_ROOTS` 鍙槸杩藉姞锛?- 杩藉姞鏍?*鍙垪褰撳墠鐪熷疄瀛樺湪鐨?*锛氭嫈鐩樺悗 `/nas/mnt/usb` 涓嶅瓨鍦紝灏变笉浼氬嚭鐜板湪鐧藉悕鍗曢噷锛?  `allowed_roots()` 鐨勭紦瀛樻妸銆屽綋鍓嶇殑杩藉姞鏍瑰垪琛ㄣ€嶄篃绠楄繘鏈夋晥鏈燂紝鎻掍笂/鎷旀帀 U 鐩樹笅涓€娆¤皟鐢?  灏辫兘鍙嶆槧鍑烘潵锛堜笉蹇呯瓑缂撳瓨杩囨湡锛夈€傚凡鍏变韩鐨?U 鐩樼洰褰曞湪鎷旂洏鍚庝粛鐒朵繚鐣欏湪閰嶇疆閲岋紙涓嶆姤閿欙級锛?  鍙槸寮圭獥閲岄偅涓綅缃樉绀恒€屾湭鎺ュ叆銆嶃€?
-`EXTRA_ROOTS` 鐨勪笁绉嶅彇鍊硷細
+两点约定：
 
-| 鍙栧€?| 琛屼负 |
+- `ALLOWED_ROOTS` 仍然是**显式覆盖**语义（给了就只用它），`EXTRA_ROOTS` 只是追加；
+- 追加根**只列当前真实存在的**：拔盘后 `/nas/mnt/usb` 不存在，就不会出现在白名单里；
+  `allowed_roots()` 的缓存把「当前的追加根列表」也算进有效期，插上/拔掉 U 盘下一次调用
+  就能反映出来（不必等缓存过期）。已共享的 U 盘目录在拔盘后仍然保留在配置里（不报错），
+  只是弹窗里那个位置显示「未接入」。
+
+`EXTRA_ROOTS` 的三种取值：
+
+| 取值 | 行为 |
 | --- | --- |
-| 鏈缃?| 榛樿 `/nas/mnt`锛堝紑绠卞嵆鍙叡浜鎺ヨ澶囬噷鐨勭洰褰曪級 |
-| **鏄惧紡绌轰覆**锛坄EXTRA_ROOTS=`锛?| **涓€涓兘涓嶈拷鍔?*锛歚ALLOWED_ROOTS` 灏辨槸涓ユ牸鐨勬渶缁堢櫧鍚嶅崟锛岃繍缁村彲鐢ㄥ畠閿佹鍙叡浜寖鍥?|
-| 璁句簡鍊?| 鍐掑彿鍒嗛殧杩藉姞锛屾敮鎸佸崟灞傞€氶厤锛堝 `EXTRA_ROOTS=/nas/mnt:/mnt/usb-*`锛?|
+| 未设置 | 默认 `/nas/mnt`（开箱即可共享外接设备里的目录） |
+| **显式空串**（`EXTRA_ROOTS=`） | **一个都不追加**：`ALLOWED_ROOTS` 就是严格的最终白名单，运维可用它锁死可共享范围 |
+| 设了值 | 冒号分隔追加，支持单层通配（如 `EXTRA_ROOTS=/nas/mnt:/mnt/usb-*`） |
 
-銆屾坊鍔犲叡浜€嶅脊绐楅噷鍙互閫愬眰娴忚锛堜綅缃細瀛樺偍姹?/ 澶栨帴瀛樺偍锛夛紝涔熷彲浠ョ洿鎺?*鎵嬪～缁濆璺緞**
-锛堝 `/nas/mnt/usb/涓嬭浇`锛夛紱鏈嶅姟绔収鏃ф牎楠岀粷瀵硅矾寰勩€佹牴鐧藉悕鍗曘€乣..` 涓庣鍙烽摼鎺ョ殑鐪熷疄璺緞銆?
-## 鍥涖€佹帴鍙ｄ笌椤甸潰
+「添加共享」弹窗里可以逐层浏览（位置：存储池 / 外接存储），也可以直接**手填绝对路径**
+（如 `/nas/mnt/usb/下载`）；服务端照旧校验绝对路径、根白名单、`..` 与符号链接的真实路径。
 
-鎻掍欢鏈嶅姟鐩戝惉 `127.0.0.1:18190`锛岄〉闈㈢粡 nginx 璧?`/plugin/<鐢ㄦ埛>/netneighbor/`銆?
-椤甸潰鍙湁涓夊潡锛?*缃戠粶鍙戠幇寮€鍏?+ 涓绘満鍚?*銆?*鍏变韩鐩綍**銆?*鐩綍娴忚鍣ㄥ脊绐?*銆?鍏变韩鐩綍鍒嗕笂涓嬩袱鍧楋細涓婇儴鏄€屾坊鍔犲叡浜€嶆寜閽紙鎵撳紑鐩綍娴忚鍣ㄩ€夌洰褰曪級锛屼笅閮ㄦ槸**宸插叡浜殑鐩綍**
-鍒楄〃锛堟瘡琛岋細鏄剧ず鍚?+ 鍏变韩鍚?`<璐﹀彿>_nb_<搴忓彿>` + 瀹屾暣璺緞 + 琛屽熬 `-` 鍒犻櫎鎸夐挳锛屽垹鍓嶄簩娆＄‘璁わ紱
-瀹樻柟 app 寤虹殑鍏变韩鐓ф棫鏄剧ず锛屼絾 `-` 缃伆骞惰鏄庡師鍥狅級銆?
-鐩綍娴忚鍣ㄤ笌 transmission 鎻掍欢鍚屽舰锛氶《閮?*浣嶇疆鍒囨崲**锛堝瓨鍌ㄦ睜 / 澶栨帴瀛樺偍锛夈€佸綋鍓?*瀹屾暣缁濆璺緞**銆?閫愬眰杩涘叆瀛愮洰褰曘€併€屼笂涓€绾с€嶃€併€岄€夋嫨姝ょ洰褰曘€嶏紱涔熷彲浠ョ洿鎺ユ墜濉粷瀵硅矾寰勶紙`/nas/mnt` 涓嬬殑鐩綍锛?濡?`/nas/mnt/usb`锛夈€傛嫈鐩樻椂璇ヤ綅缃樉绀恒€屾湭鎺ュ叆銆嶅苟绂佹杩涘叆銆?
-| 鏂规硶 | 璺緞 | 璇存槑 |
+## 四、接口与页面
+
+插件服务监听 `127.0.0.1:18190`，页面经 nginx 走 `/plugin/<用户>/netneighbor/`。
+
+页面只有三块：**网络发现开关 + 主机名**、**共享目录**、**目录浏览器弹窗**。
+共享目录分上下两块：上部是「添加共享」按钮（打开目录浏览器选目录），下部是**已共享的目录**
+列表（每行：显示名 + 共享名 `<账号>_nb_<序号>` + 完整路径 + 行尾 `-` 删除按钮，删前二次确认；
+官方 app 建的共享照旧显示，但 `-` 置灰并说明原因）。
+
+目录浏览器与 transmission 插件同形：顶部**位置切换**（存储池 / 外接存储）、当前**完整绝对路径**、
+逐层进入子目录、「上一级」、「选择此目录」；也可以直接手填绝对路径（`/nas/mnt` 下的目录，
+如 `/nas/mnt/usb`）。拔盘时该位置显示「未接入」并禁止进入。
+
+| 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/healthz` | `{"ok": true, "version": "0.1.1"}` |
-| GET | `/api/status` | 璁剧疆锛坄discoveryEnabled`锛夈€佸彧璇昏韩浠?`identity`锛坄systemName`/`netbiosName`/`matched`/`address`/`hint`/`warning`锛夈€佸彂鐜版湇鍔＄姸鎬併€佽处鍙蜂笌鍏变韩鍒楄〃锛涘伐浣滅粍銆乆Addrs銆佸畼鏂?wsdd 鐘舵€併€佹渶杩戝彇鍏冩暟鎹椂闂翠粛鍦ㄨ繑鍥為噷锛堜究浜庢帓鏌ワ級锛岄〉闈笉鏄剧ず |
-| GET | `/api/log` | 鏈€杩戞棩蹇?|
-| GET | `/api/browse?account=fw867&root=0&path=鐓х墖` | 鐩綍娴忚鍣細`root` 鏄綅缃簭鍙凤紙0 = 瀛樺偍姹?= 璐﹀彿鏁版嵁鏍癸紝鍏朵綑 = `EXTRA_ROOTS`锛岄粯璁?`/nas/mnt` 鏄剧ず涓恒€屽鎺ュ瓨鍌ㄣ€嶏級锛宍path` 鏄?*鐩稿璇ヤ綅缃?*鐨勮矾寰勶紙绌?= 浣嶇疆鏍圭洰褰曪級銆傝繑鍥?`locations`锛坄{index,label,path,exists}`锛夈€乣path`/`absolute`锛堝綋鍓嶇洰褰曪級涓?`items`锛堜竴灞傚瓙鐩綍锛歚{name,path,absolute,shared}`锛岃烦杩囬殣钘忕洰褰曚笌绗﹀彿閾炬帴锛夈€傝秺鐣岋紙`..`/缁濆璺緞锛夈€佷綅缃棤鏁堛€佺洰褰曚笉瀛樺湪閮借繑鍥?400 + 涓枃鍘熷洜 |
-| GET | `/api/dirs?account=fw867` | 鑰佹帴鍙ｏ紙淇濈暀琛屼负涓庣粨鏋勶級锛氳处鍙锋暟鎹牴鐩綍涓嬬殑瀛愮洰褰曪紱姣忛」甯?`shared`銆乣shareName`/`display` 涓?`deletable`锛屽彟鏈?`locations` 鍒嗙粍锛坄{label, root, available, dirs}`锛?|
-| POST | `/api/discovery` | `{"enabled": true\|false}`锛氬紑 = 鎺ョ瀹樻柟 wsdd + 璧峰洖搴斿櫒锛涘叧 = 鍙?Bye + 杩樺師瀹樻柟 wsdd锛堝箓绛夛級 |
-| POST | `/api/hostname` | **宸插簾寮?*锛氫富鏈哄悕鏀规垚鍙灞曠ず锛堟湇鍔＄鑷姩鑾峰彇锛夛紝杩欓噷涓€寰嬭繑鍥?400銆屼富鏈哄悕涓嶅彲淇敼銆嶏紝涓嶅啓浠讳綍閰嶇疆 |
-| POST | `/api/hostname/restore` | 銆屾仮澶嶄负绯荤粺涓绘満鍚嶃€嶏細鍐?`option name` = 绯荤粺涓绘満鍚?鈫?`smb_mgr.sh init_config` 鈫?`systemctl restart smb nmb wsdd` 鈫?鍥炶 `smb.conf` 鐨?`netbios name` 鏍￠獙锛岃繑鍥?`{name, netbiosName, verified, restartReturncode, units, errors, output}` |
-| POST | `/api/share/add` | `{"account","path","sharePoint"}`锛堝崟涓紝鐩綍娴忚鍣ㄦ彁浜ょ殑灏辨槸**缁濆璺緞**锛涘吋瀹规棫鐗堬級鎴?`{"account","paths":[...]}`锛堝閫夛紱鎵€鏈?`add_dir` 涔嬪悗鍙窇涓€娆?`init_config` + reload锛?|
-| POST | `/api/share/delete` | 鍒犻櫎鎻掍欢鑷缓鐨勫叡浜細`{"shareName": "<璐﹀彿>_nb_<搴忓彿>"}`锛堝崟涓紝杩斿洖缁撴瀯鍚屾棫鐗堬紱椤甸潰涓婅灏?`-` 鐢ㄧ殑灏辨槸瀹冿級鎴?`{"shareNames": [...]}`锛堟壒閲忥紱鎵€鏈?`del_dir` 涔嬪悗鍙窇涓€娆?`init_config` + reload锛岃繑鍥?`removed/verified/errors/initReturncode/reloadReturncode`锛夈€?*鍚彈淇濇姢鍏变韩锛坄public` 绛夛級鏃舵暣鎵规嫆缁濄€佷竴鏉″懡浠ら兘涓嶈窇** |
-| POST | `/api/detect/restart` | 閲嶅惎鍥炲簲鍣ㄥ苟閲嶅彂 Hello锛堟帓鏌ョ敤锛岄〉闈笂娌℃湁鎸夐挳锛?|
+| GET | `/api/status` | 设置（`discoveryEnabled`）、只读身份 `identity`（`systemName`/`netbiosName`/`matched`/`address`/`hint`/`warning`）、发现服务状态、账号与共享列表；工作组、XAddrs、官方 wsdd 状态、最近取元数据时间仍在返回里（便于排查），页面不显示 |
+| GET | `/api/log` | 最近日志 |
+| GET | `/api/browse?account=fw867&root=0&path=照片` | 目录浏览器：`root` 是位置序号（0 = 存储池 = 账号数据根，其余 = `EXTRA_ROOTS`，默认 `/nas/mnt` 显示为「外接存储」），`path` 是**相对该位置**的路径（空 = 位置根目录）。返回 `locations`（`{index,label,path,exists}`）、`path`/`absolute`（当前目录）与 `items`（一层子目录：`{name,path,absolute,shared}`，跳过隐藏目录与符号链接）。越界（`..`/绝对路径）、位置无效、目录不存在都返回 400 + 中文原因 |
+| GET | `/api/dirs?account=fw867` | 老接口（保留行为与结构）：账号数据根目录下的子目录；每项带 `shared`、`shareName`/`display` 与 `deletable`，另有 `locations` 分组（`{label, root, available, dirs}`） |
+| POST | `/api/discovery` | `{"enabled": true\|false}`：开 = 接管官方 wsdd + 起回应器；关 = 发 Bye + 还原官方 wsdd（幂等） |
+| POST | `/api/hostname` | **已废弃**：主机名改成只读展示（服务端自动获取），这里一律返回 400「主机名不可修改」，不写任何配置 |
+| POST | `/api/hostname/restore` | 「恢复为系统主机名」：写 `option name` = 系统主机名 → `smb_mgr.sh init_config` → `systemctl restart smb nmb wsdd` → 回读 `smb.conf` 的 `netbios name` 校验，返回 `{name, netbiosName, verified, restartReturncode, units, errors, output}` |
+| POST | `/api/share/add` | `{"account","path","sharePoint"}`（单个，目录浏览器提交的就是**绝对路径**；兼容旧版）或 `{"account","paths":[...]}`（多选；所有 `add_dir` 之后只跑一次 `init_config` + reload） |
+| POST | `/api/share/delete` | 删除插件自建的共享：`{"shareName": "<账号>_nb_<序号>"}`（单个，返回结构同旧版；页面上行尾 `-` 用的就是它）或 `{"shareNames": [...]}`（批量；所有 `del_dir` 之后只跑一次 `init_config` + reload，返回 `removed/verified/errors/initReturncode/reloadReturncode`）。**含受保护共享（`public` 等）时整批拒绝、一条命令都不跑** |
+| POST | `/api/detect/restart` | 重启回应器并重发 Hello（排查用，页面上没有按钮） |
 
-鍐欐搷浣滈渶瑕佷細璇濅护鐗?+ `X-CSRF-Token`锛堜笌浠撳簱鍏跺畠鎻掍欢涓€鑷达級銆傞〉闈㈢敱**鎻掍欢鏈嶅姟**鍙戝嚭
-锛坣ginx 閲屾槸 `proxy_pass`锛屼笉鏄潤鎬?`alias`锛夛細`index.html` 閲岀殑 `__SESSION_TOKEN__` /
-`__CSRF_TOKEN__` / `__PLUGIN_VERSION__` 鍗犱綅绗﹀彧鏈夋湇鍔＄浼氭浛鎹紝鏀规垚 alias 浼氳椤甸潰鎷垮埌
-绌轰护鐗屻€佹墍鏈夋帴鍙?401銆?
-鍓嶇涓嶅啓娴忚鍣ㄨ嚜鍔ㄥ寲娴嬭瘯锛屼絾鏈変袱鏉￠潤鎬佸厹搴曪細`web/app.js` 閲屽紩鐢ㄧ殑姣忎釜 id 閮借鍦?`web/index.html` 閲屽瓨鍦紙`scripts/check_web_ids.py`锛夛紝鍏抽敭鍏冪礌/浜や簰閽╁瓙鐢?`tests/test_web.py` 鏂█锛?
+写操作需要会话令牌 + `X-CSRF-Token`（与仓库其它插件一致）。页面由**插件服务**发出
+（nginx 里是 `proxy_pass`，不是静态 `alias`）：`index.html` 里的 `__SESSION_TOKEN__` /
+`__CSRF_TOKEN__` / `__PLUGIN_VERSION__` 占位符只有服务端会替换，改成 alias 会让页面拿到
+空令牌、所有接口 401。
+
+前端不写浏览器自动化测试，但有两条静态兜底：`web/app.js` 里引用的每个 id 都要在
+`web/index.html` 里存在（`scripts/check_web_ids.py`），关键元素/交互钩子由
+`tests/test_web.py` 断言：
+
 ```bash
 python3 scripts/check_web_ids.py
 node --check web/app.js
 python3 -m unittest tests.test_web -v
 ```
 
-### SMB 鍚嶏細鍙灞曠ず锛堜笉鍐嶆彁渚涙敼鍚嶏級
+### SMB 名：只读展示（不再提供改名）
 
-鐪熸満韪╄繃鐨勫潙锛氭彃浠跺師鏉ヨ鐢ㄦ埛鏀圭殑鏄?**Samba 鐨?NetBIOS 鍚?*锛堝啓 `/etc/config/samba` 鐨?`option name` 鈫?`netbios name`锛夛紝浣?Windows 11 鏄潬 **WSD/mDNS/DNS**锛堜篃灏辨槸**绯荤粺涓绘満鍚?*锛?鍙戠幇璁惧鐨勶紱涓よ€呬笉涓€鑷存椂鐢ㄦ埛鏀规垚浠讳綍鏂板悕瀛楅兘杩炰笉涓婏紝鑰屼笖 `netbios name` 鍙?`reload smb nmb`
-涔熶笉鐢熸晥锛堝繀椤?`restart`锛夈€?*鎵€浠ユ彃浠朵笉鍐嶆彁渚涙敼鍚嶈兘鍔?*锛氶〉闈㈠彧璇诲睍绀轰竴琛?SMB 鍚嶏紝
-绯荤粺涓绘満鍚嶅彧鍦ㄦ湇鍔＄浣滀负銆屼袱鍚嶆槸鍚︿竴鑷淬€嶇殑鍐呴儴鍒ゆ嵁锛堥〉闈笉灞曠ず锛夈€?
-| 椤甸潰鏄剧ず | 鍙栧€兼潵婧愶紙鍏ㄩ儴鏈嶅姟绔嚜鍔ㄨ幏鍙栵級 |
+真机踩过的坑：插件原来让用户改的是 **Samba 的 NetBIOS 名**（写 `/etc/config/samba` 的
+`option name` → `netbios name`），但 Windows 11 是靠 **WSD/mDNS/DNS**（也就是**系统主机名**）
+发现设备的；两者不一致时用户改成任何新名字都连不上，而且 `netbios name` 只 `reload smb nmb`
+也不生效（必须 `restart`）。**所以插件不再提供改名能力**：页面只读展示一行 SMB 名，
+系统主机名只在服务端作为「两名是否一致」的内部判据（页面不展示）。
+
+| 页面显示 | 取值来源（全部服务端自动获取） |
 | --- | --- |
-| SMB 鍚?| `/var/etc/smb.conf` 鐨?`netbios name` 鈫?`/etc/config/samba` 鐨?`option name` |
-| 璁块棶鎻愮ず | SMB 鍚?+ 灞€鍩熺綉 IP 鐜版嫾锛歚Windows 閲岀敤 \\<SMB鍚? 鎴?\\<灞€鍩熺綉IP> 璁块棶` |
-| 锛堝唴閮ㄥ垽鎹級绯荤粺涓绘満鍚?| `uci -q get system.@system[0].hostname` 鈫?绯荤粺璋冪敤 `hostname` 鈫?`/etc/config/samba` 鐨?`option name` 鈫?鍐呯疆榛樿鍊?|
+| SMB 名 | `/var/etc/smb.conf` 的 `netbios name` → `/etc/config/samba` 的 `option name` |
+| 访问提示 | SMB 名 + 局域网 IP 现拼：`Windows 里用 \\<SMB名> 或 \\<局域网IP> 访问` |
+| （内部判据）系统主机名 | `uci -q get system.@system[0].hostname` → 系统调用 `hostname` → `/etc/config/samba` 的 `option name` → 内置默认值 |
 
-IP 鐢?`ip route get 223.5.5.5` 鐨?`src` 鎺㈡祴锛堟嬁涓嶅埌灏遍€€鍒?`wsd.lan_address()` 鐨勯粯璁よ矾鐢辨帰娴嬶級锛?IP 鍙栦笉鍒版椂鎻愮ず鍙粰 `\\<SMB鍚?` 閭ｄ竴鍗婏紝鍚嶅瓧涔熻涓嶅埌灏变笉鏄剧ず鎻愮ず銆?
-涓や釜鍚嶅瓧涓嶄竴鑷达紙澶у皬鍐欎笉鏁忔劅锛夋椂锛岄〉闈㈠湪 SMB 鍚嶄笅鏂规樉绀?*榛勮壊璀﹀憡**骞剁粰鍑恒€屾仮澶嶄负绯荤粺涓绘満鍚嶃€嶆寜閽細
+IP 由 `ip route get 223.5.5.5` 的 `src` 探测（拿不到就退到 `wsd.lan_address()` 的默认路由探测）；
+IP 取不到时提示只给 `\\<SMB名>` 那一半，名字也读不到就不显示提示。
+
+两个名字不一致（大小写不敏感）时，页面在 SMB 名下方显示**黄色警告**并给出「恢复为系统主机名」按钮：
 
 ```
-鍐?/etc/config/samba 鐨?option name = 绯荤粺涓绘満鍚?  鈫?smb_mgr.sh init_config
-  鈫?systemctl restart smb nmb wsdd     # 涓嶆槸 reload锛歯etbios name 鍙?reload 涓嶇敓鏁?  鈫?鍥炶 smb.conf 鐨?netbios name 鏍￠獙锛堢粨鏋滀笌澶辫触鍘熷洜閮芥彁绀哄湪椤甸潰涓婏級
+写 /etc/config/samba 的 option name = 系统主机名
+  → smb_mgr.sh init_config
+  → systemctl restart smb nmb wsdd     # 不是 reload：netbios name 只 reload 不生效
+  → 回读 smb.conf 的 netbios name 校验（结果与失败原因都提示在页面上）
 ```
 
-椤甸潰娌℃湁浠讳綍涓绘満鍚嶈緭鍏ユ锛沗POST /api/hostname` 涓€寰嬭繑鍥?400銆屼富鏈哄悕涓嶅彲淇敼銆嶏紝
-`settings.json` 閲屾棫鐗堟湰鐨?`hostname` 閿篃涓嶅啀璇诲啓锛堝崌绾у悗绗竴娆′繚瀛樹細鑷劧涓㈡帀瀹冿級銆?
-銆岀綉缁滃彂鐜般€嶅紑鍏崇殑鐘舵€佸悓鏍疯惤鐩樺湪 `settings.json`锛氬叧闂悗鏈嶅姟閲嶅惎**涓嶄細**鑷姩鎺ョ锛?鐩村埌鐢ㄦ埛鍦ㄩ〉闈笂閲嶆柊鎵撳紑銆?
-## 浜斻€佸畨瑁呭悗鐨勮涓?
-- 鏈嶅姟锛歚xiaomi-netneighbor.service`锛坄/data/plugin/netneighbor/current/server.py`锛夛紝
-  鏁版嵁鐩綍 `/data/plugin/netneighbor/data`锛堣缃惤鐩樺湪 `data/settings.json`锛夛紱
-- 銆岀綉缁滃彂鐜般€嶅紑鍏抽粯璁ゆ墦寮€锛堜繚鎸佸崌绾у墠鐨勮涓猴級锛屽叧鎺夊悗鍋滅敤/閲嶅惎閮戒笉浼氬啀鎺ョ锛?  鍋滅敤/鍗歌浇鏃朵竴瀹氳繕鍘熷畼鏂?wsdd锛?- 闇€瑕?root锛氳鎵ц `systemctl`銆佸啓 UCI銆佽皟鐢?`smb_mgr.sh`銆傚崟鍏冮噷鐢?  `ProtectSystem=full` + `ReadWritePaths=/etc/config /etc/systemd/system /data/plugin/netneighbor`
-  鎶婂彲鍐欒寖鍥存敹鍒版渶灏忋€?
-## 鍏€佹祴璇?
+页面没有任何主机名输入框；`POST /api/hostname` 一律返回 400「主机名不可修改」，
+`settings.json` 里旧版本的 `hostname` 键也不再读写（升级后第一次保存会自然丢掉它）。
+
+「网络发现」开关的状态同样落盘在 `settings.json`：关闭后服务重启**不会**自动接管，
+直到用户在页面上重新打开。
+
+## 五、安装后的行为
+
+- 服务：`xiaomi-netneighbor.service`（`/data/plugin/netneighbor/current/server.py`），
+  数据目录 `/data/plugin/netneighbor/data`（设置落盘在 `data/settings.json`）；
+- 「网络发现」开关默认打开（保持升级前的行为），关掉后停用/重启都不会再接管；
+  停用/卸载时一定还原官方 wsdd；
+- 需要 root：要执行 `systemctl`、写 UCI、调用 `smb_mgr.sh`。单元里用
+  `ProtectSystem=full` + `ReadWritePaths=/etc/config /etc/systemd/system /data/plugin/netneighbor`
+  把可写范围收到最小。
+
+## 六、测试
+
 ```bash
 cd projects/xiaomi-netneighbor-plugin
 python3 -m unittest discover -s tests -v
 ```
 
-涓嶄緷璧栫涓夋柟鍖咃紝涔熶笉浼氱湡鐨勫幓鍔ㄧ郴缁燂細`subprocess`銆乣systemctl`銆乣smb_mgr.sh` 涓?`WsdResponder` 鍏ㄩ儴鍙敞鍏ワ紝娴嬭瘯鐢ㄥ亣 runner 鏂█鍛戒护搴忓垪銆?
-## 涓冦€佺湡鏈哄疄娴嬭褰曪紙2026-09-28锛孯P05 / 192.168.1.8锛?
-- **鍙戠幇鏈嶅姟**锛氭彃浠跺惎鍔ㄥ悗瀹樻柟 wsdd 琚仠鎺夛紙drop-in 鐢熸晥锛夛紝3702 鐢辨彃浠惰繘绋嬫寔鏈夛紱
-  Windows 璧勬簮绠＄悊鍣ㄣ€岀綉缁溿€嶉噷鍑虹幇 `SMARTSTORAGE`锛屾彃浠舵棩蹇楄兘鐪嬪埌
-  `鏀跺埌 Probe` 鈫?`wsd http: POST 鈥?action=Get 鈫?200`锛宍metadataPosts` 閫掑銆?  鍙?`Bye` 鍚庡浘鏍囨秷澶便€佸啀 `Hello` 鍙堝洖鏉ャ€?- **`systemctl restart` 鐨勭珵鎬?*锛氬仠鏈嶆椂 `ExecStopPost --restore-wsdd` 浼氭妸瀹樻柟 wsdd
-  鎷夊洖鏉ワ紝鏂板疄渚嬬殑鎺ョ浼氬啀鎶婂畠鍋滄帀锛堝仠瀹岃嚜妫€ 3702銆佸繀瑕佹椂閲嶈瘯涓€娆★級锛屽叏绋嬫棤闇€浜哄伐骞查
-  鈥斺€?杩欐潯姝ｆ槸瀹炴祴韪╁嚭鏉ョ殑锛氭渶鍒?`stop` 閭ｆ婕忎簡 `systemctl` 鍓嶇紑锛堟棩蹇楅噷鏄?  銆屾壘涓嶅埌鍛戒护 stop銆嶏級锛屽畼鏂硅繘绋嬩竴鐩村崰鐫€ 3702锛屽洖搴斿櫒姘歌繙璧蜂笉鏉ャ€?- **鍏变韩绠＄悊**锛歚POST /api/share/add` 缁欒处鍙?`fw867` 鍔?  `/home/u3943892/pool0/data/鎴戠殑鐓х墖` 鈫?鐢熸垚 `fw867_nb_1`锛?  杩斿洖閲?`verified / inConfig / smbActive` 鍧囦负 `true`锛?  `net view \\192.168.1.8` 鍚屼竴璐﹀彿涓嬪嚭鐜颁袱涓叡浜紝
-  `\\192.168.1.8\鐓х墖-3943892` 鑳界洿鎺ュ垪鍑烘枃浠讹紱
-  `POST /api/share/delete` 鍒犳帀鍚庨厤缃仮澶嶅師鏍凤紝鑰屽垹瀹樻柟閭ｆ潯浼氳鎷掔粷
-  锛堛€岀敱绯荤粺鎴栧皬绫?App 绠＄悊銆嶏級銆?- 杩欏彴 NAS **娌℃湁 `pkill`**锛屽彧鏈?`killall`锛屾墍浠ュ厹搴曟竻鐞嗘槸鎸?  `killall`/`pkill` 鐨勯『搴忔帰娴嬪疄闄呭瓨鍦ㄧ殑閭ｄ釜銆?
-## 鍏€佸凡鐭ラ檺鍒?
-- 鍙鐞?*鎻掍欢鑷缓**鐨勫叡浜紱app 閲岄偅涓?`<璐﹀彿>_<id>` 浠嶇敱瀹樻柟鐣岄潰绠°€?- 鎻掍欢鏂板鐨勭洰褰曚笉浼氬嚭鐜板湪鍏变韩 app 鐨勭晫闈笂锛堝畠鍙鑷繁鍐欑殑閭ｄ竴鏉★級锛屼絾 SMB 閲屾甯稿彲鐢ㄣ€?- **鍒氭柊澧炵殑鍏变韩鍦?Windows 閲屽彲鑳借绛変竴涓嬫墠鑳芥墦寮€**锛歚smb.conf` 鏄嵆鏃剁敓鏁堢殑
-  锛坄testparm` 绔嬪埢鑳界湅鍒伴偅涓€娈碉級锛屼絾 SMB 瀹㈡埛绔細缂撳瓨鍏变韩鍒楄〃涓庡凡寤虹珛鐨勪細璇濓紝鍒氱偣瀹?  銆岀‘瀹氥€嶅氨鍙屽嚮鏂板叡浜彲鑳芥姤銆屾壘涓嶅埌缃戠粶璺緞 / 鏃犳硶璁块棶銆嶏紱閲嶅紑涓€娆¤祫婧愮鐞嗗櫒绐楀彛銆?  鎴栨柇寮€閲嶈繛锛坄net use \\<NAS-IP> /delete`锛変箣鍚庡氨姝ｅ父浜嗐€?026-09-28 鐢ㄦ埛瀹炴祴纭杩囪繖涓幇璞★紝
-  椤甸潰娣诲姞鎴愬姛鍚庝篃浼氭彁绀轰竴鍙ャ€學indows 閲屽彲鑳借閲嶅紑璧勬簮绠＄悊鍣ㄦ墠鐪嬪緱鍒般€嶃€?- **`list dirs` 涓庡叡浜涓嶅悓姝?*锛歚sambauser` 鐨?`list dirs` 瀛樼殑鏄洰褰曡矾寰勶紝
-  `sambashare` 鎵嶆槸鍏变韩娈点€傝嫢鏌愮洰褰曞彧鍦?`list dirs` 閲岋紙渚嬪鍏变韩娈佃鍒犳帀锛夛紝椤甸潰浼氭妸瀹?  鏄剧ず鎴愩€屾湭鍏变韩銆嶏紝姝ゆ椂鍙互鐢ㄦ彃浠堕噸鏂板叡浜畠锛涘弽杩囨潵锛屾彃浠朵笉浼氬幓鍔?`list dirs`锛?  鎵€浠ュ畼鏂圭晫闈笂鐪嬩笉鍒版彃浠舵柊澧炵殑鐩綍銆?- **绗﹀彿閾炬帴鍙尅寰椾綇 `/nas` 涓嬬殑**锛歚validate_share_path` 浼氭妸绗﹀彿閾炬帴瑙ｆ瀽鍚庣殑鐪熷疄璺緞
-  涔熸嬁鍘绘瘮鐧藉悕鍗曪紝浣?`SYMLINK_ROOT` 鏄?`/home`锛岃€岀櫧鍚嶅崟涓诲姏涔熸槸 `/home/<uXXXX>/pool0/data`
-  鈥斺€擿/home` 涓嬬殑杞摼鎬庝箞瑙ｆ瀽閮借惤鍦?`/home/` 寮€澶达紝绛変簬涓嶈闃层€傝繖鏄€屾彃浠跺彧鏈嶅姟璁惧鎵€鏈夎€?  鑷繁鐨勮处鍙枫€嶈繖涓€鍓嶆彁涓嬬殑鍙栬垗銆?- `..` 鐨勬樉寮忔鏌ュ湪 `posixpath.normpath` **涔嬪悗**锛岀粷瀵硅矾寰勯噷鐨?`..` 浼氳鍏堟姌鍙狅紝
-  鐪熸鍏滀綇瓒婄晫鐨勬槸鐧藉悕鍗曢偅涓€鍏筹紙鎶?`/nas/pool0/../etc` 鎶樺彔鎴?`/nas/etc` 鍐嶆瘮锛夈€?- 鍏佽鏍圭洰褰曠殑鎺ㄥ锛坄derive_allowed_roots`锛夌敤 `Path(root)` 鎷艰矾寰勶紝鍙湪 Linux 涓婃纭?  鈥斺€旀彃浠舵湰鏉ュ氨鍙窇鍦?NAS 涓婏紱鍗曟祴閲屾妸涓や釜銆屾寜骞冲彴鎷艰矾寰勩€嶇殑灏忓伐鍏锋墦妗╂垚 POSIX 褰㈡€併€?- 鍚屼竴鍙?NAS 涓婂悓鏃惰 dpanel 涓?disksleep 浼氬洜涓虹鍙ｉ兘鍐?18160 鑰屽啿绐侊紙涓庢湰鎻掍欢鏃犲叧锛?  鏈彃浠剁敤 18190锛夈€?
+不依赖第三方包，也不会真的去动系统：`subprocess`、`systemctl`、`smb_mgr.sh` 与
+`WsdResponder` 全部可注入，测试用假 runner 断言命令序列。
+
+## 七、真机实测记录（2026-09-28，RP05 / 192.168.1.8）
+
+- **发现服务**：插件启动后官方 wsdd 被停掉（drop-in 生效），3702 由插件进程持有；
+  Windows 资源管理器「网络」里出现 `SMARTSTORAGE`，插件日志能看到
+  `收到 Probe` → `wsd http: POST … action=Get → 200`，`metadataPosts` 递增。
+  发 `Bye` 后图标消失、再 `Hello` 又回来。
+- **`systemctl restart` 的竞态**：停服时 `ExecStopPost --restore-wsdd` 会把官方 wsdd
+  拉回来，新实例的接管会再把它停掉（停完自检 3702、必要时重试一次），全程无需人工干预
+  —— 这条正是实测踩出来的：最初 `stop` 那步漏了 `systemctl` 前缀（日志里是
+  「找不到命令 stop」），官方进程一直占着 3702，回应器永远起不来。
+- **共享管理**：`POST /api/share/add` 给账号 `fw867` 加
+  `/home/u3943892/pool0/data/我的照片` → 生成 `fw867_nb_1`，
+  返回里 `verified / inConfig / smbActive` 均为 `true`；
+  `net view \\192.168.1.8` 同一账号下出现两个共享，
+  `\\192.168.1.8\照片-3943892` 能直接列出文件；
+  `POST /api/share/delete` 删掉后配置恢复原样，而删官方那条会被拒绝
+  （「由系统或小米 App 管理」）。
+- 这台 NAS **没有 `pkill`**，只有 `killall`，所以兜底清理是按
+  `killall`/`pkill` 的顺序探测实际存在的那个。
+
+## 八、已知限制
+
+- 只管理**插件自建**的共享；app 里那个 `<账号>_<id>` 仍由官方界面管。
+- 插件新增的目录不会出现在共享 app 的界面上（它只认自己写的那一条），但 SMB 里正常可用。
+- **刚新增的共享在 Windows 里可能要等一下才能打开**：`smb.conf` 是即时生效的
+  （`testparm` 立刻能看到那一段），但 SMB 客户端会缓存共享列表与已建立的会话，刚点完
+  「确定」就双击新共享可能报「找不到网络路径 / 无法访问」；重开一次资源管理器窗口、
+  或断开重连（`net use \\<NAS-IP> /delete`）之后就正常了。2026-09-28 用户实测确认过这个现象，
+  页面添加成功后也会提示一句「Windows 里可能要重开资源管理器才看得到」。
+- **`list dirs` 与共享段不同步**：`sambauser` 的 `list dirs` 存的是目录路径，
+  `sambashare` 才是共享段。若某目录只在 `list dirs` 里（例如共享段被删掉），页面会把它
+  显示成「未共享」，此时可以用插件重新共享它；反过来，插件不会去动 `list dirs`，
+  所以官方界面上看不到插件新增的目录。
+- **符号链接只挡得住 `/nas` 下的**：`validate_share_path` 会把符号链接解析后的真实路径
+  也拿去比白名单，但 `SYMLINK_ROOT` 是 `/home`，而白名单主力也是 `/home/<uXXXX>/pool0/data`
+  ——`/home` 下的软链怎么解析都落在 `/home/` 开头，等于不设防。这是「插件只服务设备所有者
+  自己的账号」这一前提下的取舍。
+- `..` 的显式检查在 `posixpath.normpath` **之后**，绝对路径里的 `..` 会被先折叠，
+  真正兜住越界的是白名单那一关（把 `/nas/pool0/../etc` 折叠成 `/nas/etc` 再比）。
+- 允许根目录的推导（`derive_allowed_roots`）用 `Path(root)` 拼路径，只在 Linux 上正确
+  ——插件本来就只跑在 NAS 上；单测里把两个「按平台拼路径」的小工具打桩成 POSIX 形态。
+- 同一台 NAS 上同时装 dpanel 与 disksleep 会因为端口都写 18160 而冲突（与本插件无关，
+  本插件用 18190）。

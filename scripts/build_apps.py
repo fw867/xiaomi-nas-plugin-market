@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Package plugin projects into apps/ and generate apps.json.
 
 Usage:
@@ -32,16 +32,16 @@ APPS = ROOT / "apps"
 APPS_JSON = ROOT / "apps.json"
 
 # ---------------------------------------------------------------------------
-# Package specs 鈥?one entry per publishable plugin.
+# Package specs — one entry per publishable plugin.
 # Keys match the existing build_repository.py so bundles stay compatible.
 # ---------------------------------------------------------------------------
 PACKAGE_SPECS: list[dict[str, Any]] = [
     {
         "id": "devicemanager",
-        "name": "璁惧绠″",
+        "name": "设备管家",
         "version": "0.4.1",
-        "summary": "2 绉掑疄鏃剁洃鎺х郴缁熴€佺綉缁溿€佺鐩樺仴搴蜂笌 Docker 瀹瑰櫒璧勬簮",
-        "description": "鍙鏌ョ湅 CPU銆佸唴瀛樸€佹俯搴︺€佺綉缁溿€佺鐩?SMART 涓?Docker 瀹瑰櫒璧勬簮鍗犵敤锛岄〉闈㈠彲瑙佹椂姣?2 绉掑埛鏂般€?,
+        "summary": "2 秒实时监控系统、网络、磁盘健康与 Docker 容器资源",
+        "description": "只读查看 CPU、内存、温度、网络、磁盘 SMART 与 Docker 容器资源占用，页面可见时每 2 秒刷新。",
         "project": "xiaomi-device-manager-prototype",
         "pluginId": 11001,
         "port": 18080,
@@ -64,8 +64,8 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
         "registry": {
             "icon": "/icon/xiaomi-device-manager-v2.icon?v=2",
             "frontend": {
-                "title": "璁惧绠″",
-                "desc": "璁惧鐘舵€佺瀹?,
+                "title": "设备管家",
+                "desc": "设备状态管家",
                 "type": "url",
                 "permission": ["admin"],
                 "dev_type": [1, 2, 3, 4],
@@ -78,7 +78,7 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
             },
             "info": {
                 "tags": ["tool", "monitoring"],
-                "desc": "鐩戞帶 NAS 绯荤粺銆佺綉缁溿€佺‖鐩樺仴搴蜂笌 Docker 瀹瑰櫒璧勬簮",
+                "desc": "监控 NAS 系统、网络、硬盘健康与 Docker 容器资源",
                 "developer": "Kingwell Community",
                 "publisher": "community",
                 "ext": {"admin": True},
@@ -87,10 +87,10 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
     },
     {
         "id": "115sync",
-        "name": "115 浜戝浠?,
+        "name": "115 云备份",
         "version": "0.1.0",
-        "summary": "浣跨敤 115 瀹樻柟 OpenAPI 鍚屾涓庡浠?NAS 鏂囦欢",
-        "description": "闇€瑕佽嚜宸辫幏鎵圭殑 115 App ID锛屾壂鐮佹巿鏉冨悗鍚屾涓庡浠?NAS 鏂囦欢銆?,
+        "summary": "使用 115 官方 OpenAPI 同步与备份 NAS 文件",
+        "description": "需要自己获批的 115 App ID，扫码授权后同步与备份 NAS 文件。",
         "project": "xiaomi-115-sync-plugin",
         "pluginId": 1000,
         "port": 18115,
@@ -111,7 +111,7 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
         "registry": {
             "icon": "/icon/115-sync.icon?v=115life-38.2.0",
             "frontend": {
-                "title": "115 浜戝浠?,
+                "title": "115 云备份",
                 "type": "url",
                 "permission": ["admin"],
                 "dev_type": [1, 2, 3, 4],
@@ -127,10 +127,10 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
     },
     {
         "id": "aliyundrivesync",
-        "name": "闃块噷浜戠洏澶囦唤",
+        "name": "阿里云盘备份",
         "version": "0.1.0",
-        "summary": "鎵爜杩炴帴闃块噷浜戠洏骞跺悓姝?NAS 鏂囦欢",
-        "description": "闇€瑕佽嚜宸辫幏鎵圭殑闃块噷浜戠洏搴旂敤锛屾壂鐮佹巿鏉冨悗鍚屾 NAS 鏂囦欢銆?,
+        "summary": "扫码连接阿里云盘并同步 NAS 文件",
+        "description": "需要自己获批的阿里云盘应用，扫码授权后同步 NAS 文件。",
         "project": "xiaomi-aliyundrive-sync-plugin",
         "pluginId": 1002,
         "port": 18117,
@@ -150,7 +150,7 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
         "registry": {
             "icon": "/icon/aliyundrive-sync.icon?v=0.1.0",
             "frontend": {
-                "title": "闃块噷浜戠洏澶囦唤",
+                "title": "阿里云盘备份",
                 "type": "url",
                 "permission": ["admin"],
                 "dev_type": [1, 2, 3, 4],
@@ -166,10 +166,10 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
     },
     {
         "id": "webdav",
-        "name": "WebDAV 鏂囦欢妗?,
+        "name": "WebDAV 文件桥",
         "version": "0.2.0-rc5",
-        "summary": "NAS HTTPS 鏂囦欢鍏变韩锛屼互鍙婅繙绋?WebDAV 涓婁紶銆佷笅杞戒笌瀹氭椂澶囦唤",
-        "description": "澶氳处鍙枫€佸鐩綍鎺堟潈銆佽繙绋嬪崟鍚戝浠姐€佺洰褰曟柊寤轰笌鍘熶綅鏀瑰悕銆傛祴璇曠増銆?,
+        "summary": "NAS HTTPS 文件共享，以及远程 WebDAV 上传、下载与定时备份",
+        "description": "多账号、多目录授权、远程单向备份、目录新建与原位改名。测试版。",
         "project": "xiaomi-webdav-plugin",
         "pluginId": 11003,
         "port": 18120,
@@ -203,8 +203,8 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
         "registry": {
             "icon": "/icon/webdav-file-bridge.icon?v=0.1.0",
             "frontend": {
-                "title": "WebDAV 鏂囦欢妗?,
-                "desc": "鏂囦欢鍏变韩涓庡浠?,
+                "title": "WebDAV 文件桥",
+                "desc": "文件共享与备份",
                 "type": "url",
                 "permission": ["admin"],
                 "dev_type": [1, 2, 3, 4],
@@ -220,10 +220,10 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
     },
     {
         "id": "qbittorrent",
-        "name": "qB 涓嬭浇",
+        "name": "qB 下载",
         "version": "0.1.2",
-        "summary": "纾佸姏涓庣瀛愪笅杞姐€佹殏鍋滅户缁拰闄愰€燂紱棣栨鍚姩闇€鎷夊彇鐙珛 Docker 闀滃儚",
-        "description": "纾佸姏/绉嶅瓙涓嬭浇銆佽繘搴︺€佹殏鍋滅户缁€侀檺閫熴€傞渶瑕?Docker銆?,
+        "summary": "磁力与种子下载、暂停继续和限速；首次启动需拉取独立 Docker 镜像",
+        "description": "磁力/种子下载、进度、暂停继续、限速。需要 Docker。",
         "project": "xiaomi-qbittorrent-plugin",
         "pluginId": 11004,
         "port": 18122,
@@ -250,8 +250,8 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
         "registry": {
             "icon": "/icon/qbittorrent.icon?v=0.1.2",
             "frontend": {
-                "title": "qB 涓嬭浇",
-                "desc": "涓嬭浇浠诲姟绠＄悊",
+                "title": "qB 下载",
+                "desc": "下载任务管理",
                 "type": "url",
                 "permission": ["admin"],
                 "dev_type": [1, 2, 3, 4],
@@ -267,10 +267,10 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
     },
     {
         "id": "sshcontrol",
-        "name": "SSH 寮€鍏?,
+        "name": "SSH 开关",
         "version": "0.1.0",
-        "summary": "鍚仠 SSH 杩滅▼鐧诲綍锛屽苟璁剧疆寮€鏈鸿嚜鍔ㄤ繚鎸佽繍琛?,
-        "description": "鍦ㄥ鎴风鍐呭惎鍋?SSH锛屾敮鎸佸紑鏈鸿嚜鍚€傜敤浜庣粫杩?boot_check.sh 姣忔寮€鏈哄己鍒跺叧闂?SSH 鐨勮涓恒€?,
+        "summary": "启停 SSH 远程登录，并设置开机自动保持运行",
+        "description": "在客户端内启停 SSH，支持开机自启。用于绕过 boot_check.sh 每次开机强制关闭 SSH 的行为。",
         "project": "xiaomi-ssh-control-plugin",
         "pluginId": 11005,
         "port": 18130,
@@ -296,8 +296,8 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
         "registry": {
             "icon": "/icon/ssh-control.icon?v=1",
             "frontend": {
-                "title": "SSH 寮€鍏?,
-                "desc": "杩滅▼鐧诲綍鎺у埗",
+                "title": "SSH 开关",
+                "desc": "远程登录控制",
                 "type": "url",
                 "permission": ["admin"],
                 "dev_type": [1, 2, 3, 4],
@@ -313,10 +313,10 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
     },
     {
         "id": "transmission",
-        "name": "Transmission 涓嬭浇",
+        "name": "Transmission 下载",
         "version": "0.2.0",
-        "summary": "Docker 鐗?BT 涓嬭浇锛氬彲璁剧疆涓嬭浇/閰嶇疆/鐩戞帶鐩綍涓?WebUI 璐﹀彿锛涚鍙?9091銆?1413",
-        "description": "Docker 瀹瑰櫒杩愯 LinuxServer Transmission锛涢厤缃〉鍙缃笅杞界洰褰曘€侀厤缃枃浠跺す鐩綍銆佺洃鎺х洰褰曚笌 WebUI 鐢ㄦ埛鍚嶅瘑鐮併€傞渶瑕?Docker銆?,
+        "summary": "Docker 版 BT 下载：可设置下载/配置/监控目录与 WebUI 账号；端口 9091、51413",
+        "description": "Docker 容器运行 LinuxServer Transmission；配置页可设置下载目录、配置文件夹目录、监控目录与 WebUI 用户名密码。需要 Docker。",
         "project": "xiaomi-transmission-plugin",
         "pluginId": 11006,
         "port": 18140,
@@ -343,8 +343,8 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
         "registry": {
             "icon": "/icon/transmission.icon?v=0.2.0",
             "frontend": {
-                "title": "Transmission 涓嬭浇",
-                "desc": "涓嬭浇閰嶇疆绠＄悊",
+                "title": "Transmission 下载",
+                "desc": "下载配置管理",
                 "type": "url",
                 "permission": ["admin"],
                 "dev_type": [1, 2, 3, 4],
@@ -362,8 +362,8 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
         "id": "emby",
         "name": "Emby",
         "version": "0.1.0",
-        "summary": "鍦?NAS 涓婅繍琛?Emby锛屽悜灞€鍩熺綉璁惧涓叉祦涓汉褰遍煶",
-        "description": "瀹樻柟 Emby 闀滃儚鐨勫彈闄愬鍣紱濯掍綋鐩綍璇诲啓鎸傝浇浠ヤ究鍐欏洖鍏冩暟鎹紝閰嶇疆淇濆瓨鍦ㄦ彃浠剁鏈夌洰褰曪紝Emby 榛樿绔彛 8096 瀵瑰眬鍩熺綉寮€鏀俱€?,
+        "summary": "在 NAS 上运行 Emby，向局域网设备串流个人影音",
+        "description": "官方 Emby 镜像的受限容器；媒体目录读写挂载以便写回元数据，配置保存在插件私有目录，Emby 默认端口 8096 对局域网开放。",
         "project": "xiaomi-emby-plugin",
         "pluginId": 11007,
         "port": 18150,
@@ -389,7 +389,7 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
             "icon": "/icon/emby.icon?v=0.1.0",
             "frontend": {
                 "title": "Emby",
-                "desc": "褰遍煶涓叉祦",
+                "desc": "影音串流",
                 "type": "url",
                 "permission": ["admin"],
                 "dev_type": [1, 2, 3, 4],
@@ -405,15 +405,15 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
     },
     {
         "id": "dpanel",
-        "name": "DPanel 瀹瑰櫒绠＄悊",
+        "name": "DPanel 容器管理",
         "version": "0.1.0",
-        "summary": "杞婚噺 Docker 绠＄悊闈㈡澘锛涘彲瑙嗗寲绠＄悊瀹瑰櫒銆侀暅鍍忎笌 Compose锛涢渶瑕?Docker",
-        "description": "DPanel Lite 闀滃儚鐨勫彈闄愬鍣紱鎸傝浇 Docker socket 涓庡彲閫夐厤缃洰褰曪紝闈㈡澘绔彛 8807 瀵瑰眬鍩熺綉寮€鏀俱€?,
+        "summary": "轻量 Docker 管理面板；可视化管理容器、镜像与 Compose；需要 Docker",
+        "description": "DPanel Lite 镜像的受限容器；挂载 Docker socket 与可选配置目录，面板端口 8807 对局域网开放。",
         "project": "xiaomi-dpanel-plugin",
         "pluginId": 11008,
-        # 18110锛氬師鏉ヨ繖閲屽啓鐨?18160 涓庛€岀‖鐩樹紤鐪犮€嶆挒鍙蜂簡锛坉isksleep 鎵嶆槸鍦?18160
-        # 涓婄洃鍚殑锛孨AS 涓婂疄娴嬬‘璁わ級銆傛竻鍗曢噷鐨勭鍙ｄ細涓嬪彂缁欐彃浠跺寘涓庡晢搴楋紝鍐欓敊浼氳
-        # 涓や釜鎻掍欢鎶㈠悓涓€涓鍙ｏ紝鎵€浠ヨ繖閲屾敼鎴愭湭鍗犵敤鐨?18110銆?
+        # 18110：原来这里写的 18160 与「硬盘休眠」撞号了（disksleep 才是在 18160
+        # 上监听的，NAS 上实测确认）。清单里的端口会下发给插件包与商店，写错会让
+        # 两个插件抢同一个端口，所以这里改成未占用的 18110。
         "port": 18110,
         "releaseRoot": "/data/plugin/dpanel",
         "uiKey": "dpanel",
@@ -436,8 +436,8 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
         "registry": {
             "icon": "/icon/dpanel.icon?v=0.1.0",
             "frontend": {
-                "title": "DPanel 瀹瑰櫒绠＄悊",
-                "desc": "Docker 闈㈡澘",
+                "title": "DPanel 容器管理",
+                "desc": "Docker 面板",
                 "type": "url",
                 "permission": ["admin"],
                 "dev_type": [1, 2, 3, 4],
@@ -455,8 +455,8 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
         "id": "jellyfin",
         "name": "Jellyfin",
         "version": "0.1.0",
-        "summary": "寮€婧愬獟浣撴湇鍔″櫒锛涢厤缃?缂撳瓨/濯掍綋鎸佷箙鍖栵紝HTTP 绔彛 8097 瀵瑰眬鍩熺綉寮€鏀?,
-        "description": "瀹樻柟 Jellyfin 闀滃儚鐨勫彈闄愬鍣紱濯掍綋鐩綍銆侀厤缃洰褰曚笌缂撳瓨鎸佷箙鍖栵紝绔彛鏄犲皠 8097/8920/7359锛屽彲涓?Emby 鍚屾椂瀹夎銆傞渶瑕?Docker銆?,
+        "summary": "开源媒体服务器；配置/缓存/媒体持久化，HTTP 端口 8097 对局域网开放",
+        "description": "官方 Jellyfin 镜像的受限容器；媒体目录、配置目录与缓存持久化，端口映射 8097/8920/7359，可与 Emby 同时安装。需要 Docker。",
         "project": "xiaomi-jellyfin-plugin",
         "pluginId": 11009,
         "port": 18170,
@@ -482,7 +482,7 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
             "icon": "/icon/jellyfin.icon?v=0.1.0",
             "frontend": {
                 "title": "Jellyfin",
-                "desc": "褰遍煶涓叉祦",
+                "desc": "影音串流",
                 "type": "url",
                 "permission": ["admin"],
                 "dev_type": [1, 2, 3, 4],
@@ -498,10 +498,10 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
     },
     {
         "id": "fwclient",
-        "name": "鍐呯綉绌块€?,
+        "name": "内网穿透",
         "version": "0.1.0",
-        "summary": "fwclient 鍐呯綉绌块€忓鎴风锛涘彲閰嶆湇鍔″櫒鍩熷悕涓庝护鐗岋紝鏄剧ず鐗堟湰骞舵敮鎸佸崌绾?,
-        "description": "闅忓寘鎼哄甫 fwclient-linux-arm64銆備紭鍏堜互瀹堟姢杩涚▼杩愯 fwclient -s <鍩熷悕> -t <浠ょ墝> -d锛沀I 鏄剧ず褰撳墠鐗堟湰锛屾敮鎸?-u 鍗囩骇銆?,
+        "summary": "fwclient 内网穿透客户端；可配服务器域名与令牌，显示版本并支持升级",
+        "description": "随包携带 fwclient-linux-arm64。优先以守护进程运行 fwclient -s <域名> -t <令牌> -d；UI 显示当前版本，支持 -u 升级。",
         "project": "xiaomi-fwclient-plugin",
         "pluginId": 11010,
         "port": 18180,
@@ -527,8 +527,8 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
         "registry": {
             "icon": "/icon/fwclient.icon?v=0.1.0",
             "frontend": {
-                "title": "鍐呯綉绌块€?,
-                "desc": "fwclient 闅ч亾",
+                "title": "内网穿透",
+                "desc": "fwclient 隧道",
                 "type": "url",
                 "permission": ["admin"],
                 "dev_type": [1, 2, 3, 4],
@@ -544,11 +544,11 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
     },
     {
         "id": "disksleep",
-        "name": "纭洏浼戠湢",
+        "name": "硬盘休眠",
         "version": "0.1.0",
-        "summary": "涓庣郴缁熶紤鐪犲紑鍏宠仈鍔紝鍙嚜瀹氫箟浼戠湢鏃堕棿骞舵煡鐪嬩紤鐪?鍞ら啋鏃ュ織",
-        "description": "绯荤粺璁剧疆鐨勭‖鐩樹紤鐪犲彧鏈夊紑鍏充笖鍥哄畾 30 鍒嗛挓銆傛湰鎻掍欢娌跨敤鍚屼竴涓紑鍏筹紝"
-                       "鐢?systemd drop-in 瑕嗙洊 hdidle 鐨勬椂闀匡紝骞舵彁渚涗紤鐪?鍞ら啋浜嬩欢涓?hdidle 鍘熷鏃ュ織銆?,
+        "summary": "与系统休眠开关联动，可自定义休眠时间并查看休眠/唤醒日志",
+        "description": "系统设置的硬盘休眠只有开关且固定 30 分钟。本插件沿用同一个开关，"
+                       "用 systemd drop-in 覆盖 hdidle 的时长，并提供休眠/唤醒事件与 hdidle 原始日志。",
         "project": "xiaomi-disk-sleep-plugin",
         "pluginId": 11011,
         "port": 18160,
@@ -573,8 +573,8 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
         "registry": {
             "icon": "/icon/disk-sleep.icon?v=0.1.0",
             "frontend": {
-                "title": "纭洏浼戠湢",
-                "desc": "浼戠湢鏃堕棿涓庢棩蹇?,
+                "title": "硬盘休眠",
+                "desc": "休眠时间与日志",
                 "type": "url",
                 "permission": ["admin"],
                 "dev_type": [1, 2, 3, 4],
@@ -590,12 +590,12 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
     },
     {
         "id": "netneighbor",
-        "name": "缃戠粶閭诲眳",
+        "name": "网络邻居",
         "version": "0.1.1",
-        "summary": "璁╁皬绫冲瓨鍌ㄥ湪 Windows銆岀綉缁溿€嶉噷鐩存帴鍙锛屽苟鏀寔涓€涓处鍙锋寕澶氫釜鍏变韩鐩綍",
-        "description": "Windows 鐨勮祫婧愮鐞嗗櫒銆岀綉缁溿€嶉噷涓€鐩寸湅涓嶅埌灏忕背瀛樺偍锛屽彧鑳芥墜杈?IP 璁块棶銆傛湰鎻掍欢鑷甫 WSD "
-                       "鍥炲簲鍣紙Hello/Bye/Probe/Resolve 涓庤澶囨弿杩版湇鍔★級鎺ョ绯荤粺閭ｅ涓嶅畬鏁寸殑鍙戠幇鏈嶅姟锛屼富鏈哄嵆鍙嚭鐜板湪"
-                       "缃戠粶閲岋紱鍚屾椂璋冪敤瀹樻柟 smb_mgr.sh 璁╁悓涓€涓处鍙锋寕澶氫釜鍏变韩鐩綍锛岀粫寮€鍏变韩 app 鍙兘閰嶄竴涓殑闄愬埗銆?,
+        "summary": "让小米存储在 Windows「网络」里直接可见，并支持一个账号挂多个共享目录",
+        "description": "Windows 的资源管理器「网络」里一直看不到小米存储，只能手输 IP 访问。本插件自带 WSD "
+                       "回应器（Hello/Bye/Probe/Resolve 与设备描述服务）接管系统那套不完整的发现服务，主机即可出现在"
+                       "网络里；同时调用官方 smb_mgr.sh 让同一个账号挂多个共享目录，绕开共享 app 只能配一个的限制。",
         "project": "xiaomi-netneighbor-plugin",
         "pluginId": 11012,
         "port": 18190,
@@ -621,8 +621,8 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
         "registry": {
             "icon": "/icon/netneighbor.icon?v=0.1.0",
             "frontend": {
-                "title": "缃戠粶閭诲眳",
-                "desc": "缃戠粶鍙鎬т笌鍏变韩鐩綍",
+                "title": "网络邻居",
+                "desc": "网络可见性与共享目录",
                 "type": "url",
                 "permission": ["admin"],
                 "dev_type": [1, 2, 3, 4],
@@ -638,13 +638,13 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
     },
     {
         "id": "nasconsole",
-        "name": "鎺у埗鍙?,
+        "name": "控制台",
         "version": "0.1.1",
-        "summary": "妗岄潰寮忔帶鍒跺彴锛氱‖浠剁姸鎬併€佺‖鐩樹笌 SMART銆佹枃浠躲€佸鍣ㄤ笌鏈嶅姟",
-        "description": "鐢佃剳娴忚鍣ㄦ墦寮€灏辨槸涓€寮犳闈細鍥炬爣 + 娴姩绐楀彛 + 甯搁┗缁勪欢鏍忥紝鐪?CPU/鍐呭瓨/娓╁害/缃戠粶/"
-                       "纾佺洏 IO 鏇茬嚎銆佺‖鐩樹紤鐪犵姸鎬佷笌 SMART銆乵d 闃靛垪銆丏ocker 瀹瑰櫒銆佸凡瑁呮彃浠朵笌鍘傚晢瀹氭椂浠诲姟锛?
-                       "鏂囦欢绐楀彛鍙祻瑙堛€侀瑙堛€佷笅杞斤紝涔熻兘涓婁紶銆佹柊寤烘枃浠跺す銆侀噸鍛藉悕銆佸垹闄わ紙鍒犻櫎杩涘洖鏀剁珯锛屽彲鎭㈠锛夈€?
-                       "鎵嬫満绔彧鏈夊紑鍏炽€佺鍙ｄ笌浠ょ墝銆傞噰闆嗗彧璇?/proc 涓?/sys锛宻tandby 纭洏涓嶈 SMART锛屼笉鍞ら啋纭洏銆?,
+        "summary": "桌面式控制台：硬件状态、硬盘与 SMART、文件、容器与服务",
+        "description": "电脑浏览器打开就是一张桌面：图标 + 浮动窗口 + 常驻组件栏，看 CPU/内存/温度/网络/"
+                       "磁盘 IO 曲线、硬盘休眠状态与 SMART、md 阵列、Docker 容器、已装插件与厂商定时任务；"
+                       "文件窗口可浏览、预览、下载，也能上传、新建文件夹、重命名、删除（删除进回收站，可恢复）。"
+                       "手机端只有开关、端口与令牌。采集只读 /proc 与 /sys，standby 硬盘不读 SMART，不唤醒硬盘。",
         "project": "xiaomi-nas-console",
         "pluginId": 11020,
         "port": 18100,
@@ -657,7 +657,7 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
             "engine.py": "engine.py",
             "VERSION": "VERSION",
             "web": "web",
-            # 妗岄潰鍏ュ彛鐨?nginx 妯℃澘锛氳鏈哄悗鏀惧湪鎻掍欢鑷繁鐨勭洰褰曢噷锛孉pp 閲屾敼绔彛/寮€鍏虫椂鐢ㄥ畠閲嶆柊娓叉煋
+            # 桌面入口的 nginx 模板：装机后放在插件自己的目录里，App 里改端口/开关时用它重新渲染
             "deploy/xiaomi-nas-console-lan.nginx.conf": "lan/xiaomi-nas-console-lan.conf",
             "README.md": "README.md",
         },
@@ -672,8 +672,8 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
         "registry": {
             "icon": "/icon/nas-console.icon?v=1",
             "frontend": {
-                "title": "鎺у埗鍙?,
-                "desc": "纭欢鐘舵€併€佹枃浠躲€佸鍣ㄤ笌鏈嶅姟",
+                "title": "控制台",
+                "desc": "硬件状态、文件、容器与服务",
                 "type": "url",
                 "permission": ["admin"],
                 "dev_type": [1, 2, 3, 4],
@@ -686,7 +686,7 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
             },
             "info": {
                 "tags": ["tool", "monitoring"],
-                "desc": "纭欢鐘舵€併€佺‖鐩樸€佸鍣ㄤ笌鏈嶅姟锛涘彲娴忚鍜屾暣鐞嗘枃浠讹紙鍒犻櫎杩涘洖鏀剁珯锛?,
+                "desc": "硬件状态、硬盘、容器与服务；可浏览和整理文件（删除进回收站）",
                 "developer": "Kingwell Community",
                 "publisher": "community",
                 "ext": {"admin": True},
@@ -697,14 +697,14 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
         "id": "rtrcenter",
         "name": "Unifi",
         "version": "0.1.3",
-        "summary": "鎶婂眬鍩熺綉閲岀殑 UniFi SoftCenter 鎼繘灏忕背瀛樺偍锛屾墜鏈?App 杩滅▼绠＄悊璺敱鍣ㄦ彃浠?,
-        "description": "鍦ㄥ皬绫虫櫤鑳藉瓨鍌ㄧ殑鎵嬫満 App 閲岀洿鎺ユ墦寮€璺敱鍣ㄤ笂鐨?UniFi SoftCenter锛岃鎻掍欢銆佺湅鏃ュ織銆?
-                       "鏀瑰畾鏃朵换鍔°€侀噸鍚湇鍔★細鎻掍欢鍦?NAS 涓婂仛鍙嶅悜浠ｇ悊锛岃蒋浠朵腑蹇冪殑椤甸潰涓庢帴鍙ｉ兘缁?NAS 鐨?
-                       "瀹㈡埛绔叆鍙ｏ紙瀹㈡埛绔瘉涔︼級杞彂鍒拌矾鐢卞櫒锛屽洜姝?*涓嶉渶瑕佺粰璺敱鍣ㄥ仛绔彛鏄犲皠**锛?
-                       "璺敱鍣ㄤ篃涓嶄細鏆撮湶鍒板叕缃戙€備负閫傞厤 App 鍐呯疆 webview锛堥€氬父鍙厑璁歌闂?NAS 鑷繁鐨勫煙鍚嶏級锛?
-                       "鎻掍欢鎶婅蒋浠朵腑蹇冧緷璧栫殑 Vue/Tailwind/Lucide 鎹㈡垚鏈湴鍓湰銆佹妸椤甸潰閲岀洿杩?GitHub 鐨?
-                       "鍦板潃鏀圭粡 NAS 杞彂锛屽苟鍦ㄥ乏涓婅鎻愪緵鍏抽棴鎸夐挳銆佸彸涓婅鎻愪緵璁剧疆椤碉紙鏀圭洰鏍囧湴鍧€涓庣湅鐘舵€侊級銆?
-                       "AdminToken 瀛樺湪 NAS 涓婏紙0600锛夛紝鎵撳紑杞欢涓績鏃惰嚜鍔ㄦ敞鍏ワ紝鎹㈣澶囦笉鐢ㄩ噸杈撱€?,
+        "summary": "把局域网里的 UniFi SoftCenter 搬进小米存储，手机 App 远程管理路由器插件",
+        "description": "在小米智能存储的手机 App 里直接打开路由器上的 UniFi SoftCenter，装插件、看日志、"
+                       "改定时任务、重启服务：插件在 NAS 上做反向代理，软件中心的页面与接口都经 NAS 的"
+                       "客户端入口（客户端证书）转发到路由器，因此**不需要给路由器做端口映射**，"
+                       "路由器也不会暴露到公网。为适配 App 内置 webview（通常只允许访问 NAS 自己的域名），"
+                       "插件把软件中心依赖的 Vue/Tailwind/Lucide 换成本地副本、把页面里直连 GitHub 的"
+                       "地址改经 NAS 转发，并在左上角提供关闭按钮、右上角提供设置页（改目标地址与看状态）。"
+                       "AdminToken 存在 NAS 上（0600），打开软件中心时自动注入，换设备不用重输。",
         "project": "xiaomi-router-center",
         "pluginId": 11021,
         "port": 18101,
@@ -717,7 +717,7 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
             "engine.py": "engine.py",
             "VERSION": "VERSION",
             "web": "web",
-            # 瀹㈡埛绔叆鍙ｇ殑 nginx 妯℃澘锛氭湇鍔℃敼鐩爣鍦板潃鏃剁敤瀹冮噸鏂版覆鏌擄紙娓叉煋鍚?nginx -t 杩囧叧鎵?reload锛?
+            # 客户端入口的 nginx 模板：服务改目标地址时用它重新渲染（渲染后 nginx -t 过关才 reload）
             "deploy/xiaomi-router-center.nginx.conf": "deploy/xiaomi-router-center.nginx.conf",
             "README.md": "README.md",
         },
@@ -733,7 +733,7 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
             "icon": "/icon/router-center.icon?v=1",
             "frontend": {
                 "title": "Unifi",
-                "desc": "杩滅▼绠＄悊 UniFi 杞欢涓績",
+                "desc": "远程管理 UniFi 软件中心",
                 "type": "url",
                 "permission": ["admin"],
                 "dev_type": [1, 2, 3, 4],
@@ -746,7 +746,7 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
             },
             "info": {
                 "tags": ["tool", "network"],
-                "desc": "鎶婂眬鍩熺綉閲?UniFi SoftCenter 鎼繘灏忕背瀛樺偍锛屾墜鏈?App 杩滅▼绠＄悊璺敱鍣ㄦ彃浠?,
+                "desc": "把局域网里 UniFi SoftCenter 搬进小米存储，手机 App 远程管理路由器插件",
                 "developer": "Kingwell Community",
                 "publisher": "community",
                 "ext": {"admin": True},
@@ -755,16 +755,16 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
     },
     {
         "id": "dockerctl",
-        "name": "Docker 鎺у埗鍙?,
+        "name": "Docker 控制台",
         "version": "0.1.0",
-        "summary": "瀹屾暣 Docker 鎺у埗鍙帮細瀹瑰櫒銆侀暅鍍忋€丆ompose 閮ㄧ讲銆佸瓨鍌ㄥ嵎涓庣綉缁滅鐞嗭紱闇€瑕?Docker",
-        "description": "瀹瑰櫒鍚仠/鏃ュ織/璇︽儏銆侀暅鍍忔媺鍙栵紙甯﹁繘搴︿笌鍙栨秷锛変笌鍒犻櫎銆佽〃鍗曢儴缃蹭笌 Compose 閮ㄧ讲銆?
-                       "瀛樺偍鍗蜂笌缃戠粶绠＄悊锛屾搷浣滄棩蹇楄惤鐩樸€侱ocker CLI 榛樿 /data/docker/docker锛屽彲鍦ㄦ彃浠堕〉淇敼锛?
-                       "绔彛 18210 浠呭洖鐜紝鍙帴鍙楀皬绫冲鎴风璇佷功鍏ュ彛銆?,
+        "summary": "完整 Docker 控制台：容器、镜像、Compose 部署、存储卷与网络管理；需要 Docker",
+        "description": "容器启停/日志/详情、镜像拉取（带进度与取消）与删除、表单部署与 Compose 部署、"
+                       "存储卷与网络管理，操作日志落盘。Docker CLI 默认 /data/docker/docker，可在插件页修改；"
+                       "端口 18210 仅回环，只接受小米客户端证书入口。",
         "project": "xiaomi-dockerctl-plugin",
         "pluginId": 11022,
-        # 18210锛氱幇鏈夌ぞ鍖烘彃浠朵緷娆″崰 18080/18100/18101/18110/18115/18117/18120/18122/
-        # 18130/18140/18150/18160/18170/18180/18190锛?8210 鍦ㄤ粨搴撻噷鏈嚭鐜帮紙宸插叏閲?grep锛夈€?
+        # 18210：现有社区插件依次占 18080/18100/18101/18110/18115/18117/18120/18122/
+        # 18130/18140/18150/18160/18170/18180/18190，18210 在仓库里未出现（已全量 grep）。
         "port": 18210,
         "releaseRoot": "/data/plugin/dockerctl",
         "uiKey": "dockerctl",
@@ -788,8 +788,8 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
         "registry": {
             "icon": "/icon/dockerctl.icon?v=0.1.0",
             "frontend": {
-                "title": "Docker 鎺у埗鍙?,
-                "desc": "瀹瑰櫒涓庨暅鍍忕鐞?,
+                "title": "Docker 控制台",
+                "desc": "容器与镜像管理",
                 "type": "url",
                 "permission": ["admin"],
                 "dev_type": [1, 2, 3, 4],
@@ -807,12 +807,12 @@ PACKAGE_SPECS: list[dict[str, Any]] = [
 
 
 def _attach_plugin_elements() -> None:
-    """鎶婂悇鎻掍欢鑷甫鐨勫皬绫虫彃浠惰鑼冭绱犵撼鍏ユ墦鍖呭唴瀹广€?
+    """把各插件自带的小米插件规范要素纳入打包内容。
 
-    姣忎釜鎻掍欢鍙湪鑷繁鐨?deploy/ 涓嬫彁渚涳細
-      plugin-meta.json  鈥斺€?INFO 鐨勫厓鏁版嵁锛堝悕绉般€佹弿杩般€佹爣绛剧瓑锛?
-      control           鈥斺€?plugincenter boot 鏃舵墽琛岀殑 <plugin>/scripts/control
-    瀹夎鏃朵細澶嶅埗鍒版彃浠剁洰褰曪紝浣?plugin.sh verify 閫氳繃銆?
+    每个插件可在自己的 deploy/ 下提供：
+      plugin-meta.json  —— INFO 的元数据（名称、描述、标签等）
+      control           —— plugincenter boot 时执行的 <plugin>/scripts/control
+    安装时会复制到插件目录，使 plugin.sh verify 通过。
     """
     elements = (
         ("deploy/plugin-meta.json", "plugin-meta.json"),
@@ -850,11 +850,11 @@ def write_deterministic_zip(source: Path, target: Path) -> None:
 
 
 def sync_project_version(spec: dict[str, Any]) -> None:
-    """鎶婃渶缁堢増鏈彿鍐欏洖鎻掍欢鑷繁鐨?VERSION 鏂囦欢锛堝瓨鍦ㄦ墠鍐欙級銆?
+    """把最终版本号写回插件自己的 VERSION 文件（存在才写）。
 
-    鎻掍欢杩愯鏃朵細璇诲畨瑁呯増鏈紙鍟嗗簵瑁呭埌 `releases/<娓呭崟鐗堟湰>-<鏃堕棿鎴?-<pid>/`锛?
-    鑴氭湰瀹夎璇?VERSION 鏂囦欢锛夛紝濡傛灉鍖呴噷 VERSION 鐨勫唴瀹瑰拰娓呭崟鐗堟湰涓嶄竴鑷达紝
-    鎻掍欢椤垫樉绀虹殑鐗堟湰灏变細鍜屽晢搴?娉ㄥ唽琛ㄥ涓嶄笂鈥斺€旇瘎瀹℃椂韪╄繃杩欎釜鍧戯紝鎵€浠ュ湪杩欓噷瀵归綈銆?
+    插件运行时会读安装版本（商店装到 `releases/<清单版本>-<时间戳>-<pid>/`，
+    脚本安装读 VERSION 文件），如果包里 VERSION 的内容和清单版本不一致，
+    插件页显示的版本就会和商店/注册表对不上——评审时踩过这个坑，所以在这里对齐。
     """
     version_file = PROJECTS / spec["project"] / "VERSION"
     if not version_file.is_file():
@@ -863,7 +863,7 @@ def sync_project_version(spec: dict[str, Any]) -> None:
     if current == spec["version"]:
         return
     version_file.write_text(spec["version"] + "\n", encoding="utf-8", newline="\n")
-    print(f"  鍚屾 {version_file.relative_to(ROOT)}: {current} 鈫?{spec['version']}")
+    print(f"  同步 {version_file.relative_to(ROOT)}: {current} → {spec['version']}")
 
 
 def build_bundle(spec: dict[str, Any]) -> dict[str, Any]:
@@ -898,8 +898,8 @@ def build_bundle(spec: dict[str, Any]) -> dict[str, Any]:
         }
         if spec.get("requirements"):
             manifest["requirements"] = spec["requirements"]
-        # 鏄惧紡 LF锛氳繖涓枃浠惰繘 zip锛學indows 涓婂啓鎴?CRLF 浼氳鍚屼竴涓寘绠楀嚭涓嶅悓鐨?
-        # sha256锛孋I 灏变細鎶娿€屽唴瀹规病鍙樸€嶈鍒ゆ垚銆屽唴瀹规湁鍙樸€嶈€屽嚟绌烘姮涓€涓増鏈€?
+        # 显式 LF：这个文件进 zip，Windows 上写成 CRLF 会让同一个包算出不同的
+        # sha256，CI 就会把「内容没变」误判成「内容有变」而凭空抬一个版本。
         with (root / "manifest.json").open("w", encoding="utf-8", newline="\n") as handle:
             handle.write(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
         bundle_name = f"{spec['id']}-{spec['version']}.zip"
@@ -959,7 +959,7 @@ def read_store_version() -> str:
 
 
 def load_existing_versions() -> dict[str, str]:
-    """浠庣幇鏈?apps.json 璇诲彇鍚勬彃浠剁殑褰撳墠鐗堟湰鍙枫€?""
+    """从现有 apps.json 读取各插件的当前版本号。"""
     if not APPS_JSON.is_file():
         return {}
     try:
@@ -970,7 +970,7 @@ def load_existing_versions() -> dict[str, str]:
 
 
 def load_existing_hashes() -> dict[str, str]:
-    """浠庣幇鏈?apps.json 璇诲彇鍚勬彃浠跺凡鍙戝竷鍖呯殑 SHA-256锛岀敤浜庡垽鏂唴瀹规槸鍚﹀彉鍖栥€?""
+    """从现有 apps.json 读取各插件已发布包的 SHA-256，用于判断内容是否变化。"""
     if not APPS_JSON.is_file():
         return {}
     try:
@@ -985,7 +985,7 @@ def load_existing_hashes() -> dict[str, str]:
 
 
 def load_existing_generated_at() -> int:
-    """璇诲彇鐜版湁 apps.json 鐨?generatedAt锛岀敤浜庡唴瀹规病鍙樻椂鍘熸牱淇濈暀銆?""
+    """读取现有 apps.json 的 generatedAt，用于内容没变时原样保留。"""
     if not APPS_JSON.is_file():
         return 0
     try:
@@ -997,7 +997,7 @@ def load_existing_generated_at() -> int:
 
 
 def load_existing_apps() -> list[dict[str, Any]]:
-    """璇诲彇鐜版湁 apps.json 涓殑搴旂敤鏉＄洰锛堢敤浜?--only 鏃朵繚鐣欏叾瀹冩潯鐩級銆?""
+    """读取现有 apps.json 中的应用条目（用于 --only 时保留其它条目）。"""
     if not APPS_JSON.is_file():
         return []
     try:
@@ -1009,7 +1009,7 @@ def load_existing_apps() -> list[dict[str, Any]]:
 
 
 def bump_patch(version: str) -> str:
-    """閫掑 patch 鐗堟湰鍙凤細0.4.1 鈫?0.4.2锛?.2.0-rc5 鈫?0.2.1-rc5銆?""
+    """递增 patch 版本号：0.4.1 → 0.4.2；0.2.0-rc5 → 0.2.1-rc5。"""
     import re as _re
     m = _re.match(r"^(\d+)\.(\d+)\.(\d+)(.*)$", version)
     if not m:
@@ -1019,8 +1019,8 @@ def bump_patch(version: str) -> str:
 
 
 def main() -> int:
-    # 杈撳嚭缁熶竴璧?UTF-8锛歐indows 鎺у埗鍙伴粯璁?GBK 鏃讹紝鎵撳嵃 "鈿? 涔嬬被鐨勫瓧绗︿細鐩存帴
-    # UnicodeEncodeError 鎶婃暣涓瀯寤烘墦鏂紙璺宠繃鎻掍欢鐨勫垎鏀濂戒細鎵撳嵃瀹冿級銆?
+    # 输出统一走 UTF-8：Windows 控制台默认 GBK 时，打印 "⚠" 之类的字符会直接
+    # UnicodeEncodeError 把整个构建打断（跳过插件的分支正好会打印它）。
     for stream in (sys.stdout, sys.stderr):
         try:
             stream.reconfigure(encoding="utf-8", errors="replace")
@@ -1034,9 +1034,9 @@ def main() -> int:
     parser.add_argument("--no-bump", action="store_true", help="Do not auto-increment patch version")
     args = parser.parse_args()
 
-    # 鐗堟湰鍙风瓥鐣ワ細榛樿娌跨敤 apps.json 閲屽凡鍙戝竷鐨勭増鏈紝鍙湁鎵撳寘鍐呭鐪熺殑
-    # 鍙樹簡鎵嶉€掑 patch銆傚惁鍒欐瘡娆?CI 鏋勫缓閮戒細鎶婂叏閮ㄦ彃浠舵姮涓€涓増鏈紝
-    # 瀹㈡埛绔細瀵规墍鏈夊凡瀹夎鎻掍欢鏄剧ず銆屽彲鏇存柊銆嶃€?
+    # 版本号策略：默认沿用 apps.json 里已发布的版本，只有打包内容真的
+    # 变了才递增 patch。否则每次 CI 构建都会把全部插件抬一个版本，
+    # 客户端会对所有已安装插件显示「可更新」。
     existing_versions = load_existing_versions()
     existing_hashes = load_existing_hashes()
     if existing_versions and not args.no_bump:
@@ -1064,37 +1064,37 @@ def main() -> int:
     for spec in specs:
         published = existing_versions.get(spec["id"])
         print(f"Building {spec['id']} {spec['version']} ...")
-        # 鎵撳寘鍓嶅厛璁╂彃浠惰嚜宸辩殑 VERSION 鏂囦欢涓庢竻鍗曠増鏈竴鑷达紝鍖呴噷鐨勭増鏈彿鎵嶄笉浼氳嚜鐩哥煕鐩?
+        # 打包前先让插件自己的 VERSION 文件与清单版本一致，包里的版本号才不会自相矛盾
         if not args.no_bump:
             sync_project_version(spec)
         try:
             entry = build_bundle(spec)
         except SystemExit as error:
             if args.skip_missing:
-                print(f"  鈿?skipped: {error}")
+                print(f"  ⚠ skipped: {error}")
                 skipped_ids.append(spec["id"])
                 continue
             raise
 
-        # 鍐呭涓庡凡鍙戝竷鍖呬竴鑷?鈫?淇濇寔鐗堟湰鍙凤紝瀹㈡埛绔笉浼氭彁绀烘洿鏂般€?
-        # 鍙湁鍐呭鐪熺殑鍙樹簡鎵嶉€掑 patch 骞堕噸鏂版墦鍖呫€?
+        # 内容与已发布包一致 → 保持版本号，客户端不会提示更新。
+        # 只有内容真的变了才递增 patch 并重新打包。
         if published and not args.no_bump:
             if existing_hashes.get(spec["id"]) == entry["sha256"]:
-                print("  鍐呭鏈彉锛屼繚鎸佺増鏈?)
+                print("  内容未变，保持版本")
             else:
                 bumped = bump_patch(published)
                 spec["version"] = bumped
-                print(f"  鍐呭鏈夊彉锛岀増鏈€掑 {published} 鈫?{bumped}")
+                print(f"  内容有变，版本递增 {published} → {bumped}")
                 sync_project_version(spec)
                 entry = build_bundle(spec)
 
         apps.append(entry)
-        print(f"  鈫?{entry['bundle']}  sha256={entry['sha256'][:16]}鈥? {entry['size']//1024} KiB")
+        print(f"  → {entry['bundle']}  sha256={entry['sha256'][:16]}…  {entry['size']//1024} KiB")
 
     if not apps:
         raise SystemExit("No apps were built")
 
-    # 娓呯悊琚噸寤哄簲鐢ㄧ殑鏃х増鏈?zip锛堟寜鏈€缁堢増鏈彿鍒ゆ柇锛屼繚鐣欏叾瀹冨簲鐢ㄧ殑鍖咃級
+    # 清理被重建应用的旧版本 zip（按最终版本号判断，保留其它应用的包）
     keep_names = {Path(entry["bundle"]).name for entry in apps}
     built_ids = {entry["id"] for entry in apps}
     for old_zip in APPS.glob("*.zip"):
@@ -1102,11 +1102,11 @@ def main() -> int:
             continue
         if any(old_zip.name.startswith(f"{app_id}-") for app_id in built_ids):
             old_zip.unlink()
-            print(f"娓呯悊鏃у寘: {old_zip.name}")
+            print(f"清理旧包: {old_zip.name}")
 
-    # 浣跨敤 --only 鏃朵繚鐣欐湭閲嶅缓搴旂敤鐨勬棦鏈夋潯鐩紝閬垮厤娓呭崟琚竻绌恒€?
-    # 椤哄簭鎸?PACKAGE_SPECS 鑰屼笉鏄?id 鎺掑簭锛氬叏閲忔瀯寤哄氨鏄繖涓『搴忥紝涓よ€呬笉涓€鑷?
-    # 浼氳娓呭崟鍦ㄦ瘡娆℃瀯寤轰箣闂存潵鍥為噸鎺掋€?
+    # 使用 --only 时保留未重建应用的既有条目，避免清单被清空。
+    # 顺序按 PACKAGE_SPECS 而不是 id 排序：全量构建就是这个顺序，两者不一致
+    # 会让清单在每次构建之间来回重排。
     if args.only:
         rebuilt = {entry["id"]: entry for entry in apps}
         published = {app["id"]: app for app in load_existing_apps()}
@@ -1115,9 +1115,9 @@ def main() -> int:
 
     repo = detect_repo_slug()
     branch = "main"
-    # 鍐呭鍏ㄩ兘娌″彉鏃朵笉瑕佸埛鏂?generatedAt锛氬惁鍒?CI 姣忔杩愯閮戒細浜х敓涓€涓彧鏀?
-    # 鏃堕棿鎴崇殑鎻愪氦锛堝氨鏄偅涓?"chore: auto-build apps"锛夛紝鏈湴鍚庣画鏀瑰姩闅忓嵆涓?
-    # 杩滅鍒嗗弶锛屼簬鏄瘡娆℃帹閫佸墠閮藉緱鍏?pull --rebase 涓€閬嶃€?
+    # 内容全都没变时不要刷新 generatedAt：否则 CI 每次运行都会产生一个只改
+    # 时间戳的提交（就是那个 "chore: auto-build apps"），本地后续改动随即与
+    # 远端分叉，于是每次推送前都得先 pull --rebase 一遍。
     content_changed = (
         len(apps) != len(existing_hashes)
         or any(existing_hashes.get(entry["id"]) != entry["sha256"] for entry in apps)
@@ -1127,10 +1127,10 @@ def main() -> int:
         generated_at = int(time.time())
     else:
         generated_at = previous_generated_at
-        print("鍐呭涓庡凡鍙戝竷鐗堟湰涓€鑷达紝淇濇寔 generatedAt 涓嶅彉锛堜笉浜х敓绌烘彁浜わ級")
+        print("内容与已发布版本一致，保持 generatedAt 不变（不产生空提交）")
     apps_doc = {
         "schemaVersion": 2,
-        "name": "灏忕背鏅鸿兘瀛樺偍搴旂敤鍟嗗簵",
+        "name": "小米智能存储应用商店",
         "generatedAt": generated_at,
         "repository": repo,
         "branch": branch,
@@ -1141,8 +1141,8 @@ def main() -> int:
         },
         "apps": apps,
     }
-    # 鏄惧紡鍐?LF锛?gitattributes 鐢?`* -text` 鍏虫帀浜嗚灏惧綊涓€鍖栵紝Windows 涓婇粯璁?
-    # 鍐欏嚭鐨?CRLF 浼氳鏁翠唤娓呭崟鍦?diff 閲屽叏閲忓彉鍖栵紝涔熷拰 CI/Linux 鐨勪骇鐗╀笉涓€鑷淬€?
+    # 显式写 LF：.gitattributes 用 `* -text` 关掉了行尾归一化，Windows 上默认
+    # 写出的 CRLF 会让整份清单在 diff 里全量变化，也和 CI/Linux 的产物不一致。
     with APPS_JSON.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write(json.dumps(apps_doc, ensure_ascii=False, indent=2) + "\n")
     print(f"\nWrote {APPS_JSON.relative_to(ROOT)} with {len(apps)} apps")
