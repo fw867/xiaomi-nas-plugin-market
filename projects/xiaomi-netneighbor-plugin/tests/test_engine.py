@@ -708,9 +708,14 @@ class ExtraRootTests(unittest.TestCase):
             raise AssertionError(completed.stderr)
         return completed.stdout.strip()
 
-    def test_default_extra_roots_is_nas_mnt(self):
-        """没设 EXTRA_ROOTS 时默认追加 `/nas/mnt`（真机 usb/pa0/pa1 都在它下面）。"""
-        self.assertEqual(self.extra_roots_from_env(unset=True), '/nas/mnt')
+    def test_default_extra_roots_covers_external_device(self):
+        """没设 EXTRA_ROOTS 时默认追加 `/nas/mnt` 与 `/mnt/usb-*`。
+
+        真机上 `usb`/`pa0`/`pa1` 都在 `/nas/mnt` 下面；而 `/nas/mnt/usb` 是**软链**，
+        它的 `realpath()` 是厂商挂载点 `/mnt/usb-<哈希>`，所以真实路径这个根也要收，
+        否则「共享外接设备里的目录」会因“真实路径不在允许范围内”被拒（真机实测 400）。
+        """
+        self.assertEqual(self.extra_roots_from_env(unset=True), '/nas/mnt:/mnt/usb-*')
 
     def test_empty_extra_roots_env_disables_all_extras(self):
         """显式空串 → 不追加任何额外根（`ALLOWED_ROOTS=` 时它就是严格的最终白名单）。"""
